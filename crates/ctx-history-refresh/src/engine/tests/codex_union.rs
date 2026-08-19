@@ -11,7 +11,7 @@ fn refresh_exact_source(
         CaptureSourceBackedDetailedRefreshProgress,
     ) -> SourceBackedRouteResult<()>,
 ) -> Result<SourceBackedRefreshPublication> {
-    let report = authority.admission_discovery_report()?;
+    let report = authority.admission_discovery_report(data_root)?;
     let journal = TestRefreshJournal::default();
     let published_state = crate::orchestration::RetainedPublishedState { journal: &journal };
     let admitted = ctx_history_refresh_execution::source_backed_admitted_discovery_from_report(

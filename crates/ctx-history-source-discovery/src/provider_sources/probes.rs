@@ -52,7 +52,12 @@ pub(super) fn default_location_import_probe(
         CaptureProvider::Codex if location.source_format == "codex_history_jsonl" => {
             path_is_file_probe(path)
         }
-        CaptureProvider::Codex => has_jsonl_file_under_matching(path, 10_000, |_| true),
+        CaptureProvider::Codex => has_file_under_matching(path, 10_000, |candidate| {
+            candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
+        }),
         CaptureProvider::GrokBuild => has_jsonl_file_under_matching(path, 10_000, |candidate| {
             candidate.file_name().and_then(|name| name.to_str()) == Some("updates.jsonl")
         }),
@@ -65,6 +70,12 @@ pub(super) fn default_location_import_probe(
         CaptureProvider::Crush => path_is_file_probe(path),
         CaptureProvider::Goose => path_is_file_probe(path),
         CaptureProvider::Claude => has_jsonl_file_under_matching(path, 10_000, |_| true),
+        CaptureProvider::OpenClaw
+            if location.source_format
+                == ctx_history_openclaw_schema::OPENCLAW_AGENT_SQLITE_SOURCE_FORMAT =>
+        {
+            has_openclaw_agent_sqlite_v17(data_root, path)
+        }
         CaptureProvider::OpenClaw => has_openclaw_session_jsonl(path, 10_000),
         CaptureProvider::Hermes => path_is_file_probe(path),
         CaptureProvider::NanoClaw => has_nanoclaw_project(path),
@@ -83,9 +94,9 @@ pub(super) fn default_location_import_probe(
         CaptureProvider::Gemini | CaptureProvider::Tabnine => has_gemini_chat_jsonl(path, 10_000),
         CaptureProvider::Cursor => has_cursor_agent_transcript(probes, path),
         CaptureProvider::Windsurf => has_jsonl_file_under_matching(path, 10_000, |_| true),
-        CaptureProvider::Qoder => has_jsonl_file_under_matching(path, 10_000, |candidate| {
-            path_has_component(candidate, "transcript")
-        }),
+        CaptureProvider::Qoder => {
+            has_jsonl_file_under_matching(path, 10_000, qoder_jsonl_path_is_supported)
+        }
         CaptureProvider::Zed => path_is_file_probe(path),
         CaptureProvider::CopilotCli => has_jsonl_file_under_matching(path, 10_000, |candidate| {
             candidate.file_name().and_then(|name| name.to_str()) == Some("events.jsonl")
@@ -115,6 +126,9 @@ pub(super) fn default_location_import_probe(
         CaptureProvider::RovoDev => has_json_file_under_matching(path, 10_000, |candidate| {
             candidate.file_name().and_then(|name| name.to_str()) == Some("session_context.json")
         }),
+        CaptureProvider::Cline if location.source_format == "cline_sdk_session_store" => {
+            has_cline_sdk_catalog(path)
+        }
         CaptureProvider::Cline => has_task_json_file_under_matching(path, 10_000, |name| {
             matches!(
                 name,
@@ -143,6 +157,18 @@ pub(super) fn default_location_import_probe(
         | CaptureProvider::Gh
         | CaptureProvider::Custom
         | CaptureProvider::Unknown => BoundedProbe::NotFound,
+    }
+}
+
+fn has_cline_sdk_catalog(root: &Path) -> BoundedProbe {
+    let index = path_is_file_probe(&root.join("sessions/sessions.index.json"));
+    let database = path_is_file_probe(&root.join("db/sessions.db"));
+    if matches!(index, BoundedProbe::Found) || matches!(database, BoundedProbe::Found) {
+        BoundedProbe::Found
+    } else if matches!(index, BoundedProbe::IoError) || matches!(database, BoundedProbe::IoError) {
+        BoundedProbe::IoError
+    } else {
+        BoundedProbe::NotFound
     }
 }
 
@@ -415,9 +441,31 @@ fn has_openclaw_session_jsonl(root: &Path, max_entries: usize) -> BoundedProbe {
     })
 }
 
+pub(super) fn has_openclaw_agent_sqlite_v17(data_root: Option<&Path>, path: &Path) -> BoundedProbe {
+    let Some(agent_id) = path
+        .parent()
+        .filter(|parent| parent.file_name().and_then(|name| name.to_str()) == Some("agent"))
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .filter(|agent_id| !agent_id.is_empty())
+    else {
+        return BoundedProbe::NotFound;
+    };
+    sqlite_structural_probe(
+        data_root,
+        path,
+        SqliteProbeLimits::default(),
+        |connection| ctx_history_openclaw_schema::matches_openclaw_agent_v17(connection, agent_id),
+    )
+}
+
 fn has_mux_session_files(root: &Path, max_entries: usize) -> BoundedProbe {
     match has_jsonl_file_under_matching(root, max_entries, |candidate| {
-        candidate.file_name().and_then(|name| name.to_str()) == Some("chat.jsonl")
+        matches!(
+            candidate.file_name().and_then(|name| name.to_str()),
+            Some("chat.jsonl" | "chat-archive.jsonl")
+        )
     }) {
         BoundedProbe::Found => BoundedProbe::Found,
         BoundedProbe::IoError => BoundedProbe::IoError,
@@ -428,9 +476,51 @@ fn has_mux_session_files(root: &Path, max_entries: usize) -> BoundedProbe {
 }
 
 fn has_openhands_event_json(root: &Path, max_entries: usize) -> BoundedProbe {
+    match has_openhands_v1_event_json(root, max_entries) {
+        BoundedProbe::Found => BoundedProbe::Found,
+        BoundedProbe::IoError => BoundedProbe::IoError,
+        BoundedProbe::BudgetExhausted => BoundedProbe::BudgetExhausted,
+        BoundedProbe::NotFound => has_openhands_current_event_json(root, max_entries),
+    }
+}
+
+pub(super) fn has_openhands_current_event_json(root: &Path, max_entries: usize) -> BoundedProbe {
+    has_json_file_under_matching(root, max_entries, is_openhands_current_event_json)
+}
+
+pub(super) fn has_openhands_v1_event_json(root: &Path, max_entries: usize) -> BoundedProbe {
     has_json_file_under_matching(root, max_entries, |path| {
         path_has_component(path, "v1_conversations")
     })
+}
+
+fn qoder_jsonl_path_is_supported(path: &Path) -> bool {
+    if path_has_component(path, "transcript") {
+        return true;
+    }
+    path.parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        == Some("projects")
+}
+
+pub(super) fn is_openhands_current_event_json(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("event-") && name.ends_with(".json"))
+        && path.parent().is_some_and(|parent| {
+            parent.file_name().and_then(|name| name.to_str()) == Some("events")
+        })
+        && path
+            .parent()
+            .and_then(Path::parent)
+            .is_some_and(|conversation| {
+                conversation
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| !name.is_empty())
+            })
 }
 
 fn has_codebuddy_history_json(root: &Path, max_entries: usize) -> BoundedProbe {

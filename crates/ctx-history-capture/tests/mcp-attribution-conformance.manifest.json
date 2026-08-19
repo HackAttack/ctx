@@ -1,14 +1,14 @@
 {
   "schema_version": 7,
   "capability": "mcp_tool_call_attribution",
-  "capability_revision": 6,
+  "capability_revision": 8,
   "expected_provider_count": 42,
-  "expected_base_route_count": 44,
-  "expected_schema_generation_count": 43,
-  "expected_capability_lane_count": 47,
+  "expected_base_route_count": 47,
+  "expected_schema_generation_count": 46,
+  "expected_capability_lane_count": 50,
   "expected_status_rows": {
     "supported": 3,
-    "not_qualified": 43,
+    "not_qualified": 46,
     "excluded": 1
   },
   "required_supported_evidence_classes": [
@@ -109,6 +109,11 @@
       "source_format": "openclaw_session_jsonl_tree"
     },
     {
+      "provider": "openclaw",
+      "route": "native_import",
+      "source_format": "openclaw_agent_sqlite"
+    },
+    {
       "provider": "hermes",
       "route": "native_import",
       "source_format": "hermes_state_sqlite"
@@ -137,6 +142,11 @@
       "provider": "openhands",
       "route": "native_import",
       "source_format": "openhands_file_events"
+    },
+    {
+      "provider": "openhands",
+      "route": "native_import",
+      "source_format": "openhands_cli_file_events"
     },
     {
       "provider": "antigravity_cli",
@@ -227,6 +237,11 @@
       "provider": "rovodev",
       "route": "native_import",
       "source_format": "rovodev_session_json_tree"
+    },
+    {
+      "provider": "cline",
+      "route": "native_import",
+      "source_format": "cline_sdk_session_store"
     },
     {
       "provider": "cline",
@@ -683,6 +698,31 @@
       }
     },
     {
+      "provider": "openclaw",
+      "route": "native_import",
+      "source_format": "openclaw_agent_sqlite",
+      "format_schema": {
+        "kind": "structural_revision",
+        "revision": 1,
+        "shape_sha256": "68556a7a1ec603a025957a65959d45bc9c676be7c68d60870def199440ea7e5f"
+      },
+      "producer_domain": {
+        "kind": "discrete",
+        "versions": [
+          {
+            "kind": "unversioned_generation",
+            "generation": 1
+          }
+        ]
+      },
+      "provenance": {
+        "kind": "route_schema_contract",
+        "classification": "route_schema_contract",
+        "reference": "crates/ctx-history-capture/tests/contracts/mcp-attribution/openclaw/openclaw_agent_sqlite/shape-contract.json",
+        "sha256": "68556a7a1ec603a025957a65959d45bc9c676be7c68d60870def199440ea7e5f"
+      }
+    },
+    {
       "provider": "hermes",
       "route": "native_import",
       "source_format": "hermes_state_sqlite",
@@ -830,6 +870,31 @@
         "classification": "route_schema_contract",
         "reference": "crates/ctx-history-capture/tests/contracts/mcp-attribution/openhands/openhands_file_events/shape-contract.json",
         "sha256": "31b6d6cc22cd29da84bc5fd2bdc8e78737e6537a7bec8be59b36e9a4a4c43059"
+      }
+    },
+    {
+      "provider": "openhands",
+      "route": "native_import",
+      "source_format": "openhands_cli_file_events",
+      "format_schema": {
+        "kind": "structural_revision",
+        "revision": 1,
+        "shape_sha256": "98c47e2fd209761bedb0495ddb3c6976458e0c7077f0b6af3bf89b4a844ae494"
+      },
+      "producer_domain": {
+        "kind": "discrete",
+        "versions": [
+          {
+            "kind": "unversioned_generation",
+            "generation": 1
+          }
+        ]
+      },
+      "provenance": {
+        "kind": "route_schema_contract",
+        "classification": "route_schema_contract",
+        "reference": "crates/ctx-history-capture/tests/contracts/mcp-attribution/openhands/openhands_cli_file_events/shape-contract.json",
+        "sha256": "98c47e2fd209761bedb0495ddb3c6976458e0c7077f0b6af3bf89b4a844ae494"
       }
     },
     {
@@ -1285,6 +1350,31 @@
     {
       "provider": "cline",
       "route": "native_import",
+      "source_format": "cline_sdk_session_store",
+      "format_schema": {
+        "kind": "structural_revision",
+        "revision": 1,
+        "shape_sha256": "2fcc5b29ba2ba0973c94e2291bc093e495ba232ca0b532535aad5c3f0cdaa15a"
+      },
+      "producer_domain": {
+        "kind": "discrete",
+        "versions": [
+          {
+            "kind": "unversioned_generation",
+            "generation": 1
+          }
+        ]
+      },
+      "provenance": {
+        "kind": "route_schema_contract",
+        "classification": "route_schema_contract",
+        "reference": "crates/ctx-history-capture/tests/contracts/mcp-attribution/cline/cline_sdk_session_store/shape-contract.json",
+        "sha256": "2fcc5b29ba2ba0973c94e2291bc093e495ba232ca0b532535aad5c3f0cdaa15a"
+      }
+    },
+    {
+      "provider": "cline",
+      "route": "native_import",
       "source_format": "cline_task_directory_json",
       "format_schema": {
         "kind": "structural_revision",
@@ -1369,6 +1459,47 @@
         "ranges": [],
         "source_commits": [
           "60c722e07514d46d980034319dfcbfe4e74e659f"
+        ],
+        "unknown_generations": "not-qualified"
+      }
+    },
+    {
+      "provider": "openhands",
+      "route": "native_import",
+      "source_format": "openhands_cli_file_events",
+      "format_schema": {
+        "kind": "structural_revision",
+        "revision": 1,
+        "shape_sha256": "98c47e2fd209761bedb0495ddb3c6976458e0c7077f0b6af3bf89b4a844ae494"
+      },
+      "producer_partition": {
+        "kind": "discrete",
+        "versions": [
+          {
+            "kind": "unversioned_generation",
+            "generation": 1
+          }
+        ]
+      },
+      "status": {
+        "kind": "not_qualified",
+        "reason": {
+          "kind": "format_not_audited",
+          "evidence_ref": "provider-support-matrix:openhands/openhands_cli_file_events"
+        }
+      },
+      "evidence": [],
+      "source_schema": "openhands-v1-conversation-tree-v1",
+      "producer_bound": {
+        "kind": "versions",
+        "versions": [
+          "0.50.0",
+          "1.39.1"
+        ],
+        "ranges": [],
+        "source_commits": [
+          "2ead80595c2eac36baecfbb60ca790012c7aca2f",
+          "bf57d16f3dde05b0b03fa0af3f7e0ae924043b80"
         ],
         "unknown_generations": "not-qualified"
       }
@@ -2212,6 +2343,41 @@
         "kind": "source_commits",
         "commits": [
           "554a6f3bbf6d8173efc2f1c92e30139f88dc26d6"
+        ],
+        "unknown_generations": "not-qualified"
+      }
+    },
+    {
+      "provider": "openclaw",
+      "route": "native_import",
+      "source_format": "openclaw_agent_sqlite",
+      "format_schema": {
+        "kind": "structural_revision",
+        "revision": 1,
+        "shape_sha256": "68556a7a1ec603a025957a65959d45bc9c676be7c68d60870def199440ea7e5f"
+      },
+      "producer_partition": {
+        "kind": "discrete",
+        "versions": [
+          {
+            "kind": "unversioned_generation",
+            "generation": 1
+          }
+        ]
+      },
+      "status": {
+        "kind": "not_qualified",
+        "reason": {
+          "kind": "format_not_audited",
+          "evidence_ref": "provider-support-matrix:openclaw/openclaw_agent_sqlite"
+        }
+      },
+      "evidence": [],
+      "source_schema": "openclaw-agent-schema-v17",
+      "producer_bound": {
+        "kind": "source_commits",
+        "commits": [
+          "39b39ca6eec684f0675cd93500646b578f6e7021"
         ],
         "unknown_generations": "not-qualified"
       }
@@ -3233,6 +3399,41 @@
       },
       "evidence": [],
       "source_schema": "unversioned-cline-message-array",
+      "producer_bound": {
+        "kind": "source_commits",
+        "commits": [
+          "864419d8b0c2467ec37ccb8837ddd08f96ea31f9"
+        ],
+        "unknown_generations": "not-qualified"
+      }
+    },
+    {
+      "provider": "cline",
+      "route": "native_import",
+      "source_format": "cline_sdk_session_store",
+      "format_schema": {
+        "kind": "structural_revision",
+        "revision": 1,
+        "shape_sha256": "2fcc5b29ba2ba0973c94e2291bc093e495ba232ca0b532535aad5c3f0cdaa15a"
+      },
+      "producer_partition": {
+        "kind": "discrete",
+        "versions": [
+          {
+            "kind": "unversioned_generation",
+            "generation": 1
+          }
+        ]
+      },
+      "status": {
+        "kind": "not_qualified",
+        "reason": {
+          "kind": "format_not_audited",
+          "evidence_ref": "provider-support-matrix:cline/cline_sdk_session_store"
+        }
+      },
+      "evidence": [],
+      "source_schema": "cline-sdk-session-store-v1",
       "producer_bound": {
         "kind": "source_commits",
         "commits": [

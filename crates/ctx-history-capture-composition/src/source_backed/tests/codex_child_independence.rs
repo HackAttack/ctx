@@ -1,7 +1,9 @@
 use std::{collections::BTreeSet, fs::OpenOptions, io::Write, path::Path};
 
 use super::*;
-use crate::provider::source_backed::family::jsonl::set_before_jsonl_terminal_physical_revalidation_hook;
+use crate::provider::source_backed::family::jsonl::{
+    set_after_standard_zstd_snapshot_hook, set_before_jsonl_terminal_physical_revalidation_hook,
+};
 use ctx_history_core::{
     CertifiedSource, CoreDiscoveryExclusion, ProviderNativeSessionRelationship, SourceFrontier,
     TypedKey,
@@ -1070,6 +1072,8 @@ fn codex_incremental_4097th_terminal_saturates_and_replaces_fail_open() {
     assert_current_provider_checkpoint(&saturated_checkpoint);
 }
 
+#[path = "codex_child_independence/compressed.rs"]
+mod compressed;
 #[path = "codex_child_independence/lifecycle.rs"]
 mod lifecycle;
 #[path = "codex_child_independence/repository.rs"]

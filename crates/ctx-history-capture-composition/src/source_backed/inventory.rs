@@ -2,8 +2,8 @@ use super::*;
 #[cfg(test)]
 use ctx_history_core::{ScannedSourceCounts, SourceInventoryObservation};
 use ctx_history_providers_task_docs::{
-    CLINE_TASK_JSON_SOURCE_FORMAT, CODEBUDDY_SOURCE_FORMAT, CONTINUE_CLI_SOURCE_FORMAT,
-    ROO_TASK_JSON_SOURCE_FORMAT, ROVODEV_SOURCE_FORMAT,
+    CLINE_SDK_SOURCE_FORMAT, CLINE_TASK_JSON_SOURCE_FORMAT, CODEBUDDY_SOURCE_FORMAT,
+    CONTINUE_CLI_SOURCE_FORMAT, ROO_TASK_JSON_SOURCE_FORMAT, ROVODEV_SOURCE_FORMAT,
 };
 #[cfg(test)]
 use sha2::{Digest, Sha256};
@@ -392,6 +392,13 @@ pub const LANDED_SOURCE_BACKED_ROUTES: &[SourceBackedProviderRouteMetadata] = &[
         true,
         DiscoveredWinner
     ),
+    sqlite_route!(
+        OpenClaw,
+        "openclaw_agent_sqlite",
+        true,
+        true,
+        DiscoveredWinner
+    ),
     sqlite_route!(Hermes, "hermes_state_sqlite", true, true, DiscoveredWinner),
     route!(
         NanoClaw,
@@ -409,7 +416,7 @@ pub const LANDED_SOURCE_BACKED_ROUTES: &[SourceBackedProviderRouteMetadata] = &[
         DiscoveredWinner,
         DiscoveryContext
     ),
-    sqlite_route!(Shelley, "shelley_sqlite", true, false, ExactCwd, ExactCwd),
+    sqlite_route!(Shelley, "shelley_sqlite", true, true, ExactCwd, ExactCwd),
     route!(
         Continue,
         CONTINUE_CLI_SOURCE_FORMAT,
@@ -424,6 +431,14 @@ pub const LANDED_SOURCE_BACKED_ROUTES: &[SourceBackedProviderRouteMetadata] = &[
         true,
         DiscoveredWinner
     ),
+    route!(
+        OpenHands,
+        OPENHANDS_CURRENT_CLI_SOURCE_FORMAT => "openhands_file_events",
+        true,
+        true,
+        CatalogLineage
+    ),
+    route!(Cline, CLINE_SDK_SOURCE_FORMAT, true, true, DiscoveredWinner),
     route!(
         Cline,
         CLINE_TASK_JSON_SOURCE_FORMAT,
@@ -560,12 +575,15 @@ Mux|mux_session_jsonl_tree|mux_session_jsonl|true|true|DiscoveredWinner|none|Pro
 Mux|mux_session_jsonl|mux_session_jsonl|false|true|ExplicitPath|none|ProviderSource
 RovoDev|rovodev_session_json_tree|rovodev_session_json_tree|true|true|DiscoveredWinner|none|ProviderSource
 OpenClaw|openclaw_session_jsonl_tree|openclaw_session_jsonl_tree|true|true|DiscoveredWinner|none|ProviderSource
+OpenClaw|openclaw_agent_sqlite|openclaw_agent_sqlite|true|true|DiscoveredWinner|none|ProviderSource
 Hermes|hermes_state_sqlite|hermes_state_sqlite|true|true|DiscoveredWinner|none|ProviderSource
 NanoClaw|nanoclaw_project|nanoclaw_project|true|true|CatalogLineage|none|CatalogLineage
 AstrBot|astrbot_data_v4_sqlite|astrbot_data_v4_sqlite|true|true|DiscoveredWinner|none|DiscoveryContext
-Shelley|shelley_sqlite|shelley_sqlite|true|false|ExactCwd|none|ExactCwd
+Shelley|shelley_sqlite|shelley_sqlite|true|true|ExactCwd|none|ExactCwd
 Continue|continue_cli_sessions_json|continue_cli_sessions_json|true|true|DiscoveredWinner|none|ProviderSource
 OpenHands|openhands_file_events|openhands_file_events|true|true|DiscoveredWinner|none|ProviderSource
+OpenHands|openhands_cli_file_events|openhands_file_events|true|true|CatalogLineage|none|ProviderSource
+Cline|cline_sdk_session_store|cline_sdk_session_store|true|true|DiscoveredWinner|none|ProviderSource
 Cline|cline_task_directory_json|cline_task_directory_json|true|true|DiscoveredWinner|none|ProviderSource
 RooCode|roo_task_directory_json|roo_task_directory_json|true|true|DiscoveredWinner|none|ProviderSource
 Crush|crush_sqlite|crush_sqlite|true|true|SelectedWithRetainedExplicit|none|FiniteInventory

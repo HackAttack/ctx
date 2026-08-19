@@ -1,5 +1,7 @@
 use super::*;
-use ctx_history_providers_task_docs::{CLINE_TASK_JSON_SOURCE_FORMAT, CONTINUE_CLI_SOURCE_FORMAT};
+use ctx_history_providers_task_docs::{
+    CLINE_SDK_SOURCE_FORMAT, CLINE_TASK_JSON_SOURCE_FORMAT, CONTINUE_CLI_SOURCE_FORMAT,
+};
 
 mod inventory_replay;
 mod progress;
@@ -156,6 +158,13 @@ fn production_route_families_advertise_parallel_leaf_capability() {
             temp.path().join("gemini.jsonl"),
             true,
             false,
+        ),
+        (
+            CaptureProvider::Cline,
+            CLINE_SDK_SOURCE_FORMAT,
+            temp.path().join("cline-sdk-data"),
+            true,
+            true,
         ),
         (
             CaptureProvider::Cline,

@@ -66,6 +66,15 @@ excluded from setup, `--all`, daemon refresh, and search refresh. Removing an
 old automatic probe does not delete indexed history; a still-supported
 compatible path can be selected explicitly.
 
+Codex discovers current rollout leaves ending in `.jsonl` or `.jsonl.zst`
+under the winning `sessions` and `archived_sessions` roots. Exact `--path`
+imports accept either representation, including a renamed compressed file when
+its bounded decoded catalog prefix contains the Codex session UUID. Raw and
+compressed copies of the same UUID are one logical source: raw wins while both
+exist, with lexical path order as the deterministic tie-breaker. Compressed
+reads snapshot exactly the admitted compressed prefix and bound the combined
+snapshot plus decoded spool to 256 MiB per leaf and 1 GiB across the route.
+
 Grok Build selects absolute `$GROK_HOME/sessions` when `GROK_HOME` is set and
 `~/.grok/sessions` otherwise. The override replaces the default. A native
 session requires authoritative `updates.jsonl`; derived sidecars are not

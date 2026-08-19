@@ -9,7 +9,10 @@ use serde_json::Value;
 use ctx_history_source_io::open_provider_source_file;
 
 use super::super::{
-    probes::{has_deepseek_harness_session_file, BoundedProbe},
+    probes::{
+        has_deepseek_harness_session_file, has_openhands_current_event_json,
+        is_openhands_current_event_json, BoundedProbe,
+    },
     provider_source_spec,
     resolvers::unsupported_source,
     selectors::{self, SourcePathError, SourcePathKind},
@@ -32,6 +35,27 @@ pub fn provider_source_for_path(
     provider: CaptureProvider,
     path: PathBuf,
 ) -> ProviderSource {
+    provider_source_for_path_with_optional_data_root(probes, provider, path, None)
+}
+
+/// Resolves one explicit provider path with bounded ctx-owned SQLite scratch
+/// authority. This is required for portable read-only admission when a source
+/// has a WAL or the platform has no retained-handle immutable SQLite VFS.
+pub fn provider_source_for_path_with_data_root(
+    probes: &StaticProviderProbeCatalog,
+    provider: CaptureProvider,
+    path: PathBuf,
+    data_root: &Path,
+) -> ProviderSource {
+    provider_source_for_path_with_optional_data_root(probes, provider, path, Some(data_root))
+}
+
+fn provider_source_for_path_with_optional_data_root(
+    probes: &StaticProviderProbeCatalog,
+    provider: CaptureProvider,
+    path: PathBuf,
+    data_root: Option<&Path>,
+) -> ProviderSource {
     let unknown_spec = ProviderSourceSpec {
         provider,
         display_name: "unknown",
@@ -41,6 +65,44 @@ pub fn provider_source_for_path(
         unsupported_reason: Some("provider is not registered for native local-history import"),
     };
     let spec = provider_source_spec(provider).unwrap_or(&unknown_spec);
+    if provider == CaptureProvider::Cline {
+        if let Some(data_root) = cline_sdk_data_root_for_explicit(&path) {
+            let location = ProviderDefaultLocation {
+                path_components: &[],
+                source_format: "cline_sdk_session_store",
+                source_kind: ProviderSourceKind::NativeHistory,
+            };
+            let probe = super::super::probes::default_location_import_probe(
+                probes, None, provider, &location, &data_root,
+            );
+            return ProviderSource {
+                provider,
+                exists: true,
+                path: data_root,
+                source_format: location.source_format,
+                source_kind: location.source_kind,
+                import_support: spec.import_support,
+                catalog_support: spec.catalog_support,
+                status: match probe {
+                    BoundedProbe::Found => ProviderSourceStatus::Available,
+                    BoundedProbe::NotFound => ProviderSourceStatus::Empty,
+                    BoundedProbe::BudgetExhausted | BoundedProbe::IoError => {
+                        ProviderSourceStatus::Unknown
+                    }
+                },
+                unsupported_reason: None,
+            };
+        }
+    }
+    let observed = selectors::source_path_kind(&path);
+    let (path, openclaw_source_format) = if provider == CaptureProvider::OpenClaw {
+        match openclaw_explicit_selection(probes, path, observed.ok(), data_root) {
+            Ok(selection) => (selection.path, Some(selection.source_format)),
+            Err((path, reason)) => return unsupported_source(spec, path, reason),
+        }
+    } else {
+        (path, None)
+    };
     let observed = selectors::source_path_kind(&path);
     let is_directory = observed == Ok(SourcePathKind::Directory);
     if let Some(reason) = exact_current_unsupported_reason(probes, provider, &path, observed.ok()) {
@@ -65,6 +127,15 @@ pub fn provider_source_for_path(
 
     let source_format = match provider {
         CaptureProvider::Codex if is_directory => "codex_session_jsonl_tree",
+        CaptureProvider::Codex
+            if observed == Ok(SourcePathKind::File)
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".jsonl.zst")) =>
+        {
+            "codex_session_jsonl"
+        }
         CaptureProvider::Codex if observed == Ok(SourcePathKind::File) => {
             let Some(source_format) = codex_explicit_jsonl_source_format(&path) else {
                 return unsupported_source(spec, path, CODEX_AMBIGUOUS_JSONL_REASON);
@@ -123,12 +194,15 @@ pub fn provider_source_for_path(
         CaptureProvider::Mux if is_directory => "mux_session_jsonl_tree",
         CaptureProvider::Mux => "mux_session_jsonl",
         CaptureProvider::RovoDev => "rovodev_session_json_tree",
-        CaptureProvider::OpenClaw => "openclaw_session_jsonl_tree",
+        CaptureProvider::OpenClaw => openclaw_source_format.unwrap_or("unsupported"),
         CaptureProvider::Hermes => "hermes_state_sqlite",
         CaptureProvider::NanoClaw => "nanoclaw_project",
         CaptureProvider::AstrBot => "astrbot_data_v4_sqlite",
         CaptureProvider::Shelley => "shelley_sqlite",
         CaptureProvider::Continue => "continue_cli_sessions_json",
+        CaptureProvider::OpenHands if is_openhands_current_cli_path(&path, observed.ok()) => {
+            super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT
+        }
         CaptureProvider::OpenHands => "openhands_file_events",
         CaptureProvider::Cline => "cline_task_directory_json",
         CaptureProvider::RooCode => "roo_task_directory_json",
@@ -171,6 +245,46 @@ pub fn provider_source_for_path(
             spec.unsupported_reason
         },
     }
+}
+
+fn cline_sdk_data_root_for_explicit(path: &Path) -> Option<PathBuf> {
+    let candidate = if selectors::ordinary_directory(path) {
+        match path.file_name().and_then(|name| name.to_str()) {
+            Some("sessions" | "db") => path.parent()?.to_path_buf(),
+            _ => path.to_path_buf(),
+        }
+    } else if selectors::ordinary_file(path) {
+        match path.file_name().and_then(|name| name.to_str()) {
+            Some("sessions.index.json")
+                if path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str())
+                    == Some("sessions") =>
+            {
+                path.parent()?.parent()?.to_path_buf()
+            }
+            Some("sessions.db")
+                if path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str())
+                    == Some("db") =>
+            {
+                path.parent()?.parent()?.to_path_buf()
+            }
+            _ => return None,
+        }
+    } else {
+        return None;
+    };
+    (selectors::ordinary_directory(&candidate)
+        && (is_named_regular_file(&candidate.join("sessions/sessions.index.json"), |name| {
+            name == "sessions.index.json"
+        }) || is_named_regular_file(&candidate.join("db/sessions.db"), |name| {
+            name == "sessions.db"
+        })))
+    .then_some(candidate)
 }
 
 fn codex_explicit_jsonl_source_format(path: &Path) -> Option<&'static str> {
@@ -289,26 +403,11 @@ fn exact_current_unsupported_reason(
     }
 
     match provider {
-        CaptureProvider::Codex if is_named_regular_file(path, |name| name.ends_with(".jsonl.zst")) => {
-            Some("Codex compressed .jsonl.zst history is detected but unsupported")
-        }
         CaptureProvider::KiroCli if is_current_kiro_shape(path, kind?) => {
             Some("Kiro ACP/v3 session history is detected but unsupported")
         }
-        CaptureProvider::Qoder if is_qoder_direct_sdk_shape(path, kind?) => {
-            Some("Qoder direct SDK JSONL history without a transcript directory is detected but unsupported")
-        }
-        CaptureProvider::OpenClaw if contains_openclaw_sqlite(path, kind?) => {
-            Some("OpenClaw openclaw-agent.sqlite history is detected but unsupported")
-        }
-        CaptureProvider::OpenHands if is_openhands_cli_events_shape(path, kind?) => {
-            Some("OpenHands CLI events/event-*.json history is detected but unsupported")
-        }
-        CaptureProvider::Mux if contains_mux_archive(path, kind?) => {
-            Some("Mux chat-archive.jsonl history is detected but unsupported")
-        }
         CaptureProvider::Cline if is_current_cline_sdk_shape(path, kind?) => {
-            Some("current Cline SDK session history is detected but unsupported")
+            Some("split Cline SDK roots are unsupported because ctx requires the common data root to bind the SDK catalog safely")
         }
         _ => None,
     }
@@ -391,44 +490,6 @@ fn is_current_kiro_shape(path: &Path, kind: SourcePathKind) -> bool {
         && is_named_regular_file(&counterpart, |_| true)
 }
 
-fn is_qoder_direct_sdk_shape(path: &Path, kind: SourcePathKind) -> bool {
-    if path_has_component(path, "transcript") {
-        return false;
-    }
-    if kind == SourcePathKind::File {
-        return path.extension().and_then(|extension| extension.to_str()) == Some("jsonl")
-            && path
-                .parent()
-                .and_then(Path::parent)
-                .is_some_and(|projects| {
-                    projects.file_name().and_then(|name| name.to_str()) == Some("projects")
-                });
-    }
-    if kind != SourcePathKind::Directory {
-        return false;
-    }
-    if path
-        .parent()
-        .is_some_and(|parent| parent.file_name().and_then(|name| name.to_str()) == Some("projects"))
-    {
-        return direct_entries(path).is_some_and(|entries| {
-            entries
-                .iter()
-                .any(|entry| is_named_regular_file(entry, |name| name.ends_with(".jsonl")))
-        });
-    }
-    path.file_name().and_then(|name| name.to_str()) == Some("projects")
-        && direct_entries(path).is_some_and(|buckets| {
-            buckets.iter().any(|bucket| {
-                direct_entries(bucket).is_some_and(|entries| {
-                    entries
-                        .iter()
-                        .any(|entry| is_named_regular_file(entry, |name| name.ends_with(".jsonl")))
-                })
-            })
-        })
-}
-
 fn contains_openclaw_sqlite(path: &Path, kind: SourcePathKind) -> bool {
     if kind == SourcePathKind::File {
         return is_named_regular_file(path, |name| name == "openclaw-agent.sqlite");
@@ -457,50 +518,163 @@ fn contains_openclaw_sqlite(path: &Path, kind: SourcePathKind) -> bool {
     })
 }
 
-fn is_openhands_cli_events_shape(path: &Path, kind: SourcePathKind) -> bool {
-    if path_has_component(path, "v1_conversations") {
-        return false;
+struct OpenClawExplicitSelection {
+    path: PathBuf,
+    source_format: &'static str,
+}
+
+fn openclaw_explicit_selection(
+    probes: &StaticProviderProbeCatalog,
+    path: PathBuf,
+    kind: Option<SourcePathKind>,
+    data_root: Option<&Path>,
+) -> Result<OpenClawExplicitSelection, (PathBuf, &'static str)> {
+    const JSONL: &str = "openclaw_session_jsonl_tree";
+    const SQLITE: &str = ctx_history_openclaw_schema::OPENCLAW_AGENT_SQLITE_SOURCE_FORMAT;
+    const EXACT_AGENT_REQUIRED: &str =
+        "OpenClaw roots containing per-agent SQLite require the exact agent database or agent root with --path";
+
+    if kind == Some(SourcePathKind::File) {
+        if is_openclaw_agent_sqlite_leaf(&path) {
+            let jsonl = path
+                .parent()
+                .and_then(Path::parent)
+                .map(|agent_root| agent_root.join("sessions"))
+                .ok_or_else(|| (path.clone(), EXACT_AGENT_REQUIRED))?;
+            return select_openclaw_sqlite(probes, path.clone(), path, jsonl, data_root);
+        }
+        return Ok(OpenClawExplicitSelection {
+            path,
+            source_format: JSONL,
+        });
     }
-    if kind == SourcePathKind::File {
-        return is_openhands_cli_event_file(path);
+    if kind.is_none()
+        && path.file_name().and_then(|name| name.to_str()) == Some("openclaw-agent.sqlite")
+    {
+        return Ok(OpenClawExplicitSelection {
+            path,
+            source_format: SQLITE,
+        });
     }
-    if kind != SourcePathKind::Directory {
-        return false;
+    if kind != Some(SourcePathKind::Directory) {
+        return Ok(OpenClawExplicitSelection {
+            path,
+            source_format: JSONL,
+        });
     }
-    let events = if path.file_name().and_then(|name| name.to_str()) == Some("events") {
-        path.to_path_buf()
+
+    let (sqlite, jsonl) = if path.file_name().and_then(|name| name.to_str()) == Some("agent") {
+        let Some(agent_root) = path.parent() else {
+            return Err((path, EXACT_AGENT_REQUIRED));
+        };
+        (
+            path.join("openclaw-agent.sqlite"),
+            agent_root.join("sessions"),
+        )
     } else {
-        path.join("events")
+        (
+            path.join("agent/openclaw-agent.sqlite"),
+            path.join("sessions"),
+        )
     };
-    direct_entries(&events).is_some_and(|entries| {
-        entries
-            .iter()
-            .any(|entry| is_openhands_cli_event_file(entry))
+    if is_openclaw_agent_sqlite_leaf(&sqlite) {
+        return select_openclaw_sqlite(probes, path, sqlite, jsonl, data_root);
+    }
+    if contains_openclaw_sqlite(&path, SourcePathKind::Directory) {
+        return Err((path, EXACT_AGENT_REQUIRED));
+    }
+    Ok(OpenClawExplicitSelection {
+        path,
+        source_format: JSONL,
     })
 }
 
-fn is_openhands_cli_event_file(path: &Path) -> bool {
-    path.parent()
-        .is_some_and(|parent| parent.file_name().and_then(|name| name.to_str()) == Some("events"))
-        && is_named_regular_file(path, |name| {
-            name.starts_with("event-") && name.ends_with(".json")
+fn select_openclaw_sqlite(
+    probes: &StaticProviderProbeCatalog,
+    selected_path: PathBuf,
+    sqlite: PathBuf,
+    jsonl: PathBuf,
+    data_root: Option<&Path>,
+) -> Result<OpenClawExplicitSelection, (PathBuf, &'static str)> {
+    use super::super::probes::{has_openclaw_agent_sqlite_v17, BoundedProbe};
+
+    const JSONL: &str = "openclaw_session_jsonl_tree";
+    const SQLITE: &str = ctx_history_openclaw_schema::OPENCLAW_AGENT_SQLITE_SOURCE_FORMAT;
+    const INVALID_SQLITE: &str =
+        "OpenClaw openclaw-agent.sqlite does not satisfy the bounded current v17 schema and ownership contract";
+    const PROBE_UNAVAILABLE: &str =
+        "OpenClaw SQLite admission could not complete within the bounded read-only probe";
+
+    let admission = has_openclaw_agent_sqlite_v17(data_root, &sqlite);
+    if admission != BoundedProbe::Found
+        && has_supported_explicit_history(probes, CaptureProvider::OpenClaw, &jsonl)
+    {
+        return Ok(OpenClawExplicitSelection {
+            path: jsonl,
+            source_format: JSONL,
+        });
+    }
+    match admission {
+        BoundedProbe::Found => Ok(OpenClawExplicitSelection {
+            path: sqlite,
+            source_format: SQLITE,
+        }),
+        BoundedProbe::NotFound => Err((selected_path, INVALID_SQLITE)),
+        BoundedProbe::BudgetExhausted | BoundedProbe::IoError => {
+            Err((selected_path, PROBE_UNAVAILABLE))
+        }
+    }
+}
+
+fn is_openclaw_agent_sqlite_leaf(path: &Path) -> bool {
+    is_named_regular_file(path, |name| name == "openclaw-agent.sqlite")
+        && path.parent().is_some_and(|parent| {
+            parent.file_name().and_then(|name| name.to_str()) == Some("agent")
+        })
+        && path.parent().and_then(Path::parent).is_some_and(|agent| {
+            agent
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| !name.is_empty())
         })
 }
 
-fn contains_mux_archive(path: &Path, kind: SourcePathKind) -> bool {
-    if kind == SourcePathKind::File {
-        return is_named_regular_file(path, |name| name == "chat-archive.jsonl");
+fn is_openhands_current_cli_path(path: &Path, kind: Option<SourcePathKind>) -> bool {
+    if path_has_component(path, "v1_conversations") {
+        return false;
     }
-    kind == SourcePathKind::Directory
-        && (is_named_regular_file(&path.join("chat-archive.jsonl"), |name| {
-            name == "chat-archive.jsonl"
-        }) || direct_entries(path).is_some_and(|entries| {
-            entries.iter().any(|entry| {
-                is_named_regular_file(&entry.join("chat-archive.jsonl"), |name| {
-                    name == "chat-archive.jsonl"
-                })
-            })
-        }))
+    if matches!(kind, Some(SourcePathKind::File)) && is_openhands_current_event_json(path) {
+        return true;
+    }
+    if matches!(kind, Some(SourcePathKind::Directory))
+        && has_openhands_current_event_json(path, 10_000) == BoundedProbe::Found
+    {
+        return true;
+    }
+    openhands_current_textual_alias(path)
+}
+
+fn openhands_current_textual_alias(path: &Path) -> bool {
+    let components = path.components().collect::<Vec<_>>();
+    for index in (0..components.len()).rev() {
+        if components[index].as_os_str() != "conversations" {
+            continue;
+        }
+        let tail = &components[index.saturating_add(1)..];
+        return match tail {
+            [] | [_] => true,
+            [_conversation, events] => events.as_os_str() == "events",
+            [_conversation, events, event] => {
+                events.as_os_str() == "events"
+                    && event
+                        .as_os_str()
+                        .to_str()
+                        .is_some_and(|name| name.starts_with("event-") && name.ends_with(".json"))
+            }
+            _ => false,
+        };
+    }
+    false
 }
 
 fn is_current_cline_sdk_shape(path: &Path, kind: SourcePathKind) -> bool {

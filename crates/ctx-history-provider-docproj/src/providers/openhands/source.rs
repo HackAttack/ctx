@@ -1,6 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 
-use crate::{common::io::path_has_component, CaptureError, Result};
+use crate::{CaptureError, Result};
 
 pub(super) const OPENHANDS_MAX_PATH_BYTES: usize = 7 * 1024;
 
@@ -44,9 +44,4 @@ pub(super) fn openhands_checked_path_text(path: &Path) -> Result<String> {
         });
     }
     Ok(text.to_owned())
-}
-
-pub(crate) fn openhands_json_path_is_event(path: &Path) -> bool {
-    path.extension().and_then(|extension| extension.to_str()) == Some("json")
-        && path_has_component(path, "v1_conversations")
 }

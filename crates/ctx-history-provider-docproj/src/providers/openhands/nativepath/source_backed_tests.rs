@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use crate::{
     provider_sources::{count_event_file_io, EventFileInventoryError},
-    OPENHANDS_FILE_EVENTS_SOURCE_FORMAT,
+    MAX_PROVIDER_JSONL_LINE_BYTES, OPENHANDS_FILE_EVENTS_SOURCE_FORMAT,
 };
 
 use super::source_backed::{
@@ -146,7 +146,7 @@ fn cold_projection_preserves_complete_bodies_and_core_semantics() {
     );
     assert_eq!(
         projection.source.parser_revision(),
-        "openhands-source-backed-v6-closed-facts"
+        "openhands-source-backed-v7-naive-time"
     );
 }
 
@@ -330,7 +330,7 @@ fn unchanged_plan_reads_zero_bodies_and_changed_group_reads_each_leaf_once() {
                 let plan = adapter.bind_group(group).unwrap();
                 let certified = base.get(group.group_key()).unwrap();
                 certified.observation() == &plan.opening
-                    && certified.parser_revision() == "openhands-source-backed-v6-closed-facts"
+                    && certified.parser_revision() == "openhands-source-backed-v7-naive-time"
             })
             .collect::<Vec<_>>()
     });
@@ -350,7 +350,7 @@ fn unchanged_plan_reads_zero_bodies_and_changed_group_reads_each_leaf_once() {
             let plan = adapter.bind_group(group).unwrap();
             let certified = base.get(group.group_key()).unwrap();
             if certified.observation() == &plan.opening
-                && certified.parser_revision() == "openhands-source-backed-v6-closed-facts"
+                && certified.parser_revision() == "openhands-source-backed-v7-naive-time"
             {
                 continue;
             }
@@ -406,6 +406,350 @@ fn append_and_rewrite_keep_native_identity_and_replace_stored_body() {
         .unwrap();
     assert_eq!(rewritten_event.session_id, old.session_id);
     assert_eq!(body(rewritten_event), "rewritten exact body");
+}
+
+#[test]
+fn current_cli_official_event_shapes_use_the_authoritative_decoder() {
+    // These are the small, publishable message/action fields from the official
+    // OpenHands-CLI `simple_echo_hello_world` trajectory, synthesized in place.
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("profile");
+    write_current_event(
+        &root,
+        "conversation-current",
+        "event-00001-0df665dd-b023-4473-9c48-80d35edbb4f5.json",
+        json!({
+            "id": "0df665dd-b023-4473-9c48-80d35edbb4f5",
+            "timestamp": "2026-01-27T03:56:17.815138",
+            "source": "user",
+            "llm_message": {
+                "role": "user",
+                "content": [{
+                    "cache_prompt": false,
+                    "type": "text",
+                    "text": "echo hello world",
+                    "enable_truncation": true
+                }],
+                "thinking_blocks": []
+            },
+            "activated_skills": [],
+            "extended_content": [],
+            "kind": "MessageEvent"
+        }),
+    );
+    write_current_event(
+        &root,
+        "conversation-current",
+        "event-00002-3097395b-9d0e-40ea-9721-318280129892.json",
+        json!({
+            "id": "3097395b-9d0e-40ea-9721-318280129892",
+            "timestamp": "2026-01-27T03:56:22.718970",
+            "source": "agent",
+            "action": {
+                "command": "echo hello world",
+                "is_input": false,
+                "reset": false,
+                "kind": "TerminalAction"
+            },
+            "tool_call_id": "toolu_current",
+            "kind": "ActionEvent"
+        }),
+    );
+    fs::write(
+        root.join("conversations")
+            .join("conversation-current")
+            .join("base_state.json"),
+        b"{}",
+    )
+    .unwrap();
+    fs::write(
+        root.join("conversations")
+            .join("conversation-current")
+            .join("events")
+            .join("not-an-event.json"),
+        b"{}",
+    )
+    .unwrap();
+
+    let projection = project(&root).unwrap().remove(0);
+    assert_eq!(projection.source.counts().complete_records, 2);
+    assert_eq!(projection.records.len(), 2);
+    assert_eq!(projection.plan.conversation_id, "conversation-current");
+    assert_eq!(body(&projection.records[0]), "echo hello world");
+    assert_eq!(projection.records[0].event_type, "message");
+    assert_eq!(projection.records[0].role.as_deref(), Some("user"));
+    assert_eq!(body(&projection.records[1]), "echo hello world");
+    assert_eq!(projection.records[1].event_type, "tool_call");
+    assert_eq!(projection.records[0].occurred_at_unix_ms, None);
+    assert_eq!(projection.records[1].occurred_at_unix_ms, None);
+    assert_eq!(
+        projection.records[1]
+            .content
+            .activity
+            .as_ref()
+            .and_then(|activity| activity.invocation.as_ref())
+            .and_then(|invocation| invocation.started_at_unix_ms),
+        None
+    );
+    assert_eq!(
+        projection.records[1].native_event_id,
+        Some(TypedKey::Utf8(
+            "3097395b-9d0e-40ea-9721-318280129892".to_owned()
+        ))
+    );
+}
+
+#[test]
+fn current_cli_direct_root_accepts_an_arbitrary_directory_name() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("official-override-without-reserved-name");
+    let event = write_current_event_at_root(
+        &root,
+        "conversation-direct",
+        "event-00001-direct.json",
+        message("event-direct", "direct current body"),
+    );
+
+    let from_root = project(&root).unwrap().remove(0);
+    let from_leaf = project(&event).unwrap().remove(0);
+    assert_eq!(from_root.plan.conversation_id, "conversation-direct");
+    assert_eq!(from_root.plan.source, from_leaf.plan.source);
+    assert_eq!(from_root.plan.session_id, from_leaf.plan.session_id);
+    assert_eq!(from_root.records[0].event_id, from_leaf.records[0].event_id);
+    assert_eq!(body(&from_root.records[0]), "direct current body");
+}
+
+#[test]
+fn layout_migration_preserves_identity_and_mixed_overlap_fails_closed() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let legacy_root = temp.path().join("legacy");
+    let current_root = temp.path().join("current");
+    let event = message("event-stable", "stable body");
+    write_event(
+        &legacy_root,
+        "conversation-stable",
+        "0001.json",
+        event.clone(),
+    );
+    write_current_event(
+        &current_root,
+        "conversation-stable",
+        "event-00001-event-stable.json",
+        event.clone(),
+    );
+
+    let legacy = project(&legacy_root).unwrap().remove(0);
+    let current = project(&current_root).unwrap().remove(0);
+    assert_eq!(legacy.plan.source, current.plan.source);
+    assert_eq!(legacy.plan.session_id, current.plan.session_id);
+    assert_eq!(legacy.records[0].session_id, current.records[0].session_id);
+    assert_eq!(legacy.records[0].event_id, current.records[0].event_id);
+
+    let mixed = temp.path().join("mixed-distinct");
+    write_event(
+        &mixed,
+        "conversation-legacy",
+        "0001.json",
+        message("legacy-event", "legacy"),
+    );
+    write_current_event(
+        &mixed,
+        "conversation-current",
+        "event-00001-current-event.json",
+        message("current-event", "current"),
+    );
+    let mixed_projection = project(&mixed).unwrap();
+    assert_eq!(mixed_projection.len(), 2);
+    assert_eq!(
+        mixed_projection
+            .iter()
+            .map(|projection| projection.plan.conversation_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["conversation-current", "conversation-legacy"]
+    );
+
+    let overlap = temp.path().join("mixed-overlap");
+    write_event(&overlap, "conversation-overlap", "0001.json", event.clone());
+    write_current_event(
+        &overlap,
+        "conversation-overlap",
+        "event-00001-event-stable.json",
+        event,
+    );
+    assert!(matches!(
+        project(&overlap),
+        Err(OpenHandsSourceBackedErrorV2::DuplicateConversationId(conversation_id))
+            if conversation_id == "conversation-overlap"
+    ));
+}
+
+#[test]
+fn legacy_nested_reserved_component_preserves_first_marker_identity() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let nested_root = temp.path().join("nested");
+    let nested_path = nested_root
+        .join("v1_conversations")
+        .join("conversation-first")
+        .join("subtree")
+        .join("v1_conversations")
+        .join("conversation-second")
+        .join("event.json");
+    fs::create_dir_all(nested_path.parent().unwrap()).unwrap();
+    fs::write(
+        &nested_path,
+        serde_json::to_vec(&message("stable-event", "nested body")).unwrap(),
+    )
+    .unwrap();
+
+    let flat_root = temp.path().join("flat");
+    write_event(
+        &flat_root,
+        "conversation-first",
+        "event.json",
+        message("stable-event", "nested body"),
+    );
+
+    let nested = project(&nested_root).unwrap().remove(0);
+    let flat = project(&flat_root).unwrap().remove(0);
+    assert_eq!(nested.plan.conversation_id, "conversation-first");
+    assert_eq!(nested.plan.source, flat.plan.source);
+    assert_eq!(nested.plan.session_id, flat.plan.session_id);
+    assert_eq!(nested.records[0].event_id, flat.records[0].event_id);
+}
+
+#[test]
+fn current_cli_append_rewrite_and_deletion_converge_with_stable_ids() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("profile");
+    let first_path = write_current_event(
+        &root,
+        "conversation-lifecycle",
+        "event-00001-event-a.json",
+        message("event-a", "first exact body"),
+    );
+    let before = project(&root).unwrap().remove(0);
+    let original = before.records[0].clone();
+
+    let second_path = write_current_event(
+        &root,
+        "conversation-lifecycle",
+        "event-00002-event-b.json",
+        message("event-b", "second exact body"),
+    );
+    let appended = project(&root).unwrap().remove(0);
+    assert_eq!(appended.records.len(), 2);
+    assert_eq!(appended.records[0].event_id, original.event_id);
+    assert_eq!(appended.records[0].session_id, original.session_id);
+
+    fs::write(
+        &first_path,
+        serde_json::to_vec(&message("event-a", "rewritten exact body")).unwrap(),
+    )
+    .unwrap();
+    let rewritten = project(&root).unwrap().remove(0);
+    assert_eq!(rewritten.records[0].event_id, original.event_id);
+    assert_eq!(body(&rewritten.records[0]), "rewritten exact body");
+
+    fs::remove_file(second_path).unwrap();
+    let after_event_deletion = project(&root).unwrap().remove(0);
+    assert_eq!(after_event_deletion.records.len(), 1);
+    assert_eq!(after_event_deletion.records[0].event_id, original.event_id);
+    assert_eq!(
+        body(&after_event_deletion.records[0]),
+        "rewritten exact body"
+    );
+
+    fs::remove_file(first_path).unwrap();
+    assert!(project(&root).unwrap().is_empty());
+}
+
+#[test]
+fn current_cli_rejects_duplicate_malformed_and_oversized_records() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let malformed_root = temp.path().join("malformed");
+    write_current_event(
+        &malformed_root,
+        "conversation-malformed",
+        "event-00001-valid.json",
+        message("valid", "valid peer"),
+    );
+    let malformed = write_current_event(
+        &malformed_root,
+        "conversation-malformed",
+        "event-00002-malformed.json",
+        message("unused", "unused"),
+    );
+    fs::write(malformed, b"{not-json").unwrap();
+    let malformed_projection = project(&malformed_root).unwrap().remove(0);
+    assert_eq!(malformed_projection.source.counts().complete_records, 2);
+    assert_eq!(malformed_projection.source.counts().retained_records, 1);
+    assert_eq!(malformed_projection.source.counts().rejected_records, 1);
+    assert_eq!(body(&malformed_projection.records[0]), "valid peer");
+
+    let duplicate_root = temp.path().join("duplicate");
+    write_current_event(
+        &duplicate_root,
+        "conversation-duplicate",
+        "event-00001-first.json",
+        message("same-event", "first"),
+    );
+    write_current_event(
+        &duplicate_root,
+        "conversation-duplicate",
+        "event-00002-second.json",
+        message("same-event", "second"),
+    );
+    assert!(matches!(
+        project(&duplicate_root),
+        Err(OpenHandsSourceBackedErrorV2::DuplicateEventId {
+            conversation_id,
+            event_id,
+        }) if conversation_id == "conversation-duplicate" && event_id == "same-event"
+    ));
+
+    let oversized_root = temp.path().join("oversized");
+    let oversized = write_current_event(
+        &oversized_root,
+        "conversation-oversized",
+        "event-00001-oversized.json",
+        message("oversized", "unused"),
+    );
+    fs::write(&oversized, vec![b'x'; MAX_PROVIDER_JSONL_LINE_BYTES + 1]).unwrap();
+    assert!(matches!(
+        OpenHandsEventFileAdapterV2::<()>::new(oversized_root).open_inventory(),
+        Err(OpenHandsSourceBackedErrorV2::EventFiles(
+            EventFileInventoryError::RecordTooLarge { .. }
+        ))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn current_cli_rejects_symlinked_event_files() {
+    use std::os::unix::fs::symlink;
+
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("profile");
+    let target = temp.path().join("outside.json");
+    fs::write(
+        &target,
+        serde_json::to_vec(&message("outside", "outside")).unwrap(),
+    )
+    .unwrap();
+    let linked = root
+        .join("conversations")
+        .join("conversation-linked")
+        .join("events")
+        .join("event-00001-linked.json");
+    fs::create_dir_all(linked.parent().unwrap()).unwrap();
+    symlink(target, linked).unwrap();
+
+    assert!(matches!(
+        OpenHandsEventFileAdapterV2::<()>::new(root).open_inventory(),
+        Err(OpenHandsSourceBackedErrorV2::EventFiles(
+            EventFileInventoryError::Unavailable { .. }
+        ))
+    ));
 }
 
 #[test]
@@ -609,18 +953,43 @@ fn exact_empty_missing_and_current_cli_sources_remain_typed() {
         crate::provider::source_backed::SourceBackedRouteErrorKind::Unavailable
     );
 
-    let current = temp.path().join("conversations").join("current-cli");
-    let event = current.join("events").join("event-1.json");
-    fs::create_dir_all(event.parent().unwrap()).unwrap();
-    fs::write(&event, b"{}").unwrap();
-    assert!(matches!(
-        OpenHandsEventFileAdapterV2::<()>::new(current).open_inventory(),
-        Err(OpenHandsSourceBackedErrorV2::UnsupportedCurrentCliFormat { .. })
-    ));
+    let current_root = temp.path().join("current-profile");
+    let current = write_current_event(
+        &current_root,
+        "current-cli",
+        "event-00001-current.json",
+        message("current", "current exact"),
+    );
+    let inventory = OpenHandsEventFileAdapterV2::<()>::new(current)
+        .open_inventory()
+        .unwrap();
+    assert!(inventory.selected_file());
+    assert_eq!(inventory.groups().len(), 1);
 }
 
 fn write_event(root: &Path, conversation: &str, file: &str, value: Value) -> std::path::PathBuf {
     let path = root.join("v1_conversations").join(conversation).join(file);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    path
+}
+
+fn write_current_event(
+    root: &Path,
+    conversation: &str,
+    file: &str,
+    value: Value,
+) -> std::path::PathBuf {
+    write_current_event_at_root(&root.join("conversations"), conversation, file, value)
+}
+
+fn write_current_event_at_root(
+    root: &Path,
+    conversation: &str,
+    file: &str,
+    value: Value,
+) -> std::path::PathBuf {
+    let path = root.join(conversation).join("events").join(file);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
     path

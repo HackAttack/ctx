@@ -128,6 +128,21 @@ pub(super) fn validate_catalog_owner(
     Ok(scanned_owner)
 }
 
+pub(super) fn validate_repeated_owner(
+    admitted_owner: &CodexSessionRow,
+    repeated_owner: &CodexSessionRow,
+) -> Result<()> {
+    if admitted_owner.native_session_id != repeated_owner.native_session_id
+        || admitted_owner.parent_native_session_id != repeated_owner.parent_native_session_id
+        || admitted_owner.session_relationship != repeated_owner.session_relationship
+    {
+        return Err(CaptureError::InvalidPayload(
+            "Codex session_meta owner changed within one source".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn source_changed_during_scan() -> CaptureError {
     CaptureError::InvalidPayload("Codex source changed while NativePath was reading it".to_owned())
 }

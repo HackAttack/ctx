@@ -34,15 +34,16 @@ use crate::{
 use crate::provider::providers::openhands::{
     event::{decode_openhands_event, OpenHandsDecodedEvent},
     source::{
-        normalized_openhands_authority_path, openhands_checked_path_text,
-        openhands_json_path_is_event, OPENHANDS_MAX_PATH_BYTES,
+        normalized_openhands_authority_path, openhands_checked_path_text, OPENHANDS_MAX_PATH_BYTES,
     },
 };
 
 mod detection;
 
-use detection::detects_current_cli_format;
+use detection::openhands_event_path;
 
+// These released V1-labelled values are identity domains, not layout gates.
+// Retaining them keeps conversation and event IDs stable across layout moves.
 const OPENHANDS_SOURCE_ANCHOR_NAMESPACE: &str = "openhands.v1-conversation";
 const OPENHANDS_NATIVE_SESSION_NAMESPACE: &str = "openhands.v1-conversation";
 const OPENHANDS_NATIVE_EVENT_NAMESPACE: &str = "openhands.v1-event";
@@ -50,7 +51,7 @@ const OPENHANDS_LOGICAL_SESSION_KIND: &str = "openhands-conversation";
 const OPENHANDS_LOGICAL_EVENT_KIND: &str = "openhands-event";
 const OPENHANDS_SOURCE_SCHEMA_VARIANT: &str = "openhands-v1-conversation-tree-v1";
 const OPENHANDS_SOURCE_REVISION_KIND: &str = "openhands-v1-conversation-leaves-v2";
-const OPENHANDS_PARSER_REVISION: &str = "openhands-source-backed-v6-closed-facts";
+const OPENHANDS_PARSER_REVISION: &str = "openhands-source-backed-v7-naive-time";
 const OPENHANDS_CONVERSATION_CONTENT_DOMAIN: &[u8] = b"ctx.openhands.conversation-content.v1\0";
 const OPENHANDS_DOCUMENT_LEAF_DOMAIN: &[u8] = b"ctx.openhands.document-leaf.v1\0";
 const OPENHANDS_DISCOVERY_MAX_DEPTH: usize = 16;
@@ -66,17 +67,11 @@ pub(crate) enum OpenHandsSourceBackedErrorV2 {
     Projection(#[from] ctx_history_core::ProjectionContractError),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error(
-        "OpenHands CLI conversations/*/events history at {root:?} is detected but unsupported"
-    )]
-    UnsupportedCurrentCliFormat { root: PathBuf },
-    #[error("OpenHands V1 event path {path:?} has no conversation coordinate")]
+    #[error("OpenHands event path {path:?} has no conversation coordinate")]
     MissingConversationCoordinate { path: PathBuf },
-    #[error("OpenHands V1 conversation ID {0:?} appears in more than one tree")]
+    #[error("OpenHands conversation ID {0:?} appears in more than one supported layout tree")]
     DuplicateConversationId(String),
-    #[error(
-        "OpenHands V1 event ID {event_id:?} is duplicated in conversation {conversation_id:?}"
-    )]
+    #[error("OpenHands event ID {event_id:?} is duplicated in conversation {conversation_id:?}")]
     DuplicateEventId {
         conversation_id: String,
         event_id: String,
@@ -146,7 +141,7 @@ impl<B> OpenHandsEventFileAdapterV2<B> {
 
     pub(crate) fn open_inventory(&self) -> OpenHandsSourceBackedResultV2<EventFileInventory> {
         let selected = normalized_openhands_authority_path(&self.selected)?;
-        let inventory = match EventFileInventory::open(
+        match EventFileInventory::open(
             &selected,
             EventFileLimits {
                 max_depth: OPENHANDS_DISCOVERY_MAX_DEPTH,
@@ -156,28 +151,12 @@ impl<B> OpenHandsEventFileAdapterV2<B> {
             },
             classify_openhands_event,
         ) {
-            Ok(inventory) => inventory,
-            Err(error @ EventFileInventoryError::NoAcceptedExactFile { .. }) => {
-                if detects_current_cli_format(&selected)? {
-                    return Err(OpenHandsSourceBackedErrorV2::UnsupportedCurrentCliFormat {
-                        root: selected,
-                    });
-                }
-                return Err(error.into());
-            }
-            Err(EventFileInventoryError::DuplicateGroupInstance { group_key }) => {
-                return Err(OpenHandsSourceBackedErrorV2::DuplicateConversationId(
-                    group_key,
-                ));
-            }
-            Err(error) => return Err(error.into()),
-        };
-        if inventory.is_empty() && detects_current_cli_format(&selected)? {
-            return Err(OpenHandsSourceBackedErrorV2::UnsupportedCurrentCliFormat {
-                root: selected,
-            });
+            Ok(inventory) => Ok(inventory),
+            Err(EventFileInventoryError::DuplicateGroupInstance { group_key }) => Err(
+                OpenHandsSourceBackedErrorV2::DuplicateConversationId(group_key),
+            ),
+            Err(error) => Err(error.into()),
         }
-        Ok(inventory)
     }
 
     pub(crate) fn bind_group(
@@ -340,9 +319,6 @@ pub(crate) fn openhands_owns_source(source: &SourceKey) -> bool {
 
 pub(crate) fn openhands_route_error(error: OpenHandsSourceBackedErrorV2) -> SourceBackedRouteError {
     let kind = match &error {
-        OpenHandsSourceBackedErrorV2::UnsupportedCurrentCliFormat { .. } => {
-            SourceBackedRouteErrorKind::Unsupported
-        }
         OpenHandsSourceBackedErrorV2::EventFiles(EventFileInventoryError::Unavailable {
             ..
         }) => SourceBackedRouteErrorKind::Unavailable,
@@ -360,16 +336,16 @@ pub(crate) fn openhands_route_error(error: OpenHandsSourceBackedErrorV2) -> Sour
 fn classify_openhands_event(
     path: &Path,
 ) -> Result<Option<EventFileCoordinates>, EventFileInventoryError> {
-    if !openhands_json_path_is_event(path) {
+    let Some(event_path) =
+        openhands_event_path(path).map_err(|error| event_classifier_error(path, error))?
+    else {
         return Ok(None);
-    }
-    let (conversation_id, conversation_root) =
-        conversation_coordinate(path).map_err(|error| event_classifier_error(path, error))?;
-    let relative_file_key = relative_event_file_key(&conversation_root, path)
+    };
+    let relative_file_key = relative_event_file_key(&event_path.conversation_root, path)
         .map_err(|error| event_classifier_error(path, error))?;
     Ok(Some(EventFileCoordinates {
-        group_key: conversation_id,
-        group_instance_key: openhands_checked_path_text(&conversation_root)
+        group_key: event_path.conversation_id,
+        group_instance_key: openhands_checked_path_text(&event_path.conversation_root)
             .map_err(|error| event_classifier_error(path, error.into()))?,
         relative_file_key,
     }))
@@ -391,13 +367,13 @@ fn openhands_error_as_capture(error: OpenHandsSourceBackedErrorV2) -> CaptureErr
         OpenHandsSourceBackedErrorV2::MissingConversationCoordinate { path } => {
             CaptureError::InvalidProviderTranscriptPath {
                 path,
-                reason: "OpenHands V1 event path has no conversation coordinate",
+                reason: "OpenHands event path has no conversation coordinate",
             }
         }
         OpenHandsSourceBackedErrorV2::InvalidRelativeEventKey { path } => {
             CaptureError::InvalidProviderTranscriptPath {
                 path,
-                reason: "OpenHands V1 event path has no bounded relative UTF-8 key",
+                reason: "OpenHands event path has no bounded relative UTF-8 key",
             }
         }
         _ => CaptureError::InvalidPayload(error.to_string()),
@@ -614,7 +590,7 @@ pub(crate) fn project_leaf_job(
             record.agent_scope = Some(AgentScope::Primary);
             record.provider_session_id = Some(plan.conversation_id.clone());
             record.native_event_id = Some(TypedKey::utf8(decoded.event_id())?);
-            record.occurred_at_unix_ms = Some(decoded.timestamp().timestamp_millis());
+            record.occurred_at_unix_ms = decoded.occurred_at_unix_ms();
             record.role = Some(decoded.role().as_str().to_owned());
             if !decoded.capture_audit().duplicate_key {
                 record.content.structured_content = Some(decoded.value().clone());
@@ -697,7 +673,7 @@ fn openhands_activity(
                     .cloned()
                     .map(|value| ActivityJsonCapture::Present { value })
                     .unwrap_or(ActivityJsonCapture::Absent),
-                    started_at_unix_ms: Some(decoded.timestamp().timestamp_millis()),
+                    started_at_unix_ms: decoded.occurred_at_unix_ms(),
                 })
         })
     } else {
@@ -717,7 +693,7 @@ fn openhands_activity(
                 })
                 .flatten()
                 .map(str::to_owned),
-            completed_at_unix_ms: Some(decoded.timestamp().timestamp_millis()),
+            completed_at_unix_ms: decoded.occurred_at_unix_ms(),
             duration_ns: None,
             text: ActivityTextCapture::NormalizedBody,
             structured_content: value
@@ -871,42 +847,6 @@ fn digest_leaf(digest: &mut Sha256, relative_file_key: &str, evidence: &[u8; 32]
     digest.update(relative_file_key.as_bytes());
     digest.update(length.to_be_bytes());
     digest.update(evidence);
-}
-
-fn conversation_coordinate(path: &Path) -> OpenHandsSourceBackedResultV2<(String, PathBuf)> {
-    let components = path.components().collect::<Vec<_>>();
-    let Some(v1_index) = components
-        .iter()
-        .position(|component| component.as_os_str() == "v1_conversations")
-    else {
-        return Err(
-            OpenHandsSourceBackedErrorV2::MissingConversationCoordinate {
-                path: path.to_path_buf(),
-            },
-        );
-    };
-    let Some(conversation) = components.get(v1_index.saturating_add(1)) else {
-        return Err(
-            OpenHandsSourceBackedErrorV2::MissingConversationCoordinate {
-                path: path.to_path_buf(),
-            },
-        );
-    };
-    let conversation_id = conversation
-        .as_os_str()
-        .to_str()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(
-            || OpenHandsSourceBackedErrorV2::MissingConversationCoordinate {
-                path: path.to_path_buf(),
-            },
-        )?
-        .to_owned();
-    let mut conversation_root = PathBuf::new();
-    for component in components.iter().take(v1_index.saturating_add(2)) {
-        conversation_root.push(component.as_os_str());
-    }
-    Ok((conversation_id, conversation_root))
 }
 
 fn relative_event_file_key(

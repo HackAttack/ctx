@@ -484,8 +484,15 @@ fn native_provider_default_discovery_uses_importer_specific_file_predicates() {
     let openclaw = temp.path().join(".openclaw/agents/personal/sessions");
     std::fs::create_dir_all(&openclaw).unwrap();
     std::fs::write(openclaw.join("session.jsonl"), "{}\n").unwrap();
-    assert!(
-        discover_provider_sources_for_provider(temp.path(), CaptureProvider::OpenClaw).is_empty()
+    std::fs::write(
+        temp.path().join(".openclaw/openclaw.json"),
+        r#"{"agents":{"list":[{"id":"personal"}]}}"#,
+    )
+    .unwrap();
+    assert_source_status(
+        temp.path(),
+        CaptureProvider::OpenClaw,
+        ProviderSourceStatus::Available,
     );
 
     let hermes = temp.path().join(".hermes");
@@ -622,63 +629,20 @@ fn legacy_vector_apis_are_exact_report_source_projections() {
 }
 
 #[test]
-fn exact_current_incompatible_explicit_paths_are_detection_only_unsupported() {
+fn current_kiro_explicit_path_is_detection_only_unsupported() {
     let temp = tempdir();
-    let cases = [
-        (
-            CaptureProvider::Codex,
-            temp.path().join(".codex/sessions/session.jsonl.zst"),
-            "compressed .jsonl.zst",
-        ),
-        (
-            CaptureProvider::OpenClaw,
-            temp.path()
-                .join(".openclaw/agents/main/agent/openclaw-agent.sqlite"),
-            "openclaw-agent.sqlite",
-        ),
-        (
-            CaptureProvider::OpenHands,
-            temp.path()
-                .join(".openhands/conversations/conversation/events/event-1.json"),
-            "events/event-*.json",
-        ),
-        (
-            CaptureProvider::Mux,
-            temp.path().join(".mux/sessions/session/chat-archive.jsonl"),
-            "chat-archive.jsonl",
-        ),
-        (
-            CaptureProvider::Cline,
-            temp.path().join(".cline/data/db/sessions.db"),
-            "current Cline SDK",
-        ),
-    ];
-    for (_, path, _) in &cases {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, b"current format marker").unwrap();
-    }
-
     let kiro = temp.path().join(".kiro/sessions");
     std::fs::create_dir_all(kiro.join("cli")).unwrap();
     std::fs::write(kiro.join("cli/session.json"), b"{}").unwrap();
     std::fs::write(kiro.join("cli/session.jsonl"), b"{}\n").unwrap();
-    let qoder = temp.path().join(".qoder/projects/bucket/session.jsonl");
-    std::fs::create_dir_all(qoder.parent().unwrap()).unwrap();
-    std::fs::write(&qoder, b"{}\n").unwrap();
-
-    for (provider, path, reason_fragment) in cases.into_iter().chain([
-        (CaptureProvider::KiroCli, kiro, "ACP/v3"),
-        (CaptureProvider::Qoder, qoder, "direct SDK JSONL"),
-    ]) {
-        let source = provider_source_for_path(provider, path);
-        assert_eq!(source.status, ProviderSourceStatus::Unsupported);
-        assert_eq!(source.import_support, ProviderImportSupport::Unsupported);
-        assert_eq!(source.source_kind, ProviderSourceKind::DetectionOnly);
-        assert_eq!(source.source_format, "unsupported");
-        assert!(source
-            .unsupported_reason
-            .is_some_and(|reason| reason.contains(reason_fragment)));
-    }
+    let source = provider_source_for_path(CaptureProvider::KiroCli, kiro);
+    assert_eq!(source.status, ProviderSourceStatus::Unsupported);
+    assert_eq!(source.import_support, ProviderImportSupport::Unsupported);
+    assert_eq!(source.source_kind, ProviderSourceKind::DetectionOnly);
+    assert_eq!(source.source_format, "unsupported");
+    assert!(source
+        .unsupported_reason
+        .is_some_and(|reason| reason.contains("ACP/v3")));
 }
 
 #[test]
@@ -690,12 +654,6 @@ fn explicit_unsupported_detection_preserves_supported_mixed_trees() {
             temp.path().join("qoder/projects"),
             "bucket/transcript/legacy.jsonl",
             "bucket/current.jsonl",
-        ),
-        (
-            CaptureProvider::OpenClaw,
-            temp.path().join("openclaw"),
-            "agents/main/sessions/legacy.jsonl",
-            "agents/main/agent/openclaw-agent.sqlite",
         ),
         (
             CaptureProvider::OpenHands,
@@ -760,6 +718,10 @@ fn supported_explicit_shapes_and_missing_textual_paths_keep_pinned_mapping() {
             temp.path().join("projects/bucket/transcript/session.jsonl"),
         ),
         (
+            CaptureProvider::Qoder,
+            temp.path().join("projects/direct-bucket/session.jsonl"),
+        ),
+        (
             CaptureProvider::OpenClaw,
             temp.path().join("legacy-openclaw-sessions"),
         ),
@@ -767,7 +729,16 @@ fn supported_explicit_shapes_and_missing_textual_paths_keep_pinned_mapping() {
             CaptureProvider::OpenHands,
             temp.path().join("v1_conversations/conversation/event.json"),
         ),
+        (
+            CaptureProvider::OpenHands,
+            temp.path()
+                .join("conversations/conversation/events/event-00001-current.json"),
+        ),
         (CaptureProvider::Mux, temp.path().join("session/chat.jsonl")),
+        (
+            CaptureProvider::Mux,
+            temp.path().join("session/chat-archive.jsonl"),
+        ),
         (
             CaptureProvider::Cline,
             temp.path().join("legacy-cline-root"),
@@ -795,6 +766,29 @@ fn supported_explicit_shapes_and_missing_textual_paths_keep_pinned_mapping() {
 }
 
 #[test]
+fn openhands_current_cli_exact_conversation_events_and_leaf_are_importable() {
+    let temp = tempdir();
+    let root = temp.path().join("official-direct-root");
+    let conversation = root.join("conversation");
+    let events = conversation.join("events");
+    let event = events.join("event-00001-current.json");
+    std::fs::create_dir_all(&events).unwrap();
+    std::fs::write(&event, b"{}\n").unwrap();
+
+    for path in [root, conversation, events, event] {
+        let source = provider_source_for_path(CaptureProvider::OpenHands, path);
+        assert_eq!(source.status, ProviderSourceStatus::Available);
+        assert_eq!(source.import_support, ProviderImportSupport::Native);
+        assert_eq!(source.source_kind, ProviderSourceKind::NativeHistory);
+        assert_eq!(
+            source.source_format,
+            super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT
+        );
+        assert_eq!(source.unsupported_reason, None);
+    }
+}
+
+#[test]
 fn explicit_codex_files_use_bounded_schema_admission_not_filenames() {
     let temp = tempdir();
     let prompt_named_rollout = temp.path().join("rollout-renamed.jsonl");
@@ -809,6 +803,12 @@ fn explicit_codex_files_use_bounded_schema_admission_not_filenames() {
         r#"{"timestamp":"2026-06-24T10:00:00Z","type":"session_meta","payload":{"id":"rollout-session"}}"#,
     )
     .unwrap();
+    let compressed_rollout = temp.path().join("rollout-session.jsonl.zst");
+    std::fs::write(
+        &compressed_rollout,
+        b"classification does not decode bodies",
+    )
+    .unwrap();
 
     let prompt = provider_source_for_path(CaptureProvider::Codex, prompt_named_rollout);
     assert_eq!(prompt.status, ProviderSourceStatus::Available);
@@ -817,6 +817,12 @@ fn explicit_codex_files_use_bounded_schema_admission_not_filenames() {
     let rollout = provider_source_for_path(CaptureProvider::Codex, rollout_named_history);
     assert_eq!(rollout.status, ProviderSourceStatus::Available);
     assert_eq!(rollout.source_format, "codex_session_jsonl");
+
+    let compressed = provider_source_for_path(CaptureProvider::Codex, compressed_rollout);
+    assert_eq!(compressed.status, ProviderSourceStatus::Available);
+    assert_eq!(compressed.import_support, ProviderImportSupport::Native);
+    assert_eq!(compressed.source_kind, ProviderSourceKind::NativeHistory);
+    assert_eq!(compressed.source_format, "codex_session_jsonl");
 }
 
 #[test]

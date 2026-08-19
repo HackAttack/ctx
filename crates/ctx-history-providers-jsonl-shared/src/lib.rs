@@ -19,6 +19,13 @@ pub const OPENCLAW_SOURCE_FORMAT: &str = "openclaw_session_jsonl_tree";
 pub const KIMI_CODE_CLI_SOURCE_FORMAT: &str = "kimi_code_cli_wire_jsonl";
 pub const PROVIDER_MAX_PREVIEW_CHARS: usize = ctx_history_capture_model::PROVIDER_MAX_PREVIEW_CHARS;
 
+pub struct NormalizedOpenClawEvent {
+    pub event_type: ctx_history_core::EventType,
+    pub role: Option<ctx_history_core::EventRole>,
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
+    pub lexical_text: String,
+}
+
 pub trait JsonlProviderRuntime:
     ctx_history_jsonl::JsonlFamilyRuntime<Error = CaptureError>
 {
@@ -58,6 +65,22 @@ pub mod adapters {
     use ctx_history_jsonl::JsonlFamilyAdapter;
 
     use crate::{provider, JsonlProviderRuntime, Result};
+
+    /// Normalizes one provider-native OpenClaw transcript event without
+    /// assigning source, session, or event identity.
+    pub fn normalize_openclaw_event(
+        event_index: u64,
+        row: &serde_json::Value,
+        occurred_at: chrono::DateTime<chrono::Utc>,
+    ) -> crate::NormalizedOpenClawEvent {
+        let fact = provider::providers::openclaw::event_fact(event_index, 0, row, occurred_at);
+        crate::NormalizedOpenClawEvent {
+            event_type: fact.event_type,
+            role: fact.role,
+            occurred_at: fact.occurred_at,
+            lexical_text: fact.lexical_text,
+        }
+    }
 
     pub fn custom_history<R: JsonlProviderRuntime>(
         path: PathBuf,

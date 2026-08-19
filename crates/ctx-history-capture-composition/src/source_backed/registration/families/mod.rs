@@ -4,11 +4,13 @@ mod document;
 mod event_file;
 mod hermes;
 mod jsonl;
+mod openclaw;
 mod sqlite;
 mod sqlite_inventory;
 
 pub use document::*;
-use event_file::*;
+pub(in crate::source_backed) use event_file::register_openhands_automatic_route;
+use event_file::register_openhands_route;
 pub use hermes::*;
 pub use jsonl::*;
 pub use sqlite::*;
@@ -87,8 +89,10 @@ fn register_landed_source_backed_route_inner(
         | CaptureProvider::Junie
         | CaptureProvider::MistralVibe
         | CaptureProvider::Mux
-        | CaptureProvider::OpenClaw
         | CaptureProvider::Qoder => jsonl::register_route(registry, source, selection),
+        CaptureProvider::OpenClaw => {
+            openclaw::register_route(registry, source, selection, data_root)
+        }
         CaptureProvider::Hermes => {
             let data_root = data_root.ok_or_else(|| {
                 invalid_route(
@@ -119,7 +123,9 @@ fn register_landed_source_backed_route_inner(
         | CaptureProvider::Continue
         | CaptureProvider::Cline
         | CaptureProvider::RooCode
-        | CaptureProvider::CodeBuddy => document::register_route(registry, source, selection),
+        | CaptureProvider::CodeBuddy => {
+            document::register_route(registry, source, selection, data_root)
+        }
         CaptureProvider::OpenHands => register_openhands_route(registry, source, selection),
         provider => Err(invalid_route(
             provider,

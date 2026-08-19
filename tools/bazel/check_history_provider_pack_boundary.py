@@ -32,6 +32,7 @@ EXPECTED_PACK_DEPENDENCIES = {
     "chrono": {"workspace": True},
     "libc": {"workspace": True},
     "regex": {"workspace": True},
+    "rusqlite": {"workspace": True},
     "serde": {"workspace": True},
     "serde_json": {"workspace": True},
     "sha2": {"workspace": True},
@@ -41,6 +42,7 @@ EXPECTED_PACK_DEPENDENCIES = {
     "ctx-history-capture-runtime": {"path": "../ctx-history-capture-runtime"},
     "ctx-history-core": {"path": "../ctx-history-core"},
     "ctx-history-source-io": {"path": "../ctx-history-source-io"},
+    "ctx-history-source-sqlite": {"path": "../ctx-history-source-sqlite"},
 }
 EXPECTED_PACK_DEV_DEPENDENCIES = {
     "tempfile": {"workspace": True},
@@ -50,6 +52,7 @@ PACK_DIRECT_BAZEL_DEPENDENCIES = (
     "//crates/ctx-history-capture-runtime:lib",
     "//crates/ctx-history-core:lib",
     "//crates/ctx-history-source-io:lib",
+    "//crates/ctx-history-source-sqlite:lib",
 )
 DEPENDENCY_TABLE_NAMES = {"dependencies", "dev-dependencies", "build-dependencies"}
 CANONICAL_LOAD_BINDINGS = {

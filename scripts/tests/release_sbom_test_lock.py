@@ -161,6 +161,7 @@ def synthetic_lock_text() -> str:
                 "ctx-history-provider-hermes",
                 "ctx-history-provider-mistral-mux",
                 "ctx-history-provider-native-jsonl",
+                "ctx-history-provider-openclaw-sqlite",
                 "ctx-history-provider-runtime",
                 "ctx-history-providers-jsonl-shared",
                 "ctx-history-providers-sqlite-inventory",
@@ -360,6 +361,30 @@ def synthetic_lock_text() -> str:
             ),
         ),
         package(
+            "ctx-history-provider-openclaw-sqlite",
+            "0.26.0",
+            (
+                "chrono 0.4.0",
+                "ctx-history-capture-model",
+                "ctx-history-capture-runtime",
+                "ctx-history-core",
+                "ctx-history-openclaw-schema",
+                "ctx-history-provider-runtime",
+                "ctx-history-providers-jsonl-shared",
+                "rusqlite 0.32.1",
+                "serde_json 1.0.0",
+                "sha2 0.10.9",
+                "tempfile 3.0.0",
+                "thiserror 1.0.0",
+                "zstd 0.13.0",
+            ),
+        ),
+        package(
+            "ctx-history-openclaw-schema",
+            "0.26.0",
+            ("rusqlite 0.32.1", "thiserror 1.0.0"),
+        ),
+        package(
             "ctx-history-provider-runtime",
             "0.26.0",
             (
@@ -392,7 +417,11 @@ def synthetic_lock_text() -> str:
             "ctx-history-source-io",
             "0.26.0",
         ),
-        package("ctx-history-source-discovery", "0.26.0"),
+        package(
+            "ctx-history-source-discovery",
+            "0.26.0",
+            ("ctx-history-openclaw-schema",),
+        ),
         package(
             "ctx-history-source-sqlite",
             "0.26.0",

@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, fmt, path::Path};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use ctx_history_capture_model::{
     normalization::{provider_explicit_result_value_text, provider_role, provider_value_text},
     time::parse_rfc3339_utc,
@@ -14,12 +14,18 @@ use crate::MAX_PROVIDER_JSONL_LINE_BYTES;
 #[derive(Debug, Clone)]
 pub(crate) struct OpenHandsDecodedEvent {
     event_id: String,
-    timestamp: DateTime<Utc>,
+    timestamp: OpenHandsEventTimestamp,
     event_type: EventType,
     role: EventRole,
     text: String,
     value: Value,
     capture_audit: OpenHandsCaptureAudit,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OpenHandsEventTimestamp {
+    Absolute(DateTime<Utc>),
+    Naive,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -38,8 +44,11 @@ impl OpenHandsDecodedEvent {
         &self.event_id
     }
 
-    pub(crate) fn timestamp(&self) -> DateTime<Utc> {
-        self.timestamp
+    pub(crate) fn occurred_at_unix_ms(&self) -> Option<i64> {
+        match self.timestamp {
+            OpenHandsEventTimestamp::Absolute(timestamp) => Some(timestamp.timestamp_millis()),
+            OpenHandsEventTimestamp::Naive => None,
+        }
     }
 
     pub(crate) fn event_type(&self) -> EventType {
@@ -344,11 +353,19 @@ fn openhands_event_id(path: &Path, value: &Value) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-fn openhands_event_timestamp(value: &Value) -> Option<DateTime<Utc>> {
+fn openhands_event_timestamp(value: &Value) -> Option<OpenHandsEventTimestamp> {
     value
         .get("timestamp")
         .and_then(Value::as_str)
-        .and_then(parse_rfc3339_utc)
+        .and_then(|timestamp| {
+            parse_rfc3339_utc(timestamp)
+                .map(OpenHandsEventTimestamp::Absolute)
+                .or_else(|| {
+                    NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S%.f")
+                        .ok()
+                        .map(|_| OpenHandsEventTimestamp::Naive)
+                })
+        })
 }
 
 fn openhands_entry_type(value: &Value) -> String {
@@ -498,10 +515,11 @@ mod tests {
 
     #[test]
     fn decoder_preserves_current_and_legacy_event_semantics_exactly() {
-        let current_path = Path::new("/profile/v1_conversations/session/current.json");
+        let current_path =
+            Path::new("/profile/conversations/session/events/event-00000-current-id.json");
         let current_bytes = serde_json::to_vec(&json!({
             "id": "current-id",
-            "timestamp": "2026-07-22T12:00:00Z",
+            "timestamp": "2026-07-22T12:00:00.123456",
             "kind": "MessageEvent",
             "source": "agent",
             "llm_message": {
@@ -515,10 +533,7 @@ mod tests {
         assert_eq!(current.event_type(), EventType::Message);
         assert_eq!(current.role(), EventRole::Assistant);
         assert_eq!(current.text(), "current exact text");
-        assert_eq!(
-            current.timestamp(),
-            "2026-07-22T12:00:00Z".parse::<DateTime<Utc>>().unwrap()
-        );
+        assert_eq!(current.occurred_at_unix_ms(), None);
 
         let legacy_path = Path::new("/profile/v1_conversations/session/0007-legacy.json");
         let legacy_bytes = serde_json::to_vec(&json!({
@@ -535,6 +550,54 @@ mod tests {
         assert_eq!(legacy.event_type(), EventType::Summary);
         assert_eq!(legacy.role(), EventRole::Assistant);
         assert_eq!(legacy.text(), "legacy exact thought");
+        assert_eq!(
+            legacy.occurred_at_unix_ms(),
+            Some(
+                "2026-07-22T12:00:01Z"
+                    .parse::<DateTime<Utc>>()
+                    .unwrap()
+                    .timestamp_millis()
+            )
+        );
+    }
+
+    #[test]
+    fn decoder_omits_ambiguous_naive_time_and_retains_explicit_offsets() {
+        let path = Path::new("/profile/conversations/session/events/event-00001-time.json");
+        let naive = serde_json::to_vec(&json!({
+            "id": "naive-dst-fold",
+            "timestamp": "2026-11-01T01:30:00",
+            "kind": "MessageEvent",
+            "source": "user",
+            "llm_message": {"role": "user", "content": "ambiguous local time"}
+        }))
+        .unwrap();
+        assert_eq!(
+            decode_openhands_event(path, &naive)
+                .unwrap()
+                .occurred_at_unix_ms(),
+            None
+        );
+
+        let offset = serde_json::to_vec(&json!({
+            "id": "offset-time",
+            "timestamp": "2026-11-01T01:30:00-04:00",
+            "kind": "MessageEvent",
+            "source": "user",
+            "llm_message": {"role": "user", "content": "qualified local time"}
+        }))
+        .unwrap();
+        assert_eq!(
+            decode_openhands_event(path, &offset)
+                .unwrap()
+                .occurred_at_unix_ms(),
+            Some(
+                "2026-11-01T05:30:00Z"
+                    .parse::<DateTime<Utc>>()
+                    .unwrap()
+                    .timestamp_millis()
+            )
+        );
     }
 
     #[test]

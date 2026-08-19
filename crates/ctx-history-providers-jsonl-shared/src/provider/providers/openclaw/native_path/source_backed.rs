@@ -51,7 +51,7 @@ const LOGICAL_SESSION_KIND: &str = "openclaw-legacy-session";
 const LOGICAL_EVENT_KIND: &str = "openclaw-legacy-event";
 const SOURCE_SCHEMA_VARIANT: &str = "openclaw-legacy-jsonl-v2";
 const PARSER_REVISION: &str =
-    "openclaw-source-backed-v17-source-wide-call-id-admission-agent-scope-raw-lineage";
+    "openclaw-source-backed-v18-source-wide-call-id-admission-agent-scope-raw-lineage-exact-authored-text";
 const MAX_TERMINAL_CALL_IDS: usize = 4096;
 const MAX_TERMINAL_LINKAGE_IDS: usize = MAX_TERMINAL_CALL_IDS * 2;
 const MAX_SELECTOR_CALL_ID_BYTES: usize = 16 * 1024;
@@ -594,7 +594,8 @@ fn reject_unsupported_openclaw_root(root: &Path) -> Result<()> {
     if contains_openclaw_sqlite(root)? {
         return Err(CaptureError::InvalidProviderTranscriptPath {
             path: root.to_path_buf(),
-            reason: "OpenClaw openclaw-agent.sqlite history is detected but unsupported",
+            reason:
+                "OpenClaw SQLite history must be routed through the OpenClaw SQLite source adapter",
         });
     }
     Ok(())

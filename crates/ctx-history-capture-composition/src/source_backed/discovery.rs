@@ -507,7 +507,21 @@ fn register_discovered_automatic_route(
                     detail: "Shelley automatic registration requires the exact discovery CWD",
                 },
             )?;
-            register_shelley_source_backed_route(registry, source, data_root, exact_cwd)
+            register_shelley_source_backed_route(
+                registry,
+                source,
+                SourceBackedRouteSelection::Automatic,
+                data_root,
+                exact_cwd,
+            )
+        }
+        (SourceBackedRouteConstructor::ProviderSource, CaptureProvider::OpenHands) => {
+            let current_root = resolve_openhands_conversations_root(discovery).ok_or(
+                SourceBackedAutomaticUnavailableReason::SelectorAuthorityUnavailable {
+                    detail: "OpenHands automatic registration requires its exact current conversation root",
+                },
+            )?;
+            register_openhands_automatic_route(registry, source, &current_root)
         }
         (SourceBackedRouteConstructor::ProviderSource, _) => {
             register_landed_source_backed_route_with_data_root(

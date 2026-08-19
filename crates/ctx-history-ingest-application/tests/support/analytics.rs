@@ -34,6 +34,33 @@ pub(crate) fn start_source_refresh_daemon(
     home: &Path,
     state: &Path,
 ) -> SourceRefreshDaemon {
+    start_source_refresh_daemon_with_optional_env(temp, data_root, home, state, None)
+}
+
+pub(crate) fn start_source_refresh_daemon_with_provider_env(
+    temp: &TempDir,
+    data_root: &Path,
+    home: &Path,
+    state: &Path,
+    env_name: &str,
+    env_value: &Path,
+) -> SourceRefreshDaemon {
+    start_source_refresh_daemon_with_optional_env(
+        temp,
+        data_root,
+        home,
+        state,
+        Some((env_name, env_value)),
+    )
+}
+
+fn start_source_refresh_daemon_with_optional_env(
+    temp: &TempDir,
+    data_root: &Path,
+    home: &Path,
+    state: &Path,
+    provider_env: Option<(&str, &Path)>,
+) -> SourceRefreshDaemon {
     fs::create_dir_all(data_root).unwrap();
     fs::write(
         data_root.join("config.toml"),
@@ -52,6 +79,9 @@ pub(crate) fn start_source_refresh_daemon(
                 command.env_remove(name);
             }
         }
+    }
+    if let Some((name, value)) = provider_env {
+        command.env(name, value);
     }
     command
         .args(["daemon", "run", "--force", "--loop-interval-seconds", "600"])

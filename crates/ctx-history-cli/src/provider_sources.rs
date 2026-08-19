@@ -4,9 +4,11 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use ctx_history_capture::{
-    discover_provider_sources_for_provider_report, discover_provider_sources_report,
-    provider_source_status_reason, DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport,
-    ProviderImportSupport, ProviderSource, ProviderSourceStatus,
+    discover_provider_sources_for_provider_report,
+    discover_provider_sources_for_provider_with_context, discover_provider_sources_report,
+    discover_provider_sources_with_context, provider_source_status_reason, DiscoveryContext,
+    DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport, ProviderImportSupport, ProviderSource,
+    ProviderSourceStatus,
 };
 use ctx_history_core::CaptureProvider;
 pub use ctx_history_ingest_application::history_source_plugin_report;
@@ -33,22 +35,27 @@ pub type SourceInfo = ProviderSource;
 /// once and supplies it as data, keeping identity/config concerns out here.
 pub struct CliSourceDiscoveryPort {
     home: Option<PathBuf>,
+    data_root: PathBuf,
 }
 
 impl CliSourceDiscoveryPort {
-    pub fn new(home: Option<PathBuf>) -> Self {
-        Self { home }
+    pub fn new(home: Option<PathBuf>, data_root: PathBuf) -> Self {
+        Self { home, data_root }
     }
 }
 
 impl SourceDiscoveryPort for CliSourceDiscoveryPort {
     fn discover_all(&self) -> Result<DiscoveryReport> {
-        Ok(discovered_sources_report(self.home.as_deref()))
+        Ok(discovered_sources_report_with_data_root(
+            self.home.as_deref(),
+            &self.data_root,
+        ))
     }
 
     fn discover_provider(&self, provider: CaptureProvider) -> Result<DiscoveryReport> {
-        Ok(discovered_sources_for_provider_report(
+        Ok(discovered_sources_for_provider_report_with_data_root(
             self.home.as_deref(),
+            &self.data_root,
             provider,
         ))
     }
@@ -83,6 +90,18 @@ pub fn discovered_sources_report(home: Option<&Path>) -> DiscoveryReport {
         .unwrap_or_default()
 }
 
+pub fn discovered_sources_report_with_data_root(
+    home: Option<&Path>,
+    data_root: &Path,
+) -> DiscoveryReport {
+    home.map(|home| {
+        let context = DiscoveryContext::from_process(home).with_data_root(data_root);
+        discover_provider_sources_with_context(&context)
+    })
+    .map(filter_cli_supported_report)
+    .unwrap_or_default()
+}
+
 pub fn discovered_sources_for_provider_report(
     home: Option<&Path>,
     provider: CaptureProvider,
@@ -92,6 +111,21 @@ pub fn discovered_sources_for_provider_report(
     }
     home.map(|home| discover_provider_sources_for_provider_report(home, provider))
         .unwrap_or_default()
+}
+
+pub fn discovered_sources_for_provider_report_with_data_root(
+    home: Option<&Path>,
+    data_root: &Path,
+    provider: CaptureProvider,
+) -> DiscoveryReport {
+    if !cli_supported_provider(provider) {
+        return DiscoveryReport::default();
+    }
+    home.map(|home| {
+        let context = DiscoveryContext::from_process(home).with_data_root(data_root);
+        discover_provider_sources_for_provider_with_context(&context, provider)
+    })
+    .unwrap_or_default()
 }
 
 pub fn filter_cli_supported_sources(sources: Vec<SourceInfo>) -> Vec<SourceInfo> {
@@ -324,7 +358,8 @@ mod tests {
     #[test]
     fn native_discovery_does_not_need_plugin_state() {
         let temp = tempfile::tempdir().unwrap();
-        let port = CliSourceDiscoveryPort::new(Some(temp.path().to_owned()));
+        let port =
+            CliSourceDiscoveryPort::new(Some(temp.path().to_owned()), temp.path().join("ctx-data"));
         let report = port.discover_provider(CaptureProvider::Codex).unwrap();
         assert!(report
             .sources

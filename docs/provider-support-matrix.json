@@ -40,7 +40,8 @@
           "source_format": "codex_session_jsonl_tree",
           "fidelity": "imported",
           "notes": [
-            "Reads supported local session JSONL files under ~/.codex/sessions."
+            "Reads supported local raw .jsonl and standard Zstandard .jsonl.zst session rollouts under ~/.codex/sessions and ~/.codex/archived_sessions.",
+            "Compressed and raw representations use the embedded Codex session UUID for one logical source identity; a simultaneous raw representation wins deterministically."
           ]
         },
         {
@@ -76,7 +77,7 @@
         "parent_child_session_edges": true
       },
       "limitations": [
-        "Exact supported JSONL is manual-importable. `.jsonl.zst` is detected unsupported; SQLite, past roots, and the default beside an override are excluded."
+        "Exact supported .jsonl and .jsonl.zst rollouts are manual-importable. Compressed leaves have a 256 MiB combined snapshot/decode-spool bound, a 256x plus 16 MiB expansion bound, a 128 MiB window bound, and share a 1 GiB route scratch budget; SQLite, past roots, and the default beside an override are excluded."
       ],
       "public_docs": "docs/providers.md"
     },
@@ -406,7 +407,7 @@
         }
       ],
       "history_locations": [
-        "Detected unsupported: `${KIRO_HOME:-~/.kiro}/sessions`. Legacy platform `kiro-cli/data.sqlite3` is automatic only when current history is absent."
+        "Current ACP/v3 `${KIRO_HOME:-~/.kiro}/sessions` is detected as unsupported. Legacy platform `kiro-cli/data.sqlite3` remains a separate automatic SQLite import."
       ],
       "imports_existing_history": true,
       "captures_new_runs_passively": false,
@@ -429,7 +430,7 @@
         "parent_child_session_edges": false
       },
       "limitations": [
-        "ACP/v3 and saved-chat JSON are unsupported. Exact legacy SQLite is manual-importable; current and legacy are never unioned."
+        "ACP/v3 and saved-chat JSON are unsupported. Exact legacy SQLite is manual-importable."
       ],
       "public_docs": "docs/provider-support.md"
     },
@@ -583,14 +584,14 @@
           "source_format": "qoder_transcript_jsonl_tree",
           "fidelity": "imported",
           "notes": [
-            "Reads official Qoder transcript JSONL files under ~/.qoder/projects/<project>/transcript/<session-id>.jsonl.",
+            "Reads official Qoder transcript JSONL files under ~/.qoder/projects/<project>/transcript/<session-id>.jsonl and direct project session JSONL files.",
             "Imports documented session_meta, user, assistant, progress, text, tool_use, and tool_result records.",
             "Does not parse Qoder VS Code/Electron state databases or encrypted application logs."
           ]
         }
       ],
       "history_locations": [
-        "Detected unsupported at fixed SDK default: `~/.qoder/projects/<project>/*.jsonl` direct session files."
+        "Winner: `~/.qoder/projects/<project>` with bounded transcript and direct session JSONL leaves."
       ],
       "imports_existing_history": true,
       "captures_new_runs_passively": false,
@@ -613,7 +614,7 @@
         "parent_child_session_edges": false
       },
       "limitations": [
-        "`QODER_CONFIG_DIR` is SDK-scoped and manual-only. Direct SDK JSONL stays unsupported with `--path`; legacy `transcript/*.jsonl` can be selected exactly."
+        "`QODER_CONFIG_DIR`, unsafe roots, and selectors that cannot be reconstructed safely require exact `--path`."
       ],
       "public_docs": "docs/provider-support.md",
       "metadata": {
@@ -725,13 +726,22 @@
           "source_format": "openclaw_session_jsonl_tree",
           "fidelity": "partial",
           "notes": [
-            "Legacy OpenClaw session JSONL transcripts remain importable by exact explicit path; automatic discovery instead detects current per-agent SQLite as unsupported under one selected state/profile root.",
+            "Legacy OpenClaw session JSONL transcripts remain importable by exact explicit path and are the per-agent fallback when current SQLite fails bounded admission.",
             "Upstream exposes newer session helpers and warns plugins not to depend on legacy sessions.json shape."
+          ]
+        },
+        {
+          "kind": "native_import",
+          "source_format": "openclaw_agent_sqlite",
+          "fidelity": "imported",
+          "notes": [
+            "Reads the current schema-v17 per-agent database through a read-only WAL-aware snapshot after exact schema, key, index, and owner admission.",
+            "Imports active-position transcript projection plus bounded reset/deleted archive generations; admitted SQLite suppresses only the same normalized agent's legacy JSONL route."
           ]
         }
       ],
       "history_locations": [
-        "Detected unsupported: `agents/<agent-id>/agent/openclaw-agent.sqlite` beneath one selected state/profile root for each configured agent."
+        "Automatic per configured agent: `agents/<agent-id>/agent/openclaw-agent.sqlite` after bounded admission; otherwise that agent's `sessions/*.jsonl` tree remains fallback."
       ],
       "imports_existing_history": true,
       "captures_new_runs_passively": false,
@@ -754,7 +764,7 @@
         "parent_child_session_edges": false
       },
       "limitations": [
-        "Current SQLite has no importer. Legacy JSONL, old profiles, `.moltbot`, mounts, and remotes are manual-only and not unioned."
+        "Only exact schema v17 is admitted. Oversized or corrupt archives fail the whole SQLite source closed; legacy JSONL, old profiles, `.moltbot`, mounts, and remotes are not unioned."
       ],
       "public_docs": "docs/providers.md"
     },
@@ -996,10 +1006,19 @@
             "Discovery checks OH_PERSISTENCE_DIR, legacy FILE_STORE_PATH, and ~/.openhands.",
             "The SQLite metadata database openhands.db is not required for local OSS event import."
           ]
+        },
+        {
+          "kind": "native_import",
+          "source_format": "openhands_cli_file_events",
+          "fidelity": "imported",
+          "notes": [
+            "Reads current OpenHands CLI conversation event JSON under ~/.openhands/conversations/<conversation-id>/events.",
+            "The current CLI layout uses the same bounded event-file decoder and stable OpenHands conversation/event identities as the legacy route."
+          ]
         }
       ],
       "history_locations": [
-        "V1 winner: `$OH_PERSISTENCE_DIR`, `$FILE_STORE_PATH`, or `~/.openhands`, then optional user and `v1_conversations`. Current CLI `conversations/<id>/events` is detected unsupported."
+        "Legacy V1 winner: `$OH_PERSISTENCE_DIR`, `$FILE_STORE_PATH`, or `~/.openhands`, then optional user and `v1_conversations`. Current CLI `~/.openhands/conversations/<id>/events` is a separately bounded supported route."
       ],
       "imports_existing_history": true,
       "captures_new_runs_passively": false,
@@ -1022,7 +1041,7 @@
         "parent_child_session_edges": false
       },
       "limitations": [
-        "Remote backend means no local root. Docker host paths are manual; current CLI events stay unsupported with explicit selection."
+        "Remote backend means no local root. Docker host paths and unsafe selected roots are manual."
       ],
       "public_docs": "docs/provider-support.md"
     },
@@ -1765,7 +1784,7 @@
         }
       ],
       "history_locations": [
-        "Winner: `$MUX_ROOT/sessions`, development `~/.mux-dev/sessions`, or `~/.mux/sessions`; `.cmux/sessions` only when `.mux` is absent. `chat-archive.jsonl` is detected unsupported."
+        "Winner: `$MUX_ROOT/sessions`, development `~/.mux-dev/sessions`, or `~/.mux/sessions`; `.cmux/sessions` only when `.mux` is absent. Session archives are imported with their active chat history."
       ],
       "imports_existing_history": true,
       "captures_new_runs_passively": false,
@@ -1788,7 +1807,7 @@
         "parent_child_session_edges": true
       },
       "limitations": [
-        "Roots are not unioned. Constructor/benchmark roots are manual; supported chat/partial/subagent files remain, archives stay unsupported."
+        "Roots are not unioned. Constructor/benchmark roots are manual; supported chat, archive, partial, and subagent files remain within the selected session tree."
       ],
       "public_docs": "docs/provider-support.md"
     },
@@ -1844,16 +1863,25 @@
       "implemented_paths": [
         {
           "kind": "native_import",
+          "source_format": "cline_sdk_session_store",
+          "fidelity": "imported",
+          "notes": [
+            "Reads a common Cline SDK data root with its session catalog and bound manifest/message artifacts.",
+            "The common root may use sessions.index.json, db/sessions.db, or both; split catalog or artifact roots are not imported."
+          ]
+        },
+        {
+          "kind": "native_import",
           "source_format": "cline_task_directory_json",
           "fidelity": "imported",
           "notes": [
             "Reads legacy Cline task directories containing api_conversation_history.json, ui_messages.json, or task_metadata.json.",
-            "Discovery selects one Cline-owned root by CLINE_DATA_DIR, enabled CLINE_SANDBOX_DATA_DIR, CLINE_DIR/data, or ~/.cline/data, plus finite Microsoft VS Code globalStorage profile roots. Current SDK session and DB roots are detection-only unsupported."
+            "Discovery selects one Cline-owned root by CLINE_DATA_DIR, enabled CLINE_SANDBOX_DATA_DIR, CLINE_DIR/data, or ~/.cline/data, plus finite Microsoft VS Code globalStorage profile roots."
           ]
         }
       ],
       "history_locations": [
-        "One Cline-owned legacy `tasks` root plus finite Microsoft VS Code stable/Insiders/profile stores. Current SDK manifests/messages, `sessions.db`, and `sessions.index.json` are detected unsupported."
+        "One Cline-owned common SDK data root or legacy `tasks` root plus finite Microsoft VS Code stable/Insiders/profile stores."
       ],
       "imports_existing_history": true,
       "captures_new_runs_passively": false,
@@ -1876,7 +1904,7 @@
         "parent_child_session_edges": false
       },
       "limitations": [
-        "SDK selectors do not map to legacy tasks. One-shot/non-Microsoft/remote roots are manual; SDK shapes stay unsupported with explicit paths."
+        "SDK selectors do not map to legacy tasks. One-shot/non-Microsoft/remote roots are manual; split SDK catalog or artifact roots are unsupported."
       ],
       "public_docs": "docs/providers.md"
     },

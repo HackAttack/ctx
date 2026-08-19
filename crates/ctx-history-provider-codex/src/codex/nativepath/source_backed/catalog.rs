@@ -174,12 +174,7 @@ pub(crate) fn discover_codex_deferred_session_tree_inventory_v0(
 pub(super) fn bind_codex_partial_member_v0(
     member: &JsonlFamilyOpenedMember<'_>,
 ) -> CodexSourceBackedResultV0<(CodexCatalogSource, SourceKey, String)> {
-    if member
-        .source_path()
-        .extension()
-        .and_then(|value| value.to_str())
-        != Some("jsonl")
-    {
+    if !crate::provider::codex::catalog::is_codex_session_rollout_path(member.source_path()) {
         return Err(CodexSourceBackedErrorV0::IncompleteCatalog {
             rejected: 1,
             failed: 0,
@@ -189,8 +184,14 @@ pub(super) fn bind_codex_partial_member_v0(
         .map_err(CaptureError::from)?;
     let observation = opened_codex_file_observation(member.source_path(), member.opened().file())?;
     let native_session_id = codex_canonical_native_session_id_path_hint(member.source_path())
-        .or(crate::provider::codex::catalog::probe_codex_native_session_id(member.opened())?)
-        .or_else(|| codex_native_session_id_path_hint(member.source_path()))
+        .or(
+            crate::provider::codex::catalog::probe_codex_native_session_id(
+                member.source_path(),
+                member.opened(),
+                observation.len,
+            )?,
+        )
+        .or_else(|| codex_uncompressed_native_session_id_path_hint(member.source_path()))
         .ok_or_else(|| CodexSourceBackedErrorV0::MissingNativeSessionId {
             path: member.source_path().to_path_buf(),
         })?;
@@ -251,6 +252,7 @@ fn discover_codex_session_tree_metadata_inventory_v0(
 
     let mut sources = bind_source_keys(catalog_sources)?;
     sort_bound_sources(&mut sources);
+    coalesce_codex_session_representations(&mut sources);
     Ok(sources)
 }
 
@@ -311,10 +313,9 @@ fn discover_codex_metadata_inventory_root_v0(
                     child_directories.push((relative_path, depth.saturating_add(1)));
                 }
                 OpenedProviderSourcePath::File(opened)
-                    if source_path
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        == Some("jsonl") =>
+                    if crate::provider::codex::catalog::is_codex_session_rollout_path(
+                        &source_path,
+                    ) =>
                 {
                     ctx_history_source_io::provider_path_identity(&source_path)
                         .map_err(CaptureError::from)?;
@@ -377,9 +378,12 @@ fn catalog_source_from_path_hint(
                     CaptureError::SourceChangedDuringCapture,
                 ));
             }
-            let native_session_id =
-                crate::provider::codex::catalog::probe_codex_native_session_id(&opened)?
-                    .or_else(|| codex_native_session_id_path_hint(&leaf.source_path));
+            let native_session_id = crate::provider::codex::catalog::probe_codex_native_session_id(
+                &leaf.source_path,
+                &opened,
+                leaf.observation.len,
+            )?
+            .or_else(|| codex_uncompressed_native_session_id_path_hint(&leaf.source_path));
             opened.revalidate_leaf()?;
             native_session_id.ok_or_else(|| CodexSourceBackedErrorV0::MissingNativeSessionId {
                 path: leaf.source_path.clone(),
@@ -398,7 +402,7 @@ fn catalog_source_from_path_hint(
 }
 
 fn codex_canonical_native_session_id_path_hint(path: &Path) -> Option<String> {
-    let stem = path.file_stem()?.to_str()?;
+    let stem = crate::provider::codex::catalog::codex_session_file_stem(path)?;
     if stem.len() >= 36 {
         let tail = &stem[stem.len() - 36..];
         if tail
@@ -415,8 +419,14 @@ pub(super) fn codex_native_session_id_path_hint(path: &Path) -> Option<String> {
     if let Some(native_session_id) = codex_canonical_native_session_id_path_hint(path) {
         return Some(native_session_id);
     }
-    let stem = path.file_stem()?.to_str()?;
+    let stem = crate::provider::codex::catalog::codex_session_file_stem(path)?;
     (!stem.trim().is_empty()).then(|| stem.to_owned())
+}
+
+fn codex_uncompressed_native_session_id_path_hint(path: &Path) -> Option<String> {
+    (!crate::provider::codex::catalog::is_codex_compressed_session_rollout_path(path))
+        .then(|| codex_native_session_id_path_hint(path))
+        .flatten()
 }
 
 pub(super) fn codex_terminal_native_session_id_hint(
@@ -425,9 +435,14 @@ pub(super) fn codex_terminal_native_session_id_hint(
     authority_path: &Path,
 ) -> CodexSourceBackedResultV0<Option<String>> {
     let opened = authority.open_file(authority_path)?;
+    let observation = opened_codex_file_observation(path, opened.file())?;
     Ok(
-        crate::provider::codex::catalog::probe_codex_native_session_id(&opened)?
-            .or_else(|| codex_native_session_id_path_hint(path)),
+        crate::provider::codex::catalog::probe_codex_native_session_id(
+            path,
+            &opened,
+            observation.len,
+        )?
+        .or_else(|| codex_uncompressed_native_session_id_path_hint(path)),
     )
 }
 
@@ -460,7 +475,25 @@ fn sort_bound_sources(sources: &mut [(CodexCatalogSource, SourceKey, String)]) {
                     .cmp(&right.1.exact_descriptor_digest())
             })
             .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| {
+                codex_representation_rank(&left.0).cmp(&codex_representation_rank(&right.0))
+            })
+            .then_with(|| left.0.source_path.cmp(&right.0.source_path))
     });
+}
+
+fn coalesce_codex_session_representations(
+    sources: &mut Vec<(CodexCatalogSource, SourceKey, String)>,
+) {
+    sources.dedup_by(|right, left| left.1.exact_descriptor_eq(&right.1));
+}
+
+fn codex_representation_rank(source: &CodexCatalogSource) -> u8 {
+    u8::from(
+        crate::provider::codex::catalog::is_codex_compressed_session_rollout_path(
+            &source.source_path,
+        ),
+    )
 }
 
 pub fn codex_session_root_rank(root: &Path) -> u8 {

@@ -11,20 +11,26 @@ good default.
 ## Provider Location Policy
 
 Discovery must be bounded, local, read-only, and offline. Reproduce the
-provider's current precedence and emit the winner, not a union of override,
-default, old channel, migration, and fallback roots. Emit multiple roots only
-for finite current stores that genuinely coexist. An unreconstructible present
-replacement suppresses stale-default discovery and requires exact `--path`.
+provider's current precedence and select one authoritative root or profile,
+not a union of override, default, old channel, migration, and fallback roots.
+Within that selected root, import every bounded canonical history component
+whose format is supported. A recognized unsupported component may coexist with
+supported compatibility history and must not suppress it. Emit multiple roots
+only for finite current stores that genuinely coexist. An unreconstructible
+present replacement suppresses stale-default discovery and requires exact
+`--path`.
 
 One-shot flags, API paths, old working directories, copies, and host mounts are
 explicit-path inputs. An explicit path bypasses discovery precedence only; it
 does not bypass format admission, path safety, read bounds, identity, or
 read-only database handling, and it is not remembered as a default.
 
-Root support and format support are independent. Recognize current unsupported
-formats precisely and stop them before native dispatch. Removing an obsolete
-automatic probe preserves compatible exact-path import and already indexed ctx
-history where those existing contracts still apply.
+Root support and format support are independent. Recognize genuinely
+unsupported formats precisely and stop them before native dispatch, while
+continuing to dispatch independent supported history selected by the same
+bounded provider authority. Exact-path import is an escape hatch for moved,
+copied, ambiguous, or unregistered locations; it is not a manual-only product
+state for canonical history that ctx has already detected and can parse.
 
 ## Import Failure Policy
 
@@ -164,7 +170,7 @@ Secondary traits are noted only to guide tests and hardening work.
 
 | Provider | Source format(s) | Primary family | Notes |
 | --- | --- | --- | --- |
-| Codex | `codex_session_jsonl_tree`, `codex_history_jsonl` | JSONL transcript stream/tree | Session tree plus legacy history JSONL. |
+| Codex | `codex_session_jsonl_tree`, `codex_history_jsonl` | JSONL transcript stream/tree | Session rollouts may be raw `.jsonl` or standard-Zstandard `.jsonl.zst`; exact compressed imports recover the embedded session UUID with a bounded catalog probe. Raw and compressed copies coalesce to one UUID-based source, preferring raw. Legacy prompt history remains raw JSONL. |
 | Grok Build | `grok_build_session_updates_jsonl_tree` | JSONL transcript stream/tree | Session directories contain authoritative `updates.jsonl`; exact leaves use `grok_build_session_updates_jsonl`. Derived sidecars are excluded. |
 | DeepSeek Harness | `deepseek_harness_session_jsonl_tree` | JSONL transcript stream/tree | Supported for local format version 0 only. Nested leaves use default `session.jsonl.zstd` or configured raw `session.jsonl`; exact leaves use `deepseek_harness_session_jsonl`. Hosted/cloud history is excluded. |
 | Pi | `pi_session_jsonl` | JSONL transcript stream/tree | Single-provider JSONL sessions, including OMP-compatible paths. |
@@ -176,16 +182,17 @@ Secondary traits are noted only to guide tests and hardening work.
 | Crush | `crush_sqlite` | SQLite message store | SQLite sessions with message parts and tool metadata. |
 | Goose | `goose_sessions_sqlite` | SQLite message store | SQLite sessions/messages with structured content JSON. |
 | Lingma | `lingma_sqlite` | SQLite message store | SQLite chat rows with prompt/assistant fields. |
-| Qoder | `qoder_transcript_jsonl_tree` | JSONL transcript stream/tree | Transcript tree. |
+| Qoder | `qoder_transcript_jsonl_tree` | JSONL transcript stream/tree | Transcript and direct project session JSONL leaves under the selected bounded project root. |
 | Warp | `warp_sqlite` | SQLite encoded/blob store | SQLite rows include JSON plus decoded task protobuf blobs. |
 | CodeBuddy | `codebuddy_history_json` | JSON session/task document | JSON history documents from editor state. |
 | OpenClaw | `openclaw_session_jsonl_tree` | JSONL transcript stream/tree | Session tree with possible sidecar data. |
+| OpenClaw | `openclaw_agent_sqlite` | SQLite transcript projection | Current per-agent database. Exact bounded v17 schema/owner admission is evaluated per normalized agent; admitted SQLite suppresses only that agent's legacy JSONL route, while corrupt/foreign databases fall back to JSONL and the two families are never admitted together. |
 | Hermes Agent | `hermes_state_sqlite` | SQLite message store | SQLite sessions/messages with bounded exact reconciliation. |
 | NanoClaw | `nanoclaw_project` | SQLite message store | Native project root containing central and per-session SQLite databases, discovered from exact CWD or official launchd/systemd service registration; exact `--path` remains available. |
 | AstrBot | `astrbot_data_v4_sqlite` | SQLite message store | SQLite conversation/platform rows. |
 | Shelley | `shelley_sqlite` | SQLite message store | SQLite conversations, messages, and tool rows. |
 | Continue | `continue_cli_sessions_json` | JSON session/task document | JSON session files. |
-| OpenHands | `openhands_file_events` | File event log | Event files rather than a chat transcript table. |
+| OpenHands | `openhands_file_events` | File event log | Legacy V1 and the selected current CLI route share the same certified conversation event-file storage family rather than a chat transcript table. |
 | Antigravity | `antigravity_cli_transcript_jsonl_tree` | JSONL transcript stream/tree | Transcript tree. |
 | Gemini | `gemini_cli_chat_recording_jsonl` | JSONL transcript stream/tree | Chat recording JSONL. |
 | Tabnine | `tabnine_cli_chat_recording_jsonl` | JSONL transcript stream/tree | Chat recording JSONL. |
@@ -202,9 +209,9 @@ Secondary traits are noted only to guide tests and hardening work.
 | ForgeCode | `forgecode_sqlite` | SQLite message store | SQLite sessions/messages. |
 | Deep Agents | `deepagents_sessions_sqlite` | SQLite encoded/blob store | SQLite checkpoints/writes with decoded MessagePack values. |
 | Mistral Vibe | `mistral_vibe_session_jsonl_tree` | JSONL transcript stream/tree | Session JSONL tree. |
-| Mux | `mux_session_jsonl_tree` | JSONL transcript stream/tree | Session JSONL tree with tool events. |
+| Mux | `mux_session_jsonl_tree` | JSONL transcript stream/tree | Session JSONL tree with active, archive, partial, and subagent history. |
 | Rovo Dev | `rovodev_session_json_tree` | JSON session/task document | Session JSON tree. |
-| Cline | `cline_task_directory_json` | JSON session/task document | Task directory JSON. |
+| Cline | `cline_sdk_session_store`, `cline_task_directory_json` | JSON session/task document | Current compound session catalog plus manifest/message artifacts; legacy task directory JSON remains separate. |
 | Roo Code | `roo_task_directory_json` | JSON session/task document | Task directory JSON. |
 
 Hermes `hermes_state_sqlite` is a supported SQLite message-store route with a
@@ -235,6 +242,13 @@ contract for that source family:
   boundaries as well. Only complete records ending at or before the frozen EOF
   are published; a partial final record is deferred until a later refresh
   completes it.
+- Standard-Zstandard Codex rollouts snapshot exactly the frozen compressed
+  prefix from the retained source handle, then decode and hash that same private
+  snapshot. The compressed snapshot plus decoded spool is bounded to 256 MiB
+  per leaf; a 256x plus 16 MiB expansion bound and 128 MiB decoder-window bound
+  apply inside that ceiling. At most four maximum-size compressed leaves run in
+  parallel against the shared 1 GiB route scratch budget. Corrupt, truncated,
+  over-bound, or budget-unavailable streams fail closed.
 - SQLite is observed as one short read-only logical snapshot. WAL size,
   checkpointing, and physical database-file size are not ingestion states.
   Concurrent committed rows belong to a subsequent certified snapshot unless

@@ -11,10 +11,49 @@ use ctx_history_provider_runtime::{
 };
 
 pub(super) const MUX_MAX_DIRECTORY_DEPTH: usize = 128;
+pub(super) const MUX_MAX_TRAVERSAL_ENTRIES: usize = 4_096;
+pub(super) const MUX_MAX_SESSION_SOURCES: usize = 4_096;
+
+struct MuxTraversalBudget {
+    remaining_entries: usize,
+    remaining_sources: usize,
+}
+
+impl MuxTraversalBudget {
+    fn new(maximum_entries: usize, maximum_sources: usize) -> Self {
+        Self {
+            remaining_entries: maximum_entries,
+            remaining_sources: maximum_sources,
+        }
+    }
+
+    fn claim_entry(&mut self, path: &Path) -> Result<()> {
+        if self.remaining_entries == 0 {
+            return Err(CaptureError::InvalidProviderTranscriptPath {
+                path: path.to_path_buf(),
+                reason: "Mux session traversal exceeds the supported directory entry limit",
+            });
+        }
+        self.remaining_entries -= 1;
+        Ok(())
+    }
+
+    fn claim_source(&mut self, path: &Path) -> Result<()> {
+        if self.remaining_sources == 0 {
+            return Err(CaptureError::InvalidProviderTranscriptPath {
+                path: path.to_path_buf(),
+                reason: "Mux session traversal exceeds the supported source limit",
+            });
+        }
+        self.remaining_sources -= 1;
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(super) struct MuxSessionSource {
     pub(super) session_dir: PathBuf,
+    pub(super) archive_path: Option<PathBuf>,
     pub(super) chat_path: Option<PathBuf>,
     pub(super) partial_path: Option<PathBuf>,
     pub(super) metadata_path: Option<PathBuf>,
@@ -23,9 +62,10 @@ pub(super) struct MuxSessionSource {
 }
 
 pub(super) fn mux_session_source_from_dir(dir: &Path) -> Result<Option<MuxSessionSource>> {
+    let archive_path = mux_optional_regular_file(&dir.join("chat-archive.jsonl"))?;
     let chat_path = mux_optional_regular_file(&dir.join("chat.jsonl"))?;
     let partial_path = mux_optional_regular_file(&dir.join("partial.json"))?;
-    if chat_path.is_none() && partial_path.is_none() {
+    if archive_path.is_none() && chat_path.is_none() && partial_path.is_none() {
         return Ok(None);
     }
     let metadata_path = mux_optional_regular_file(&dir.join("metadata.json"))?;
@@ -41,6 +81,7 @@ pub(super) fn mux_session_source_from_dir(dir: &Path) -> Result<Option<MuxSessio
     let parent_provider_session_id = mux_parent_session_id_from_path(dir);
     Ok(Some(MuxSessionSource {
         session_dir: dir.to_path_buf(),
+        archive_path,
         chat_path,
         partial_path,
         metadata_path,
@@ -87,13 +128,51 @@ pub(super) fn visit_mux_session_sources(
     root: &Path,
     visit: &mut dyn FnMut(MuxSessionSource) -> Result<()>,
 ) -> Result<usize> {
-    visit_mux_session_sources_at_depth(root, visit, 0)
+    let mut budget = MuxTraversalBudget::new(MUX_MAX_TRAVERSAL_ENTRIES, MUX_MAX_SESSION_SOURCES);
+    visit_mux_session_sources_bounded(root, visit, &mut budget)
+}
+
+#[cfg(test)]
+pub(super) fn visit_mux_session_sources_with_limits(
+    root: &Path,
+    maximum_entries: usize,
+    maximum_sources: usize,
+    visit: &mut dyn FnMut(MuxSessionSource) -> Result<()>,
+) -> Result<usize> {
+    let mut budget = MuxTraversalBudget::new(maximum_entries, maximum_sources);
+    visit_mux_session_sources_bounded(root, visit, &mut budget)
+}
+
+fn visit_mux_session_sources_bounded(
+    root: &Path,
+    visit: &mut dyn FnMut(MuxSessionSource) -> Result<()>,
+    budget: &mut MuxTraversalBudget,
+) -> Result<usize> {
+    // Complete bounded traversal before exposing any source to inventory
+    // accumulation. An over-limit tree therefore fails closed with no partial
+    // inventory, while the source vector itself is bounded by claim_source.
+    let mut sources = Vec::new();
+    visit_mux_session_sources_at_depth(
+        root,
+        &mut |source| {
+            sources.push(source);
+            Ok(())
+        },
+        0,
+        budget,
+    )?;
+    let source_count = sources.len();
+    for source in sources {
+        visit(source)?;
+    }
+    Ok(source_count)
 }
 
 fn visit_mux_session_sources_at_depth(
     root: &Path,
     visit: &mut dyn FnMut(MuxSessionSource) -> Result<()>,
     depth: usize,
+    budget: &mut MuxTraversalBudget,
 ) -> Result<usize> {
     if depth > MUX_MAX_DIRECTORY_DEPTH {
         return Err(CaptureError::InvalidProviderTranscriptPath {
@@ -114,10 +193,11 @@ fn visit_mux_session_sources_at_depth(
         ensure_regular_provider_transcript_file(root)?;
         if matches!(
             root.file_name().and_then(|name| name.to_str()),
-            Some("chat.jsonl" | "partial.json")
+            Some("chat-archive.jsonl" | "chat.jsonl" | "partial.json")
         ) {
             if let Some(session_dir) = root.parent() {
                 if let Some(source) = mux_session_source_from_dir(session_dir)? {
+                    budget.claim_source(session_dir)?;
                     visit(source)?;
                     return Ok(1);
                 }
@@ -131,18 +211,26 @@ fn visit_mux_session_sources_at_depth(
 
     let mut visited = 0_usize;
     if let Some(source) = mux_session_source_from_dir(root)? {
+        budget.claim_source(root)?;
         visit(source)?;
         visited = 1;
     }
+    let mut directories = Vec::new();
     for entry in fs::read_dir(root)? {
         let entry = entry?;
+        budget.claim_entry(root)?;
         if entry.file_type()?.is_dir() {
-            visited = visited.saturating_add(visit_mux_session_sources_at_depth(
-                &entry.path(),
-                visit,
-                depth.saturating_add(1),
-            )?);
+            directories.push(entry);
         }
+    }
+    directories.sort_unstable_by_key(|entry| entry.file_name());
+    for entry in directories {
+        visited = visited.saturating_add(visit_mux_session_sources_at_depth(
+            &entry.path(),
+            visit,
+            depth.saturating_add(1),
+            budget,
+        )?);
     }
     Ok(visited)
 }

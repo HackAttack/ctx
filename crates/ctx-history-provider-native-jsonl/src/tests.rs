@@ -65,3 +65,37 @@ fn antigravity_dialect_prefers_the_full_transcript_sibling() {
     assert_eq!(count, 1);
     assert_eq!(visited, [OsStr::new("transcript_full.jsonl")]);
 }
+
+#[test]
+fn qoder_dialect_admits_transcript_and_direct_project_jsonl_only() {
+    let temp = tempdir().unwrap();
+    let root = temp.path().join(".qoder/projects");
+    let transcript = root.join("legacy/transcript/legacy.jsonl");
+    let direct = root.join("current/direct.jsonl");
+    let nested = root.join("current/nested/not-a-session.jsonl");
+    let sidecar = root.join("current/state.json");
+    for path in [&transcript, &direct, &nested, &sidecar] {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, b"{}\n").unwrap();
+    }
+
+    let mut visited = Vec::new();
+    let count = visit_native_jsonl_files_with::<crate::NativeJsonlError>(
+        &root,
+        CaptureProvider::Qoder,
+        &mut |path| {
+            visited.push(path.strip_prefix(&root).unwrap().to_path_buf());
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(count, 2);
+    assert_eq!(
+        visited,
+        [
+            Path::new("current/direct.jsonl").to_path_buf(),
+            Path::new("legacy/transcript/legacy.jsonl").to_path_buf(),
+        ]
+    );
+}

@@ -9,12 +9,12 @@ use super::{
     super::{
         context::{DiscoveryContext, DiscoveryPlatform},
         reasons::path_presence_unknown_reason,
-        selectors::{direct_entries, encoded_path_within_limit, source_path_kind, SourcePathKind},
+        selectors::{encoded_path_within_limit, source_path_kind, SourcePathKind},
         types::{DiscoveryIssueKind, DiscoveryReport, ProviderSourceKind, ProviderSourceSpec},
         StaticProviderProbeCatalog,
     },
     issue, path_presence, push_source_candidate, select_current_or_legacy,
-    source_from_parts_with_data_root, unsupported_source, PathPresence,
+    source_from_parts_with_data_root, PathPresence,
 };
 
 const MANUAL_PATH_REASON: &str =
@@ -29,11 +29,6 @@ const PATH_LIMIT_REASON: &str =
     "the selected provider history path exceeds the discovery path limit; use an exact --path";
 const CODEX_OVERRIDE_REASON: &str =
     "CODEX_HOME does not identify an existing directory; the default is suppressed and --path is required";
-const CODEX_COMPRESSION_REASON: &str =
-    "Codex compressed .jsonl.zst history is detected but unsupported";
-const CODEX_COMPRESSION_SCAN_REASON: &str =
-    "bounded Codex compressed-history detection could not complete; use an exact --path for compressed rollouts";
-const MAX_CODEX_COMPRESSION_ENTRIES: usize = 10_000;
 
 /// Winner-only custom-root policy for the scalar/fixed-root
 /// providers owned by the simple resolver lane.
@@ -156,31 +151,6 @@ fn resolve_codex(
         "codex_history_jsonl",
     );
 
-    for tree in [root.join("sessions"), root.join("archived_sessions")] {
-        match compressed_codex_rollouts(&tree) {
-            Ok(paths) => {
-                for path in paths {
-                    let source = unsupported_source(spec, path, CODEX_COMPRESSION_REASON);
-                    if !push_source_candidate(&mut report.sources, source) {
-                        push_issue_once(
-                            &mut report,
-                            spec,
-                            None,
-                            DiscoveryIssueKind::SelectorUnreconstructible,
-                            PATH_LIMIT_REASON,
-                        );
-                    }
-                }
-            }
-            Err(()) => push_issue_once(
-                &mut report,
-                spec,
-                safe_issue_path(&tree),
-                DiscoveryIssueKind::SelectorUnreconstructible,
-                CODEX_COMPRESSION_SCAN_REASON,
-            ),
-        }
-    }
     report
 }
 
@@ -798,43 +768,6 @@ fn push_issue_once(
     {
         report.issues.push(issue(spec.provider, path, kind, reason));
     }
-}
-
-fn compressed_codex_rollouts(root: &Path) -> Result<Vec<PathBuf>, ()> {
-    match path_presence(root) {
-        PathPresence::Missing => return Ok(Vec::new()),
-        PathPresence::Present if source_path_kind(root) == Ok(SourcePathKind::Directory) => {}
-        PathPresence::Present | PathPresence::Unsupported | PathPresence::Unknown(_) => {
-            return Err(())
-        }
-    }
-
-    let mut found = Vec::new();
-    let mut pending = vec![root.to_path_buf()];
-    let mut examined = 0usize;
-    while let Some(directory) = pending.pop() {
-        let entries = direct_entries(&directory).map_err(|_| ())?;
-        examined = examined.saturating_add(entries.len());
-        if examined > MAX_CODEX_COMPRESSION_ENTRIES {
-            return Err(());
-        }
-        for path in entries.into_iter().rev() {
-            match source_path_kind(&path).map_err(|_| ())? {
-                SourcePathKind::Directory => pending.push(path),
-                SourcePathKind::File
-                    if path
-                        .file_name()
-                        .and_then(OsStr::to_str)
-                        .is_some_and(|name| name.ends_with(".jsonl.zst")) =>
-                {
-                    found.push(path);
-                }
-                SourcePathKind::File => {}
-            }
-        }
-    }
-    found.sort_by_cached_key(|path| super::super::selectors::encoded_path_sort_key(path));
-    Ok(found)
 }
 
 #[cfg(test)]

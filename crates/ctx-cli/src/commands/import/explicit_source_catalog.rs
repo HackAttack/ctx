@@ -10,11 +10,12 @@ pub(crate) use ctx_history_refresh::{
 };
 
 pub(crate) fn explicit_source_for_admission(
+    data_root: &Path,
     path: &Path,
     provider: Option<CaptureProvider>,
     custom_history_jsonl: bool,
 ) -> Result<ProviderSource> {
-    ctx_history_refresh::explicit_source_for_path(path, provider, custom_history_jsonl)
+    ctx_history_refresh::explicit_source_for_path(data_root, path, provider, custom_history_jsonl)
 }
 
 pub(crate) fn relocation_authority_for_import(

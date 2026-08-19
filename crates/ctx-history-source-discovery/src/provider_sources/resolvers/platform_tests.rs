@@ -58,7 +58,7 @@ fn write_lingma_db(path: &Path) {
 }
 
 #[test]
-fn kiro_current_sessions_are_unsupported_and_suppress_legacy_sqlite() {
+fn kiro_current_sessions_and_legacy_sqlite_coexist() {
     let temp = tempdir();
     let context = context(temp.path(), DiscoveryPlatform::Linux);
     fs::create_dir_all(context.home().join(".kiro").join("sessions")).unwrap();
@@ -68,7 +68,7 @@ fn kiro_current_sessions_are_unsupported_and_suppress_legacy_sqlite() {
     );
 
     let report = provider_report(&context, CaptureProvider::KiroCli);
-    assert_eq!(report.sources.len(), 1);
+    assert_eq!(report.sources.len(), 2);
     assert_eq!(report.sources[0].status, ProviderSourceStatus::Unsupported);
     assert_eq!(
         report.sources[0].path,
@@ -77,6 +77,38 @@ fn kiro_current_sessions_are_unsupported_and_suppress_legacy_sqlite() {
     assert_eq!(
         report.sources[0].source_kind,
         ProviderSourceKind::DetectionOnly
+    );
+    assert_eq!(
+        report.sources[1].path,
+        context.home().join(".local/share/kiro-cli/data.sqlite3")
+    );
+    assert_eq!(report.sources[1].status, ProviderSourceStatus::Available);
+    assert_eq!(
+        report.sources[1].source_kind,
+        ProviderSourceKind::NativeHistory
+    );
+    assert_eq!(report.sources[1].source_format, KIRO_FORMAT);
+}
+
+#[test]
+fn kiro_unsafe_current_selector_still_fails_closed_before_legacy_sqlite() {
+    let temp = tempdir();
+    let context = context(temp.path(), DiscoveryPlatform::Linux);
+    write_file(
+        &context.home().join(".kiro/sessions"),
+        b"not a sessions directory",
+    );
+    write_file(
+        &context.home().join(".local/share/kiro-cli/data.sqlite3"),
+        b"legacy",
+    );
+
+    let report = provider_report(&context, CaptureProvider::KiroCli);
+    assert!(report.sources.is_empty());
+    assert_eq!(report.issues.len(), 1);
+    assert_eq!(
+        report.issues[0].kind,
+        DiscoveryIssueKind::SelectorUnreconstructible
     );
 }
 

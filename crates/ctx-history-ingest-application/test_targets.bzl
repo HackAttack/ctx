@@ -18,6 +18,7 @@ _CONTRACT_SUPPORT_DEPS = [
     "@crates//:serde_json",
     "@crates//:tempfile",
     "@crates//:uuid",
+    "@crates//:zstd",
 ]
 
 def history_ingest_binary_contract(name, src, tags = []):

@@ -147,9 +147,13 @@ pub use framing::{
     JsonlRecordFraming,
 };
 use identity::observe_metadata;
+#[cfg(any(test, feature = "test-support"))]
+pub use physical::set_after_standard_zstd_snapshot_hook;
 pub use physical::{
     JsonlPhysicalDigest, JsonlPhysicalEncoding, JsonlPhysicalRecord, JsonlPhysicalStream,
-    JsonlPhysicalStreamPosition,
+    JsonlPhysicalStreamPosition, MAX_STANDARD_ZSTD_COMPRESSED_BYTES,
+    MAX_STANDARD_ZSTD_DECOMPRESSED_BYTES, MAX_STANDARD_ZSTD_PARALLEL_STREAMS,
+    MAX_STANDARD_ZSTD_TEMP_BYTES_PER_LEAF,
 };
 use revalidation::hash_prefix;
 pub use revalidation::revalidate_frozen_prefix;
@@ -237,6 +241,7 @@ struct JsonlReaderFramingOptions<'a> {
     deferred_append_eof_sha256: Option<Option<[u8; 32]>>,
     frozen_observation: Option<&'a JsonlFileObservation>,
     direct_append: bool,
+    route_resources: Option<&'a ctx_history_capture_runtime::SourceBackedRouteResources>,
 }
 
 pub enum JsonlSemanticPreflightMode {

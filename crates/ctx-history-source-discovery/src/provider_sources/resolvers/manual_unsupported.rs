@@ -20,11 +20,9 @@ use super::{
     source_from_parts_with_data_root, unsupported_source, PathPresence,
 };
 
-const QODER_DIRECT_UNSUPPORTED: &str =
-    "Qoder direct SDK JSONL history without a transcript directory is detected but unsupported";
-const MUX_ARCHIVE_UNSUPPORTED: &str = "Mux chat-archive.jsonl history is detected but unsupported";
 const CLINE_CURRENT_UNSUPPORTED: &str =
-    "current Cline SDK session history is detected but unsupported";
+    "split Cline SDK roots are unsupported because ctx requires the common data root to bind the SDK catalog safely";
+const CLINE_SDK_FORMAT: &str = "cline_sdk_session_store";
 const MANUAL_SELECTOR_REASON: &str =
     "the provider selector cannot be safely reconstructed; use an exact --path";
 const UNSAFE_SELECTED_PATH_REASON: &str =
@@ -159,36 +157,25 @@ fn resolve_qoder(
     }
     if default_supported_platform(context) {
         let projects = context.home().join(".qoder").join("projects");
-        let (legacy_state, direct_sdk_history) = inspect_qoder_projects(&projects);
+        let state = inspect_qoder_projects(&projects);
         push_selected_source(
             &mut report,
-            native_source(
-                spec,
-                projects.clone(),
-                "qoder_transcript_jsonl_tree",
-                legacy_state,
-            ),
+            native_source(spec, projects, "qoder_transcript_jsonl_tree", state),
         );
-        if direct_sdk_history {
-            push_selected_source(
-                &mut report,
-                unsupported_source(spec, projects, QODER_DIRECT_UNSUPPORTED),
-            );
-        }
     }
 
     report
 }
 
-fn inspect_qoder_projects(projects: &Path) -> (ProbeState, bool) {
+fn inspect_qoder_projects(projects: &Path) -> ProbeState {
     match safe_path_kind(projects) {
-        SafePathKind::Missing => return (ProbeState::Missing, false),
+        SafePathKind::Missing => return ProbeState::Missing,
         SafePathKind::Directory => {}
-        SafePathKind::File | SafePathKind::Unsafe => return (ProbeState::Unknown, false),
+        SafePathKind::File | SafePathKind::Unsafe => return ProbeState::Unknown,
     }
     let buckets = match direct_entries(projects) {
         Ok(entries) => entries,
-        Err(_) => return (ProbeState::Unknown, false),
+        Err(_) => return ProbeState::Unknown,
     };
     let mut legacy = false;
     let mut direct = false;
@@ -198,7 +185,7 @@ fn inspect_qoder_projects(projects: &Path) -> (ProbeState, bool) {
         }
         let entries = match direct_entries(&bucket) {
             Ok(entries) => entries,
-            Err(_) => return (ProbeState::Unknown, direct),
+            Err(_) => return ProbeState::Unknown,
         };
         direct |= entries.iter().any(|path| {
             has_extension(path, "jsonl") && matches!(safe_path_kind(path), SafePathKind::File)
@@ -210,24 +197,21 @@ fn inspect_qoder_projects(projects: &Path) -> (ProbeState, bool) {
             SafePathKind::Directory => {
                 let files = match direct_entries(&transcript) {
                     Ok(entries) => entries,
-                    Err(_) => return (ProbeState::Unknown, direct),
+                    Err(_) => return ProbeState::Unknown,
                 };
                 legacy |= files.iter().any(|path| {
                     has_extension(path, "jsonl")
                         && matches!(safe_path_kind(path), SafePathKind::File)
                 });
             }
-            SafePathKind::File | SafePathKind::Unsafe => return (ProbeState::Unknown, direct),
+            SafePathKind::File | SafePathKind::Unsafe => return ProbeState::Unknown,
         }
     }
-    (
-        if legacy {
-            ProbeState::Available
-        } else {
-            ProbeState::Empty
-        },
-        direct,
-    )
+    if legacy || direct {
+        ProbeState::Available
+    } else {
+        ProbeState::Empty
+    }
 }
 
 fn resolve_firebender(
@@ -384,17 +368,11 @@ fn resolve_mux(
         return report;
     };
     let sessions = root.join("sessions");
-    let (state, archive) = inspect_mux_sessions(&sessions);
+    let state = inspect_mux_sessions(&sessions);
     push_selected_source(
         &mut report,
-        native_source(spec, sessions.clone(), "mux_session_jsonl_tree", state),
+        native_source(spec, sessions, "mux_session_jsonl_tree", state),
     );
-    if archive {
-        push_selected_source(
-            &mut report,
-            unsupported_source(spec, sessions, MUX_ARCHIVE_UNSUPPORTED),
-        );
-    }
     report
 }
 
@@ -431,11 +409,11 @@ fn raw_env_path(context: &DiscoveryContext, name: &str, trim: bool) -> EnvPath {
     }
 }
 
-fn inspect_mux_sessions(path: &Path) -> (ProbeState, bool) {
+fn inspect_mux_sessions(path: &Path) -> ProbeState {
     match safe_path_kind(path) {
-        SafePathKind::Missing => return (ProbeState::Missing, false),
+        SafePathKind::Missing => return ProbeState::Missing,
         SafePathKind::Directory => {}
-        SafePathKind::File | SafePathKind::Unsafe => return (ProbeState::Unknown, false),
+        SafePathKind::File | SafePathKind::Unsafe => return ProbeState::Unknown,
     }
     let mut stack = vec![(path.to_path_buf(), 0usize)];
     let mut examined = 0usize;
@@ -444,11 +422,11 @@ fn inspect_mux_sessions(path: &Path) -> (ProbeState, bool) {
     while let Some((directory, depth)) = stack.pop() {
         let entries = match direct_entries(&directory) {
             Ok(entries) => entries,
-            Err(_) => return (ProbeState::Unknown, archive),
+            Err(_) => return ProbeState::Unknown,
         };
         examined = examined.saturating_add(entries.len());
         if examined > MAX_DIRECT_DIRECTORY_ENTRIES {
-            return (ProbeState::Unknown, archive);
+            return ProbeState::Unknown;
         }
         for entry in entries.into_iter().rev() {
             match safe_path_kind(&entry) {
@@ -462,14 +440,11 @@ fn inspect_mux_sessions(path: &Path) -> (ProbeState, bool) {
             }
         }
     }
-    (
-        if active {
-            ProbeState::Available
-        } else {
-            ProbeState::Empty
-        },
-        archive,
-    )
+    if active || archive {
+        ProbeState::Available
+    } else {
+        ProbeState::Empty
+    }
 }
 
 fn resolve_cline(
@@ -489,10 +464,23 @@ fn resolve_cline(
                 inspect_cline_legacy(path),
             ),
         );
+        if has_safe_cline_sdk_catalog(path) {
+            push_selected_source(
+                &mut report,
+                source_from_parts_with_data_root(
+                    _probes,
+                    context.data_root(),
+                    spec,
+                    path.clone(),
+                    CLINE_SDK_FORMAT,
+                    ProviderSourceKind::NativeHistory,
+                ),
+            );
+        }
     }
 
     add_cline_microsoft_host_roots(context, spec, &mut report);
-    add_current_cline_detections(context, spec, selected_legacy.as_deref(), &mut report);
+    add_split_cline_sdk_detections(context, spec, &mut report);
     report
 }
 
@@ -672,19 +660,19 @@ fn is_cline_legacy_marker(path: &Path) -> bool {
     ) && matches!(safe_path_kind(path), SafePathKind::File)
 }
 
-fn add_current_cline_detections(
+fn has_safe_cline_sdk_catalog(root: &Path) -> bool {
+    is_regular_file_named(
+        &root.join("sessions/sessions.index.json"),
+        "sessions.index.json",
+    ) || is_regular_file_named(&root.join("db/sessions.db"), "sessions.db")
+}
+
+fn add_split_cline_sdk_detections(
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
-    legacy_root: Option<&Path>,
     report: &mut DiscoveryReport,
 ) {
-    let session_root = cline_current_root(
-        context,
-        spec,
-        report,
-        "CLINE_SESSION_DATA_DIR",
-        legacy_root.map(|root| root.join("sessions")),
-    );
+    let session_root = cline_current_root(context, spec, report, "CLINE_SESSION_DATA_DIR", None);
     if let Some(path) = session_root.filter(|path| has_current_cline_session_shape(path)) {
         push_selected_source(
             report,
@@ -692,13 +680,7 @@ fn add_current_cline_detections(
         );
     }
 
-    let db_root = cline_current_root(
-        context,
-        spec,
-        report,
-        "CLINE_DB_DATA_DIR",
-        legacy_root.map(|root| root.join("db")),
-    );
+    let db_root = cline_current_root(context, spec, report, "CLINE_DB_DATA_DIR", None);
     if let Some(path) = db_root {
         let db = path.join("sessions.db");
         if is_regular_file_named(&db, "sessions.db") {

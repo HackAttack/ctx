@@ -83,6 +83,16 @@ fn active_source_family_contract_documented_storage_families_cover_routed_provid
                     .iter()
                     .any(|candidate| candidate.provider == route.provider && candidate.automatic)
         })
+        .filter(|route| {
+            // A selected-format alias may give a coexisting store its own route
+            // authority while retaining an already documented storage format.
+            route.source_format == route.certified_source_format
+                || !routes.iter().any(|candidate| {
+                    candidate.provider == route.provider
+                        && candidate.automatic
+                        && candidate.source_format == route.certified_source_format
+                })
+        })
         .map(|route| route.source_format.to_owned())
         .collect::<BTreeSet<_>>();
     assert_eq!(

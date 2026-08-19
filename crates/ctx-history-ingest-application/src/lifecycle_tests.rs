@@ -111,6 +111,7 @@ impl CaptureAdmissionPort for FakeHost {
     fn explicit_source(
         &self,
         _: &Path,
+        _: &Path,
         _: Option<CaptureProvider>,
         _: bool,
     ) -> Result<ProviderSource> {

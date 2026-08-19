@@ -222,6 +222,19 @@ pub fn provider_source_for_path(provider: CaptureProvider, path: PathBuf) -> Pro
     ctx_history_source_discovery::provider_source_for_path(&BUILTIN_PROVIDER_PROBES, provider, path)
 }
 
+pub fn provider_source_for_path_with_data_root(
+    provider: CaptureProvider,
+    path: PathBuf,
+    data_root: &Path,
+) -> ProviderSource {
+    ctx_history_source_discovery::provider_source_for_path_with_data_root(
+        &BUILTIN_PROVIDER_PROBES,
+        provider,
+        path,
+        data_root,
+    )
+}
+
 pub fn provider_source_spec(provider: CaptureProvider) -> Option<&'static ProviderSourceSpec> {
     ctx_history_source_discovery::provider_source_spec(provider)
 }

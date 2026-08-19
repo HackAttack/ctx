@@ -43,14 +43,15 @@ impl CodexNativeScanner {
             CodexRecordClass::SessionMeta => {
                 self.counters.typed_json_parses = self.counters.typed_json_parses.saturating_add(1);
                 match parse_session_meta(record) {
-                    Some(owner) if self.owner.is_none() => {
+                    Some(owner) => {
                         let owner = validate_catalog_owner(&self.source, owner)?;
-                        self.owner = Some(owner);
-                        return Ok(CodexRecordProjection::default());
-                    }
-                    Some(_) => {
-                        self.counters.ignored_records =
-                            self.counters.ignored_records.saturating_add(1);
+                        if let Some(admitted_owner) = self.owner.as_ref() {
+                            validate_repeated_owner(admitted_owner, &owner)?;
+                            self.counters.ignored_records =
+                                self.counters.ignored_records.saturating_add(1);
+                        } else {
+                            self.owner = Some(owner);
+                        }
                     }
                     None => self.reject(false),
                 }

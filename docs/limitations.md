@@ -6,7 +6,10 @@ shipped.
 
 ## Provider Coverage
 
-- Codex local import is supported for documented local JSONL sources.
+- Codex local import is supported for documented raw `.jsonl` and standard
+  Zstandard `.jsonl.zst` rollout sources. Compressed rollout admission retains
+  at most 256 MiB of combined compressed snapshot plus decoded spool per leaf,
+  and all parallel leaves share the 1 GiB route scratch ceiling.
 - Pi local import is supported when matching local session JSONL files exist
   under `~/.pi/agent/sessions`, or when an explicit Pi session JSONL file is
   passed with `--path`.
@@ -27,9 +30,9 @@ shipped.
 - One-shot flags, API paths, moved roots, past launch directories, and container
   host mappings generally require exact `--path`. Manual selection bypasses
   discovery precedence, not parser or path-safety validation.
-- Current Kiro ACP/v3, Qoder direct SDK JSONL, OpenClaw SQLite, OpenHands CLI
-  events, Mux archive JSONL, and Cline SDK stores are detected but unsupported;
-  Codex compressed JSONL is unsupported only when encountered.
+- Current Kiro ACP/v3 remains detected but unsupported. Provider selectors that
+  cannot be safely reconstructed, including unsafe Qoder SDK selections, require
+  exact `--path`.
 
 ## Import Semantics
 

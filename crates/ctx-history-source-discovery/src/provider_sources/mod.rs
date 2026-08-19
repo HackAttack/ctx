@@ -11,6 +11,9 @@ mod warp;
 
 use std::path::Path;
 
+/// Discovery-only route format for independently owned current CLI stores.
+pub const OPENHANDS_CURRENT_CLI_SOURCE_FORMAT: &str = "openhands_cli_file_events";
+
 /// The Cursor-specific result shape discovery needs without taking ownership of
 /// Cursor's inventory implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +71,8 @@ pub use discovery::{
     discover_provider_sources_for_provider_with_projects, discover_provider_sources_report,
     discover_provider_sources_with_context, discover_provider_sources_with_context_and_work_budget,
     discover_provider_sources_with_projects, provider_source_for_path,
-    validate_provider_source_roots_outside_data_root, ProviderSourceRootBoundaryError,
+    provider_source_for_path_with_data_root, validate_provider_source_roots_outside_data_root,
+    ProviderSourceRootBoundaryError,
 };
 pub use lingma::{
     discover_lingma_inventory_with_authority, resolve_lingma_discovery_authority,
@@ -78,8 +82,8 @@ pub use lingma::{
 
 pub use resolvers::PathPresence;
 pub use resolvers::{
-    path_presence, CrushDiscoveredProjectInventory, CrushProjectInventorySelector,
-    CrushProjectInventorySelectorError,
+    path_presence, resolve_openhands_conversations_root, CrushDiscoveredProjectInventory,
+    CrushProjectInventorySelector, CrushProjectInventorySelectorError,
 };
 pub use specs::{provider_source_spec, provider_source_specs};
 pub use types::{

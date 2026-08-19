@@ -374,7 +374,7 @@ fn explicit_catalog_admission_uses_only_its_exact_path_authority() {
     let runtime = scoped_runtime(temp.path());
     let source_path = temp.path().join("requested-history.jsonl");
     fs::write(&source_path, "{}\n").unwrap();
-    let source = crate::explicit_source_for_path(&source_path, None, true).unwrap();
+    let source = crate::explicit_source_for_path(&data_root, &source_path, None, true).unwrap();
     let authority = crate::upsert_explicit_source(&data_root, &source)
         .unwrap()
         .authority;
@@ -410,7 +410,7 @@ fn explicit_catalog_admission_does_not_inherit_running_all_route_work() {
     let runtime = scoped_runtime(temp.path());
     let source_path = temp.path().join("requested-history.jsonl");
     fs::write(&source_path, "{}\n").unwrap();
-    let source = crate::explicit_source_for_path(&source_path, None, true).unwrap();
+    let source = crate::explicit_source_for_path(&data_root, &source_path, None, true).unwrap();
     let authority = crate::upsert_explicit_source(&data_root, &source)
         .unwrap()
         .authority;

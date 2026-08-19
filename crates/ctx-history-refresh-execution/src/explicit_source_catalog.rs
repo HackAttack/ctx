@@ -10,17 +10,19 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
+#[cfg(test)]
+use ctx_history_capture::provider_source_for_path;
 use ctx_history_capture::{
     automatic_source_backed_route_identity, explicit_source_catalog_lineage,
-    provider_source_for_path, register_custom_history_source_backed_route,
+    provider_source_for_path_with_data_root, register_custom_history_source_backed_route,
     register_forgecode_explicit_source_backed_route, register_goose_source_backed_route,
     register_hermes_explicit_source_backed_route,
     register_landed_source_backed_route_with_data_root, register_lingma_source_backed_route,
-    register_nanoclaw_source_backed_route_with_base_sources, register_warp_source_backed_route,
-    source_backed_route_constructor, source_backed_route_inventory,
-    validate_provider_source_roots_outside_data_root, SourceBackedAutomaticRegistryBuild,
-    SourceBackedProviderRegistry, SourceBackedRouteConstructor, SourceBackedRouteError,
-    SourceBackedRouteErrorKind, SourceBackedRouteSelection,
+    register_nanoclaw_source_backed_route_with_base_sources, register_shelley_source_backed_route,
+    register_warp_source_backed_route, source_backed_route_constructor,
+    source_backed_route_inventory, validate_provider_source_roots_outside_data_root,
+    SourceBackedAutomaticRegistryBuild, SourceBackedProviderRegistry, SourceBackedRouteConstructor,
+    SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteSelection,
 };
 use ctx_history_capture_model::{
     DiscoveryReport, ProviderCatalogSupport, ProviderImportSupport, ProviderSource,
@@ -76,12 +78,12 @@ impl ExplicitSourceCatalogAuthority {
     /// Derives only the provider inputs named by this request authority.
     /// No provider-wide discovery is performed here.
     #[doc(hidden)]
-    pub fn admission_discovery_report(&self) -> Result<DiscoveryReport> {
+    pub fn admission_discovery_report(&self, data_root: &Path) -> Result<DiscoveryReport> {
         let sources = self
             .entries
             .iter()
             .filter(|entry| entry.enabled)
-            .map(|entry| source_from_catalog_entry(entry, true))
+            .map(|entry| source_from_catalog_entry(data_root, entry, true))
             .collect::<Result<Vec<_>>>()?;
         Ok(DiscoveryReport {
             sources,
@@ -265,6 +267,7 @@ struct ExplicitSourceCatalogSnapshot {
 }
 
 pub fn explicit_source_for_path(
+    data_root: &Path,
     path: &Path,
     provider: Option<CaptureProvider>,
     custom_history_jsonl: bool,
@@ -280,13 +283,17 @@ pub fn explicit_source_for_path(
     let canonical = fs::canonicalize(path)
         .with_context(|| format!("approve explicit source path {}", path.display()))?;
     validate_approved_path(&canonical)?;
+    ctx_history_platform::platform_security::validate_provider_source_outside_data_root(
+        data_root, &canonical,
+    )
+    .context("validate explicit provider root before bounded SQLite admission")?;
 
     let source = if custom_history_jsonl {
         custom_provider_source(canonical, true)?
     } else {
         let provider = provider
             .context("ctx import --path requires --provider for native provider history")?;
-        provider_source_for_path(provider, canonical)
+        provider_source_for_path_with_data_root(provider, canonical, data_root)
     };
     // Return unsupported sources to reporting callers without making them
     // catalogable. Every catalog mutation validates the source again below.
@@ -422,7 +429,7 @@ fn validate_explicit_source_catalog_snapshot_roots(
     snapshot: &ExplicitSourceCatalogSnapshot,
 ) -> Result<()> {
     for entry in snapshot.entries.iter().filter(|entry| entry.enabled) {
-        let source = source_from_catalog_entry(entry, true)?;
+        let source = source_from_catalog_entry(data_root, entry, true)?;
         validate_explicit_source_root(data_root, &source)?;
     }
     Ok(())
@@ -517,9 +524,12 @@ fn register_explicit_source_catalog_snapshot_routes(
             .routes()
             .filter_map(|route| route.route_identity.clone())
             .collect::<BTreeSet<_>>();
-        let source = source_from_catalog_entry(entry, true)?;
+        let source = source_from_catalog_entry(data_root, entry, true)?;
         validate_explicit_source_root(data_root, &source)?;
-        let automatic_route_retirement = if source.provider == CaptureProvider::NanoClaw {
+        let automatic_route_retirement = if matches!(
+            source.provider,
+            CaptureProvider::NanoClaw | CaptureProvider::Shelley
+        ) {
             let identity = automatic_source_backed_route_identity(&source)?;
             base_generation
                 .is_some_and(|index| index.manifest().source_route(&identity).is_some())
@@ -666,10 +676,27 @@ fn register_enabled_catalog_route(
             "{} explicit source format requires provider discovery authority and cannot be cataloged by path; no legacy import fallback was used",
             source.provider.as_str()
         ),
-        SourceBackedRouteConstructor::ExactCwd => bail!(
-            "{} does not expose an explicit source-backed adapter; no legacy import fallback was used",
-            source.provider.as_str()
-        ),
+        SourceBackedRouteConstructor::ExactCwd => match source.provider {
+            CaptureProvider::Shelley => {
+                let exact_cwd = source.path.parent().map(Path::to_path_buf).ok_or_else(|| {
+                    anyhow!(
+                        "Shelley explicit source {} has no exact parent directory",
+                        source.path.display()
+                    )
+                })?;
+                register_shelley_source_backed_route(
+                    registry,
+                    source,
+                    SourceBackedRouteSelection::ExplicitManual,
+                    data_root,
+                    exact_cwd,
+                )?;
+            }
+            provider => bail!(
+                "{} does not expose an explicit source-backed adapter; no legacy import fallback was used",
+                provider.as_str()
+            ),
+        },
         SourceBackedRouteConstructor::NamedSurface => {
             register_warp_source_backed_route(
                 registry,
@@ -722,6 +749,8 @@ fn validate_catalog_registration_support(source: &ProviderSource) -> Result<()> 
             "{} explicit source format requires provider discovery authority and cannot be cataloged by path; no legacy import fallback was used",
             source.provider.as_str()
         ),
+        Some(SourceBackedRouteConstructor::ExactCwd)
+            if source.provider == CaptureProvider::Shelley => Ok(()),
         Some(SourceBackedRouteConstructor::ExactCwd) => bail!(
             "{} does not expose an explicit source-backed adapter; no legacy import fallback was used",
             source.provider.as_str()
@@ -786,6 +815,7 @@ fn route_metadata(
 }
 
 fn source_from_catalog_entry(
+    data_root: &Path,
     entry: &CatalogEntry,
     require_available: bool,
 ) -> Result<ProviderSource> {
@@ -805,7 +835,8 @@ fn source_from_catalog_entry(
         return custom_provider_source(entry.path.clone(), exists);
     }
     if exists {
-        let observed = provider_source_for_path(provider, entry.path.clone());
+        let observed =
+            provider_source_for_path_with_data_root(provider, entry.path.clone(), data_root);
         if observed.source_format != metadata.source_format {
             bail!(
                 "explicit catalog source {} changed format from `{}` to `{}`",
