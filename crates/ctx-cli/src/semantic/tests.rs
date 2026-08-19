@@ -8,6 +8,21 @@ use ctx_terminal::{RenderContext, StreamKind, TestContext};
 
 use super::*;
 
+#[test]
+fn companion_maintenance_wake_coalesces_without_losing_a_publication() {
+    let state = AtomicU8::new(0);
+
+    assert!(request_companion_maintenance_worker(&state));
+    assert!(!request_companion_maintenance_worker(&state));
+    take_companion_maintenance_request(&state);
+
+    assert!(!request_companion_maintenance_worker(&state));
+    assert!(companion_maintenance_should_continue(&state));
+    take_companion_maintenance_request(&state);
+    assert!(!companion_maintenance_should_continue(&state));
+    assert_eq!(state.load(Ordering::Acquire), 0);
+}
+
 struct RestoreEnvironment {
     name: &'static str,
     previous: Option<OsString>,

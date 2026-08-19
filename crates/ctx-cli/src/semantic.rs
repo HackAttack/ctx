@@ -1,6 +1,6 @@
 //! Final-binary composition for daemon and semantic adapters.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::{borrow::Cow, io::Write, path::Path, time::Duration};
 
 use anyhow::Result;
@@ -29,7 +29,52 @@ pub(crate) use ctx_daemon_cli::{
 struct CtxDaemonCliHost;
 
 static HOST: CtxDaemonCliHost = CtxDaemonCliHost;
-static COMPANION_MAINTENANCE_WAKE_ACTIVE: AtomicBool = AtomicBool::new(false);
+const COMPANION_MAINTENANCE_WAKE_RUNNING: u8 = 1;
+const COMPANION_MAINTENANCE_WAKE_PENDING: u8 = 2;
+static COMPANION_MAINTENANCE_WAKE_STATE: AtomicU8 = AtomicU8::new(0);
+
+fn request_companion_maintenance_worker(state: &AtomicU8) -> bool {
+    let mut observed = state.fetch_or(COMPANION_MAINTENANCE_WAKE_PENDING, Ordering::AcqRel)
+        | COMPANION_MAINTENANCE_WAKE_PENDING;
+    loop {
+        if observed & COMPANION_MAINTENANCE_WAKE_RUNNING != 0 {
+            return false;
+        }
+        match state.compare_exchange_weak(
+            observed,
+            observed | COMPANION_MAINTENANCE_WAKE_RUNNING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(actual) => observed = actual,
+        }
+    }
+}
+
+fn take_companion_maintenance_request(state: &AtomicU8) {
+    state.fetch_and(!COMPANION_MAINTENANCE_WAKE_PENDING, Ordering::AcqRel);
+}
+
+fn companion_maintenance_should_continue(state: &AtomicU8) -> bool {
+    loop {
+        let observed = state.load(Ordering::Acquire);
+        if observed & COMPANION_MAINTENANCE_WAKE_PENDING != 0 {
+            return true;
+        }
+        if state
+            .compare_exchange_weak(
+                COMPANION_MAINTENANCE_WAKE_RUNNING,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            return false;
+        }
+    }
+}
 
 pub(crate) fn initialize() -> Result<()> {
     ctx_daemon_cli::install_host(&HOST)
@@ -298,19 +343,22 @@ impl ctx_daemon_cli::DaemonCliHost for CtxDaemonCliHost {
         data_root: &Path,
         _publication: &ctx_daemon_cli::CoreGenerationPublished,
     ) -> Result<()> {
-        if COMPANION_MAINTENANCE_WAKE_ACTIVE.swap(true, Ordering::AcqRel) {
+        if !request_companion_maintenance_worker(&COMPANION_MAINTENANCE_WAKE_STATE) {
             return Ok(());
         }
         let data_root = data_root.to_path_buf();
         if std::thread::Builder::new()
             .name("ctx-pro-maintenance-wake".to_owned())
-            .spawn(move || {
+            .spawn(move || loop {
+                take_companion_maintenance_request(&COMPANION_MAINTENANCE_WAKE_STATE);
                 let _ = crate::companion::wake_verified_private_maintenance(&data_root);
-                COMPANION_MAINTENANCE_WAKE_ACTIVE.store(false, Ordering::Release);
+                if !companion_maintenance_should_continue(&COMPANION_MAINTENANCE_WAKE_STATE) {
+                    break;
+                }
             })
             .is_err()
         {
-            COMPANION_MAINTENANCE_WAKE_ACTIVE.store(false, Ordering::Release);
+            COMPANION_MAINTENANCE_WAKE_STATE.store(0, Ordering::Release);
         }
         Ok(())
     }
