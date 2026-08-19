@@ -1,3 +1,4 @@
+mod callout;
 mod diagnostic;
 mod empty_state;
 mod evidence;
@@ -10,6 +11,7 @@ mod refresh_progress;
 mod section;
 mod table;
 
+pub use callout::{callout, Callout};
 pub use diagnostic::{diagnostic, Diagnostic, DiagnosticLevel};
 pub use empty_state::{empty_state, EmptyState};
 pub use evidence::{evidence_list, Evidence};
