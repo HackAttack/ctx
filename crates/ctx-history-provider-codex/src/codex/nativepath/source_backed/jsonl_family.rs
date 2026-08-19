@@ -9,9 +9,9 @@ use crate::{
             JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyExecutionIo,
             JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
             JsonlFamilyMembershipObservation, JsonlFamilyOpenedMember, JsonlFamilyProjectionMode,
-            JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor, JsonlFamilySemanticPage,
-            JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary, JsonlFamilyWorkerContext,
-            JsonlFileObservation, JsonlRecordFraming,
+            JsonlFamilyRejectedLeaf, JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor,
+            JsonlFamilySemanticPage, JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary,
+            JsonlFamilyWorkerContext, JsonlFileObservation, JsonlRecordFraming,
         },
         SourceBackedRouteErrorKind,
     },
@@ -39,6 +39,53 @@ fn carried_or_observe_generation_source_capability_v0(
         Some(observation) => Ok(observation.clone()),
         None => observe_generation_source_capability_v0(source),
     }
+}
+
+#[derive(serde::Serialize)]
+struct CodexRejectedOwnerProofV0<'a> {
+    schema_version: u32,
+    expected_native_session_id: &'a str,
+    observation: &'a CodexFileObservation,
+    reason: &'static str,
+}
+
+fn generation_source_owner_is_admissible_v0(
+    source: &CodexCatalogSource,
+    expected_native_session_id: &str,
+) -> Result<bool> {
+    let opened = reopen_codex_source_capability(source)?;
+    let observed = match crate::provider::codex::catalog::probe_codex_native_session_id(
+        &source.source_path,
+        &opened,
+        source.catalog_observation.len,
+    ) {
+        Ok(observed) => observed,
+        Err(CaptureError::InvalidPayload(_)) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    opened.revalidate_same_object()?;
+    Ok(observed.as_deref() == Some(expected_native_session_id))
+}
+
+fn rejected_owner_leaf_v0(
+    source: &CodexCatalogSource,
+    authority_path: PathBuf,
+    expected_native_session_id: &str,
+) -> Result<JsonlFamilyRejectedLeaf> {
+    let proof = CodexRejectedOwnerProofV0 {
+        schema_version: 1,
+        expected_native_session_id,
+        observation: &source.catalog_observation,
+        reason: "missing or conflicting Codex session owner",
+    };
+    let proof = TypedKey::bytes(serde_json::to_vec(&proof)?)
+        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
+    Ok(JsonlFamilyRejectedLeaf::bind_observed(
+        source.source_path.clone(),
+        authority_path,
+        proof,
+        1,
+    ))
 }
 
 #[derive(Default)]
@@ -264,6 +311,7 @@ impl<B: ProviderRuntimeBinding> CodexSessionJsonlFamilyAdapterV0<B> {
         ordered_sources.sort_by_key(|index| plans[*index].1.identity().digest());
         let mut authorities = BTreeMap::<PathBuf, Arc<ProviderSourceRoot>>::new();
         let mut leaves = Vec::with_capacity(plans.len());
+        let mut rejected_leaves = Vec::new();
         for index in ordered_sources {
             let (source, source_key, native_session_id) = plans.get(index).ok_or(
                 CaptureError::SystemInvariant("Codex generation source ordering changed"),
@@ -279,15 +327,27 @@ impl<B: ProviderRuntimeBinding> CodexSessionJsonlFamilyAdapterV0<B> {
                         "Codex catalog source has no authority path",
                     ))?;
             let observation = carried_or_observe_generation_source_capability_v0(source)?;
-            leaves.push(JsonlFamilyLeaf::bind_frozen_observed(
-                source_key.clone(),
-                source.source_path.clone(),
-                Arc::clone(&authority),
-                authority_path,
-                TypedKey::utf8(native_session_id)
-                    .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?,
-                observation,
-            ));
+            let owner_is_admissible =
+                crate::provider::codex::catalog::is_codex_compressed_session_rollout_path(
+                    &source.source_path,
+                ) || generation_source_owner_is_admissible_v0(source, native_session_id)?;
+            if owner_is_admissible {
+                leaves.push(JsonlFamilyLeaf::bind_frozen_observed(
+                    source_key.clone(),
+                    source.source_path.clone(),
+                    Arc::clone(&authority),
+                    authority_path,
+                    TypedKey::utf8(native_session_id)
+                        .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?,
+                    observation,
+                ));
+            } else {
+                rejected_leaves.push(rejected_owner_leaf_v0(
+                    source,
+                    authority_path,
+                    native_session_id,
+                )?);
+            }
             authorities
                 .entry(authority.named_path().to_path_buf())
                 .or_insert(authority);
@@ -298,11 +358,12 @@ impl<B: ProviderRuntimeBinding> CodexSessionJsonlFamilyAdapterV0<B> {
                 authorities.insert(authority.named_path().to_path_buf(), authority);
             }
         }
-        let inventory = JsonlFamilyInventory::present_multi(
+        let inventory = JsonlFamilyInventory::present_multi_with_rejected(
             CaptureProvider::Codex,
             route_root,
             authorities.into_values().collect(),
             leaves,
+            rejected_leaves,
         )?;
         install_prepared_state_v0(&self.state, &plans, completed_stage)?;
         Ok(inventory)

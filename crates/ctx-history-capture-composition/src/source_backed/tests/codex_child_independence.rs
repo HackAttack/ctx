@@ -646,6 +646,62 @@ fn source_snapshot(
 }
 
 #[test]
+fn malformed_codex_owner_leaf_is_quarantined_without_hiding_valid_neighbor() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions-malformed-owner-neighbor");
+    let index_root = temp.path().join("index-malformed-owner-neighbor");
+    fs::create_dir_all(&sessions).unwrap();
+    let valid_session_id = "019fb000-0000-7000-8000-000000000060";
+    let malformed_session_id = "019fb000-0000-7000-8000-000000000061";
+    let conflicting_session_id = "019fb000-0000-7000-8000-000000000062";
+    let marker = "validneighborretainedmarker";
+    write_session(
+        &sessions,
+        valid_session_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        [message(marker)],
+    );
+
+    let mut malformed = serde_json::to_vec(&session_meta(
+        malformed_session_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+    ))
+    .unwrap();
+    malformed.extend(
+        serde_json::to_vec(&session_meta(
+            conflicting_session_id,
+            ProviderNativeSessionRelationship::Root,
+            None,
+        ))
+        .unwrap(),
+    );
+    malformed.push(b'\n');
+    fs::write(session_path(&sessions, malformed_session_id), malformed).unwrap();
+
+    let registry = register_tree(&[&sessions]);
+    let receipt =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(receipt.failed_routes.is_empty());
+    assert!(receipt.logical_source_failures.is_empty());
+
+    let index = VerifiedIndex::open(&index_root).unwrap();
+    assert!(index
+        .search_event_candidates(marker, 32)
+        .unwrap()
+        .into_iter()
+        .any(|candidate| candidate.event.provider_session_id.as_deref() == Some(valid_session_id)));
+    assert!(index.manifest().sources.iter().all(|certificate| {
+        !matches!(
+            certificate.observation().source().anchor(),
+            SourceAnchor::ProviderNative { key: TypedKey::Utf8(value), .. }
+                if value == malformed_session_id || value == conflicting_session_id
+        )
+    }));
+}
+
+#[test]
 fn codex_retrieval_exclusion_survives_raw_append_hydration_and_keeps_ids_stable() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions-retrieval-exclusion");
