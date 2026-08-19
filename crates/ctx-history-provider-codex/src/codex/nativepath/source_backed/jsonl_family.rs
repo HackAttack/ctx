@@ -18,6 +18,7 @@ use crate::{
     Result,
 };
 use ctx_history_jsonl::{JsonlPhysicalEncoding, MAX_STANDARD_ZSTD_PARALLEL_STREAMS};
+use sha2::{Digest, Sha256};
 
 fn observe_generation_source_capability_v0(
     source: &CodexCatalogSource,
@@ -56,7 +57,10 @@ fn generation_source_owner_is_admissible_v0(
 ) -> Result<bool> {
     // A zero-byte rollout has no records to attribute. Preserve the existing
     // ignored-file behavior for partial writes while quarantining any
-    // nonempty source whose owner is absent or conflicting.
+    // nonempty source whose bounded ownership prefix is absent or conflicting.
+    //
+    // This validation must precede streaming: NativePath may otherwise stage
+    // pages before a later session_meta proves ownership ambiguous.
     if source.catalog_observation.len == 0 {
         return Ok(true);
     }
@@ -76,22 +80,34 @@ fn generation_source_owner_is_admissible_v0(
 
 fn rejected_owner_leaf_v0(
     source: &CodexCatalogSource,
+    source_key: &SourceKey,
     authority_path: PathBuf,
+    observation: JsonlFileObservation,
     expected_native_session_id: &str,
 ) -> Result<JsonlFamilyRejectedLeaf> {
-    rejected_catalog_leaf_v0(
+    Ok(rejected_catalog_leaf_v0(
         &source.source_path,
         authority_path,
         &source.catalog_observation,
+        observation,
         Some(expected_native_session_id),
         "missing or conflicting Codex session owner",
+    )?
+    .with_logical_source_failure(
+        codex_quarantined_rollout_source_key(&source.catalog_observation)?,
+        format!(
+            "Codex session ownership is ambiguous or conflicting; quarantined rollout file {}",
+            source.source_path.display()
+        ),
     )
+    .with_quarantined_source(source_key.clone()))
 }
 
 fn rejected_catalog_leaf_v0(
     source_path: &Path,
     authority_path: PathBuf,
     observation: &CodexFileObservation,
+    jsonl_observation: JsonlFileObservation,
     expected_native_session_id: Option<&str>,
     reason: &'static str,
 ) -> Result<JsonlFamilyRejectedLeaf> {
@@ -106,9 +122,27 @@ fn rejected_catalog_leaf_v0(
     Ok(JsonlFamilyRejectedLeaf::bind_observed(
         source_path.to_path_buf(),
         authority_path,
+        jsonl_observation,
         proof,
         1,
     ))
+}
+
+fn codex_quarantined_rollout_source_key(observation: &CodexFileObservation) -> Result<SourceKey> {
+    // This is explicitly a file-observation key, not a claimed Codex session
+    // identity. It cannot connect a quarantined file to another rollout.
+    let observation = serde_json::to_vec(observation)?;
+    let digest = Sha256::digest(observation);
+    Ok(SourceKey::derive_provider_native(
+        CaptureProvider::Codex.as_str(),
+        CODEX_SESSION_SOURCE_FORMAT,
+        CODEX_SOURCE_SCHEMA_VARIANT,
+        1,
+        "codex.quarantined-rollout-file.v1",
+        TypedKey::bytes(digest.to_vec())
+            .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?,
+    )
+    .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?)
 }
 
 #[derive(Default)]
@@ -223,22 +257,35 @@ impl<B: ProviderRuntimeBinding> JsonlFamilySemanticExecutor for CodexSessionSema
     }
 
     fn finish(mut self: Box<Self>) -> Result<JsonlFamilySemanticSummary> {
-        let scan = self
-            .scanner
-            .take()
-            .ok_or(CaptureError::SystemInvariant(
-                "Codex semantic executor lost its scanner",
-            ))?
-            .finish_semantic()?;
+        let scanner = self.scanner.take().ok_or(CaptureError::SystemInvariant(
+            "Codex semantic executor lost its scanner",
+        ))?;
+        let ownership_quarantine = scanner
+            .ownership_quarantined_source()
+            .map(|source| {
+                Ok::<(SourceKey, String), CaptureError>((
+                    codex_quarantined_rollout_source_key(&source.catalog_observation)?,
+                    format!(
+                        "Codex session ownership is ambiguous or conflicting; quarantined rollout file {}",
+                        source.source_path.display()
+                    ),
+                ))
+            })
+            .transpose()?;
+        let scan = scanner.finish_semantic()?;
         let provider_checkpoint = scan
             .checkpoint
             .map(|checkpoint| checkpoint.encode_key().map_err(CaptureError::from))
             .transpose()?;
-        Ok(JsonlFamilySemanticSummary::new(
+        let summary = JsonlFamilySemanticSummary::new(
             scan.counters.retained_records,
             scan.counters.rejected_complete_records,
             provider_checkpoint,
-        ))
+        );
+        Ok(match ownership_quarantine {
+            Some((source, detail)) => summary.with_logical_source_quarantine(source, detail),
+            None => summary,
+        })
     }
 }
 
@@ -338,9 +385,19 @@ impl<B: ProviderRuntimeBinding> CodexSessionJsonlFamilyAdapterV0<B> {
                     &leaf.source_path,
                     leaf.authority_path.clone(),
                     &leaf.observation,
+                    leaf.jsonl_observation.clone(),
                     None,
                     leaf.reason,
                 )
+                .and_then(|rejected| {
+                    Ok(rejected.with_logical_source_failure(
+                        codex_quarantined_rollout_source_key(&leaf.observation)?,
+                        format!(
+                            "Codex session ownership is ambiguous or conflicting; quarantined rollout file {}",
+                            leaf.source_path.display()
+                        ),
+                    ))
+                })
             })
             .collect::<Result<Vec<_>>>()?;
         let mut ordered_sources = (0..plans.len()).collect::<Vec<_>>();
@@ -379,7 +436,9 @@ impl<B: ProviderRuntimeBinding> CodexSessionJsonlFamilyAdapterV0<B> {
             } else {
                 rejected_leaves.push(rejected_owner_leaf_v0(
                     source,
+                    source_key,
                     authority_path,
+                    observation,
                     native_session_id,
                 )?);
             }

@@ -230,6 +230,7 @@ pub(super) struct CodexRejectedCatalogLeafV0 {
     pub(super) source_path: PathBuf,
     pub(super) authority_path: PathBuf,
     pub(super) observation: CodexFileObservation,
+    pub(super) jsonl_observation: JsonlFileObservation,
     pub(super) reason: &'static str,
 }
 
@@ -267,6 +268,7 @@ fn discover_codex_session_tree_metadata_inventory_v0(
                     source_path: leaf.source_path,
                     authority_path: leaf.relative_path,
                     observation: leaf.observation,
+                    jsonl_observation: leaf.jsonl_observation,
                     reason: "missing or conflicting Codex session owner",
                 });
             }

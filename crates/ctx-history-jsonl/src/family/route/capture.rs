@@ -30,6 +30,31 @@ pub(super) fn default_base_source_path<R: JsonlFamilyRuntime>(
     Ok(checkpoint.physical.identity().source_path().clone())
 }
 
+fn rejected_leaf_terminal_proof<R: JsonlFamilyRuntime>(
+    opening: &JsonlFamilyInventory<JsonlRuntimeError<R>>,
+    leaf: &JsonlFamilyRejectedLeaf,
+) -> JsonlResult<JsonlFamilyTerminalProof<JsonlRuntimeError<R>>, JsonlRuntimeError<R>> {
+    let authority = opening
+        .authorities
+        .iter()
+        .find(|authority| {
+            leaf.source_path
+                .strip_prefix(authority.named_path())
+                .is_ok_and(|relative| relative == leaf.authority_path)
+        })
+        .ok_or_else(|| {
+            JsonlRuntimeError::<R>::invalid_payload(
+                "rejected JSONL member lost its retained root authority".to_owned(),
+            )
+        })?;
+    JsonlFamilyTerminalProof::exact_admitted_path(
+        leaf.source_path.clone(),
+        Arc::clone(authority),
+        leaf.authority_path.clone(),
+        &leaf.observation,
+    )
+}
+
 pub fn jsonl_family_driver<R: JsonlFamilyRuntime>(
     adapter: Arc<dyn JsonlFamilyAdapter<Runtime = R>>,
     root: PathBuf,
@@ -53,6 +78,10 @@ pub fn jsonl_family_driver<R: JsonlFamilyRuntime>(
                     !resident.ownership_initialized
                         || resident
                             .owned_sources
+                            .get(&source.exact_descriptor_digest())
+                            .is_some_and(|owned| owned.exact_descriptor_eq(source))
+                        || resident
+                            .quarantined_sources
                             .get(&source.exact_descriptor_digest())
                             .is_some_and(|owned| owned.exact_descriptor_eq(source))
                 })
@@ -110,29 +139,92 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
             "provider JSONL root is unavailable",
         ));
     }
-    if opening.leaves().is_empty() && !opening.rejected_leaves().is_empty() {
-        let rejected_records =
-            opening
-                .rejected_leaves()
-                .iter()
-                .try_fold(0_u64, |total, leaf| {
-                    total.checked_add(leaf.rejected_records).ok_or_else(|| {
-                        SourceBackedRouteError::new(
-                            SourceBackedRouteErrorKind::Internal,
-                            "provider JSONL rejected-record count overflow",
-                        )
-                    })
-                })?;
+    let route_fatal_rejected = opening
+        .rejected_leaves()
+        .iter()
+        .filter(|leaf| leaf.logical_source_failure.is_none())
+        .collect::<Vec<_>>();
+    if opening.leaves().is_empty() && !route_fatal_rejected.is_empty() {
+        let rejected_records = route_fatal_rejected.iter().try_fold(0_u64, |total, leaf| {
+            total.checked_add(leaf.rejected_records).ok_or_else(|| {
+                SourceBackedRouteError::new(
+                    SourceBackedRouteErrorKind::Internal,
+                    "provider JSONL rejected-record count overflow",
+                )
+            })
+        })?;
         return Err(SourceBackedRouteError::new(
             SourceBackedRouteErrorKind::InvalidSource,
             format!(
                 "direct JSONL route rejected {rejected_records} records across {} sources; \
                  all provider-native session identity leaves were rejected",
-                opening.rejected_leaves().len(),
+                route_fatal_rejected.len(),
             ),
         ));
     }
+    for rejected in opening.rejected_leaves() {
+        if let Some((source, detail)) = &rejected.logical_source_failure {
+            let failure =
+                SourceBackedRouteError::new(SourceBackedRouteErrorKind::InvalidSource, detail);
+            if adapter.provider() == CaptureProvider::Codex {
+                sink.record_logical_source_quarantine(source.clone(), failure)
+            } else {
+                sink.record_logical_source_failure(source.clone(), failure, false)
+            }
+            .map_err(route_internal)?;
+        }
+    }
     let bases = base_sources_for_root(adapter, &opening, root, sink)?;
+    let base_paths = bases
+        .iter()
+        .map(|base| {
+            adapter
+                .base_source_path(base)
+                .map(|path| (base.observation().source().exact_descriptor_digest(), path))
+                .map_err(|error| route_scan(adapter, error))
+        })
+        .collect::<SourceBackedRouteResult<HashMap<_, _>>>()?;
+    let mut rejected_quarantine_paths = BTreeSet::new();
+    let mut rejected_quarantine_sources = HashMap::new();
+    let mut rejected_quarantine_dependencies = Vec::new();
+    for rejected in opening
+        .rejected_leaves()
+        .iter()
+        .filter(|leaf| leaf.logical_source_failure.is_some())
+    {
+        rejected_quarantine_paths.insert(rejected.source_path.clone());
+        rejected_quarantine_dependencies.push(
+            rejected_leaf_terminal_proof::<R>(&opening, rejected)
+                .map_err(|error| route_scan(adapter, error))?,
+        );
+        if let Some(source) = &rejected.quarantined_source {
+            if rejected_quarantine_sources
+                .insert(source.exact_descriptor_digest(), source.clone())
+                .is_some_and(|previous: SourceKey| !previous.exact_descriptor_eq(source))
+            {
+                return Err(route_invalid(
+                    "rejected JSONL quarantine source descriptor digest collision",
+                ));
+            }
+        }
+        // A catalog-level ownership rejection may not be able to reconstruct
+        // a current provider source key. An exact prior certificate for the
+        // same physical member remains sufficient authority to delete stale
+        // published records without guessing a replacement owner.
+        for base in &bases {
+            let source = base.observation().source();
+            if base_paths.get(&source.exact_descriptor_digest()) == Some(&rejected.source_path) {
+                if rejected_quarantine_sources
+                    .insert(source.exact_descriptor_digest(), source.clone())
+                    .is_some_and(|previous| !previous.exact_descriptor_eq(source))
+                {
+                    return Err(route_invalid(
+                        "rejected JSONL base descriptor digest collision",
+                    ));
+                }
+            }
+        }
+    }
     let mut selected_leaves = opening
         .leaves()
         .iter()
@@ -155,22 +247,6 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
         if selected_leaves.is_empty() {
             sink.report_completed_bytes_with_exact(0, Some(0))
                 .map_err(route_internal)?;
-        }
-    }
-    let mut owned_sources = HashMap::with_capacity(bases.len() + selected_leaves.len());
-    for source in bases
-        .iter()
-        .map(|base| base.observation().source())
-        .chain(selected_leaves.iter().map(JsonlFamilyLeaf::source))
-    {
-        let digest = source.exact_descriptor_digest();
-        if owned_sources
-            .insert(digest, source.clone())
-            .is_some_and(|previous| !previous.exact_descriptor_eq(source))
-        {
-            return Err(route_invalid(
-                "JSONL route source descriptor digest collision",
-            ));
         }
     }
     let bases_by_descriptor = bases_by_descriptor(&bases)?;
@@ -252,8 +328,65 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
     let finish_leaf_scans = adapter
         .finish_leaf_scans()
         .map_err(|error| route_scan(adapter, error));
-    let mut terminal_sources = terminal_sources?;
+    let mut scan_result = terminal_sources?;
     finish_leaf_scans?;
+    for quarantined in &scan_result.quarantined {
+        let failure = SourceBackedRouteError::new(
+            SourceBackedRouteErrorKind::InvalidSource,
+            &quarantined.detail,
+        );
+        if adapter.provider() == CaptureProvider::Codex {
+            sink.record_logical_source_quarantine(quarantined.failure_source.clone(), failure)
+        } else {
+            sink.record_logical_source_failure(quarantined.failure_source.clone(), failure, false)
+        }
+        .map_err(route_internal)?;
+    }
+    let mut quarantined_source_ownership = rejected_quarantine_sources;
+    for leaf in &scan_result.quarantined {
+        if quarantined_source_ownership
+            .insert(
+                leaf.claimed_source.exact_descriptor_digest(),
+                leaf.claimed_source.clone(),
+            )
+            .is_some_and(|previous| !previous.exact_descriptor_eq(&leaf.claimed_source))
+        {
+            return Err(route_invalid(
+                "scanned JSONL quarantine source descriptor digest collision",
+            ));
+        }
+    }
+    let quarantined_sources = quarantined_source_ownership
+        .keys()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut quarantined_paths = rejected_quarantine_paths;
+    quarantined_paths.extend(
+        scan_result
+            .quarantined
+            .iter()
+            .map(|leaf| leaf.source_path.clone()),
+    );
+    let mut owned_sources = HashMap::with_capacity(bases.len() + selected_leaves.len());
+    for source in bases
+        .iter()
+        .map(|base| base.observation().source())
+        .chain(selected_leaves.iter().map(JsonlFamilyLeaf::source))
+    {
+        if quarantined_sources.contains(&source.exact_descriptor_digest()) {
+            continue;
+        }
+        let digest = source.exact_descriptor_digest();
+        if owned_sources
+            .insert(digest, source.clone())
+            .is_some_and(|previous| !previous.exact_descriptor_eq(source))
+        {
+            return Err(route_invalid(
+                "JSONL route source descriptor digest collision",
+            ));
+        }
+    }
+    let mut terminal_sources = std::mem::take(&mut scan_result.terminal_sources);
     for (digest, evidence) in retained_terminal_sources {
         if terminal_sources.insert(digest, evidence).is_some() {
             return Err(route_invalid("duplicate JSONL terminal source evidence"));
@@ -262,8 +395,16 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
 
     let selected_sources = selected_leaves
         .iter()
+        .filter(|leaf| !quarantined_sources.contains(&leaf.source().exact_descriptor_digest()))
         .map(|leaf| leaf.source().clone())
         .collect::<Vec<_>>();
+    rejected_quarantine_dependencies.extend(
+        scan_result
+            .quarantined
+            .into_iter()
+            .map(|leaf| leaf.terminal_proof),
+    );
+    let opening = opening.with_appended_exact_dependencies(rejected_quarantine_dependencies);
     let inventory = opening
         .certify_selected_against(&opening, selected_sources)
         .map_err(route_invalid)?;
@@ -272,13 +413,14 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
     let mut absent_sources = Vec::new();
     for base in &bases {
         if !inventory.contains(base.observation().source()) {
-            if let Some(absent) = JsonlFamilyAbsentMember::from_path(
-                &opening,
-                adapter
-                    .base_source_path(base)
-                    .map_err(|error| route_scan(adapter, error))?,
-            ) {
-                absent_sources.push(absent);
+            let base_path = base_paths
+                .get(&base.observation().source().exact_descriptor_digest())
+                .cloned()
+                .ok_or_else(|| route_internal("JSONL base source lost its physical path"))?;
+            if !quarantined_paths.contains(&base_path) {
+                if let Some(absent) = JsonlFamilyAbsentMember::from_path(&opening, base_path) {
+                    absent_sources.push(absent);
+                }
             }
             let deletion = CertifiedSourceDeletion::from_inventory(
                 base.observation().source().clone(),
@@ -294,6 +436,7 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
         .map_err(|_| route_internal("JSONL resident catalog lock was poisoned"))?;
     resident.ownership_initialized = true;
     resident.owned_sources = owned_sources;
+    resident.quarantined_sources = quarantined_source_ownership;
     resident.terminal_sources = terminal_sources;
     resident.absent_sources = absent_sources;
     resident.opening_membership = Some(opening_membership);
@@ -384,8 +527,16 @@ fn capture_partial_members<R: JsonlFamilyRuntime>(
     let finish_leaf_scans = adapter
         .finish_leaf_scans()
         .map_err(|error| route_scan(adapter, error));
-    let terminal_sources = terminal_sources?;
+    let scan_result = terminal_sources?;
     finish_leaf_scans?;
+    // A partial refresh has no complete inventory with which to delete a
+    // formerly valid source. Do not carry that base after ownership becomes
+    // ambiguous; let this attempt fall through to exhaustive discovery before
+    // it stages retention or a receipt-local failure.
+    if !scan_result.quarantined.is_empty() {
+        return Ok(false);
+    }
+    let terminal_sources = scan_result.terminal_sources;
     if terminal_sources.len() != leaves.len() {
         return Err(route_internal(
             "partial JSONL scan did not produce one terminal proof per selected member",
@@ -400,6 +551,7 @@ fn capture_partial_members<R: JsonlFamilyRuntime>(
     // though this attempt intentionally has no complete-inventory proof.
     resident.ownership_initialized = false;
     resident.owned_sources = owned_sources;
+    resident.quarantined_sources.clear();
     resident.terminal_sources = terminal_sources;
     resident.absent_sources.clear();
     resident.opening_membership = None;

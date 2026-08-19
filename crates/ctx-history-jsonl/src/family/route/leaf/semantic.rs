@@ -161,6 +161,7 @@ pub(super) fn prepare_semantic_leaf<R: JsonlFamilyRuntime>(
     } else {
         rejected_records
     };
+    let logical_source_quarantine = summary.logical_source_quarantine().cloned();
     let provider_checkpoint = summary.provider_checkpoint();
     let record_rejections = summary.into_record_rejections();
     let checkpoint = FamilyCheckpoint {
@@ -216,5 +217,6 @@ pub(super) fn prepare_semantic_leaf<R: JsonlFamilyRuntime>(
         append,
         terminal_proof,
         record_rejections,
+        logical_source_quarantine,
     })
 }

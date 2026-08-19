@@ -1,4 +1,9 @@
-use std::{collections::BTreeSet, fs::OpenOptions, io::Write, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs::OpenOptions,
+    io::Write,
+    path::Path,
+};
 
 use super::*;
 use crate::provider::source_backed::family::jsonl::{
@@ -11,6 +16,8 @@ use ctx_history_core::{
 use ctx_history_index::{GenerationWriter, RevalidationTarget, WriterOptions};
 
 const CURRENT_PARSER_REVISION: &str = "codex-nativepath-core-activity-v8-inherited-session-lineage";
+
+mod quarantine;
 
 fn writer_options() -> WriterOptions {
     WriterOptions {
@@ -39,6 +46,26 @@ fn incremental_refresh(
         )
         .unwrap();
     (receipt, completed_records)
+}
+
+fn incremental_refresh_member(
+    index_root: &Path,
+    registry: &SourceBackedProviderRegistry,
+    base: &SourceBackedRefreshReceipt,
+    root: &Path,
+    member: PathBuf,
+) -> SourceBackedRefreshReceipt {
+    SourceBackedRefreshExecutor::new(registry.clone(), writer_options())
+        .with_base_route_controls(base.route_controls.clone())
+        .refresh_scope_with_detailed_progress_publication_metadata_reconciliation_and_worksets(
+            index_root,
+            SourceBackedRefreshScope::All,
+            SourceBackedReconciliationDemand::Incremental,
+            BTreeMap::from([(route_identity(registry, root), BTreeSet::from([member]))]),
+            |_| Ok(()),
+            |_| Ok(Vec::new()),
+        )
+        .unwrap()
 }
 
 fn session_path(root: &Path, native_session_id: &str) -> PathBuf {
@@ -798,47 +825,97 @@ fn inherited_codex_session_metadata_is_admitted_in_both_provider_orders() {
 }
 
 #[test]
-fn malformed_codex_owner_leaf_is_quarantined_without_hiding_valid_neighbor() {
+fn codex_rollout_ownership_quarantine_retries_after_file_repair() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions-malformed-owner-neighbor");
     let index_root = temp.path().join("index-malformed-owner-neighbor");
     fs::create_dir_all(&sessions).unwrap();
     let valid_session_id = "019fb000-0000-7000-8000-000000000060";
-    let malformed_session_id = "019fb000-0000-7000-8000-000000000061";
+    let repairable_session_id = "019fb000-0000-7000-8000-000000000061";
     let conflicting_session_id = "019fb000-0000-7000-8000-000000000062";
-    let marker = "validneighborretainedmarker";
+    let neighbor_marker = "validneighborretainedmarker";
+    let previously_valid_marker = "repairablepreviouslyvalidmarker";
+    let late_bad_marker = "latequarantinedprefixmarker";
+    let repaired_marker = "repairablecorrectedownermarker";
     write_session(
         &sessions,
         valid_session_id,
         ProviderNativeSessionRelationship::Root,
         None,
-        [message(marker)],
+        [message(neighbor_marker)],
     );
+    let repairable_path = session_path(&sessions, repairable_session_id);
+    write_session(
+        &sessions,
+        repairable_session_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        [message(previously_valid_marker)],
+    );
+    let registry = register_tree(&[&sessions]);
+    let initial =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+    assert!(initial.failed_routes.is_empty());
+    assert!(initial.logical_source_failures.is_empty());
+    let initial_index = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(records_for(&initial_index, repairable_session_id).len(), 1);
+    drop(initial_index);
 
-    let malformed = jsonl_bytes([
-        session_meta(
-            malformed_session_id,
-            ProviderNativeSessionRelationship::Root,
-            None,
-        ),
+    // The ownership ambiguity is deliberately beyond catalog's bounded
+    // physical prefix. Each metadata record is individually valid; only the
+    // complete set proves the later branch is disconnected from its owner.
+    for ordinal in 0..33 {
+        append_event(
+            &repairable_path,
+            message(&format!("lateownershipprefix{ordinal}")),
+        );
+    }
+    append_event(&repairable_path, message(late_bad_marker));
+    append_event(
+        &repairable_path,
         session_meta(
             conflicting_session_id,
             ProviderNativeSessionRelationship::Root,
             None,
         ),
-        message("quarantinedunrelatedownermarker"),
-    ]);
-    fs::write(sessions.join("renamed-corrupt-rollout.jsonl"), malformed).unwrap();
+    );
 
-    let registry = register_tree(&[&sessions]);
-    let receipt =
-        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
-    assert!(receipt.failed_routes.is_empty());
-    assert!(receipt.logical_source_failures.is_empty());
+    // The member workset first exercises append checkpoint restoration in the
+    // bounded partial path. Quarantine then falls through to exhaustive
+    // discovery so the stale base is deleted rather than retained.
+    let quarantined = incremental_refresh_member(
+        &index_root,
+        &registry,
+        &initial,
+        &sessions,
+        repairable_path.clone(),
+    );
+    assert!(
+        quarantined.failed_routes.is_empty(),
+        "unexpected route failures: {:?}",
+        quarantined.failed_routes
+    );
+    assert_eq!(quarantined.logical_source_failures.total(), 1);
+    assert!(quarantined.record_rejections.is_empty());
+    let [failure] = quarantined.logical_source_failures.failures() else {
+        panic!("one quarantined Codex rollout failure expected");
+    };
+    assert_eq!(
+        failure.class,
+        ctx_history_capture_runtime::SourceBackedSourceFailureClass::Unreadable
+    );
+    assert_eq!(
+        failure.detail,
+        format!(
+            "Codex session ownership is ambiguous or conflicting; quarantined rollout file {}",
+            repairable_path.display()
+        )
+    );
+    assert_eq!(failure.source.provider(), CaptureProvider::Codex.as_str());
 
     let index = VerifiedIndex::open(&index_root).unwrap();
     assert!(index
-        .search_event_candidates(marker, 32)
+        .search_event_candidates(neighbor_marker, 32)
         .unwrap()
         .into_iter()
         .any(|candidate| candidate.event.provider_session_id.as_deref() == Some(valid_session_id)));
@@ -846,13 +923,55 @@ fn malformed_codex_owner_leaf_is_quarantined_without_hiding_valid_neighbor() {
         !matches!(
             certificate.observation().source().anchor(),
             SourceAnchor::ProviderNative { key: TypedKey::Utf8(value), .. }
-                if value == malformed_session_id || value == conflicting_session_id
+                if value == repairable_session_id || value == conflicting_session_id
         )
     }));
     assert!(index
-        .search_event_candidates("quarantinedunrelatedownermarker", 8)
+        .search_event_candidates(previously_valid_marker, 8)
         .unwrap()
         .is_empty());
+    assert!(index
+        .search_event_candidates(late_bad_marker, 8)
+        .unwrap()
+        .is_empty());
+    drop(index);
+
+    fs::write(
+        &repairable_path,
+        jsonl_bytes([
+            session_meta(
+                repairable_session_id,
+                ProviderNativeSessionRelationship::Root,
+                None,
+            ),
+            message(repaired_marker),
+        ]),
+    )
+    .unwrap();
+
+    let repaired = incremental_refresh_member(
+        &index_root,
+        &registry,
+        &quarantined,
+        &sessions,
+        repairable_path.clone(),
+    );
+    assert!(repaired.failed_routes.is_empty());
+    assert!(repaired.logical_source_failures.is_empty());
+    let repaired_index = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(records_for(&repaired_index, repairable_session_id).len(), 1);
+    assert_eq!(
+        repaired_index
+            .search_event_candidates(repaired_marker, 8)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(repaired_index
+        .search_event_candidates(neighbor_marker, 8)
+        .unwrap()
+        .into_iter()
+        .any(|candidate| candidate.event.provider_session_id.as_deref() == Some(valid_session_id)));
 }
 
 #[test]

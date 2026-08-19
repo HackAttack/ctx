@@ -1,5 +1,4 @@
 use super::*;
-use ctx_history_capture_runtime::SourceBackedSourceOutcome;
 
 #[derive(Debug)]
 pub(crate) struct TerminalSourceEvidence<E: JsonlFamilyError> {
@@ -44,62 +43,6 @@ pub(super) fn candidate_would_replace_retained_records_with_only_rejections(
         && counts.complete_records > 0
         && counts.retained_records == 0
         && counts.rejected_records > 0
-}
-
-pub(super) fn reconcile_parallel_source_outcomes<E: JsonlFamilyError>(
-    outcomes: Vec<SourceBackedSourceOutcome<TerminalSourceEvidence<E>>>,
-    failed_evidences: Vec<TerminalSourceEvidence<E>>,
-) -> SourceBackedRouteResult<Vec<TerminalSourceEvidence<E>>> {
-    let mut failed_evidences = failed_evidences
-        .into_iter()
-        .map(|evidence| {
-            (
-                evidence
-                    .observed_certificate()
-                    .observation()
-                    .source()
-                    .exact_descriptor_digest(),
-                evidence,
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let mut evidences = Vec::with_capacity(outcomes.len());
-    for outcome in outcomes {
-        match outcome {
-            SourceBackedSourceOutcome::Success(evidence) => evidences.push(evidence),
-            SourceBackedSourceOutcome::Failed(mut failure) => {
-                if !failure.failure.kind.is_logical_source_failure() {
-                    return Err(route_internal(
-                        "parallel JSONL source failure was not logical",
-                    ));
-                }
-                let mut evidence = failed_evidences
-                    .remove(&failure.source.exact_descriptor_digest())
-                    .ok_or_else(|| {
-                        route_internal("parallel JSONL source failure lost terminal evidence")
-                    })?;
-                if !evidence
-                    .observed_certificate()
-                    .observation()
-                    .source()
-                    .exact_descriptor_eq(&failure.source)
-                    || failure.retained.as_ref() != Some(&evidence.certificate)
-                {
-                    return Err(route_internal(
-                        "parallel JSONL source failure evidence changed identity",
-                    ));
-                }
-                evidence.record_rejections = std::mem::take(&mut failure.record_rejections);
-                evidences.push(evidence);
-            }
-        }
-    }
-    if !failed_evidences.is_empty() {
-        return Err(route_internal(
-            "parallel JSONL terminal evidence has no source failure outcome",
-        ));
-    }
-    Ok(evidences)
 }
 
 pub(super) fn terminal_byte_remainder(

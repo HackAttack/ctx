@@ -69,6 +69,8 @@ mod membership;
 pub use membership::{JsonlFamilyAppendTrustContract, JsonlFamilyMembershipObservation};
 mod projector;
 pub use projector::JsonlFamilyProjector;
+mod resident;
+use resident::FamilyResident;
 mod revalidation;
 #[cfg(any(test, feature = "test-support"))]
 pub use revalidation::set_before_jsonl_terminal_physical_revalidation_hook;
@@ -774,23 +776,52 @@ impl<E: JsonlFamilyError> JsonlFamilyLeaf<E> {
 pub struct JsonlFamilyRejectedLeaf {
     source_path: PathBuf,
     authority_path: PathBuf,
+    observation: JsonlFileObservation,
     proof: TypedKey,
     rejected_records: u64,
+    logical_source_failure: Option<(SourceKey, String)>,
+    quarantined_source: Option<SourceKey>,
 }
 
 impl JsonlFamilyRejectedLeaf {
     pub fn bind_observed(
         source_path: PathBuf,
         authority_path: PathBuf,
+        observation: JsonlFileObservation,
         proof: TypedKey,
         rejected_records: u64,
     ) -> Self {
         Self {
             source_path,
             authority_path,
+            observation,
             proof,
             rejected_records,
+            logical_source_failure: None,
+            quarantined_source: None,
         }
+    }
+
+    /// Records a file-local failure alongside a rejected membership leaf.
+    ///
+    /// The supplied key must identify only the physical rejected member, not
+    /// an inferred provider session. This lets a family publish trustworthy
+    /// peers while the member remains retryable on later discovery.
+    pub fn with_logical_source_failure(
+        mut self,
+        source: SourceKey,
+        detail: impl Into<String>,
+    ) -> Self {
+        self.logical_source_failure = Some((source, detail.into()));
+        self
+    }
+
+    /// Retains the exact provider source that an ownership-rejected member
+    /// would otherwise have claimed. This is deletion/retry authority only;
+    /// the source is never admitted to the certified inventory.
+    pub fn with_quarantined_source(mut self, source: SourceKey) -> Self {
+        self.quarantined_source = Some(source);
+        self
     }
 }
 
@@ -886,30 +917,6 @@ impl FamilyCheckpoint {
                 .indexed_documents
                 .checked_add(self.rejected_logical_records)
                 .is_some_and(|classified| classified <= self.logical_complete_records)
-    }
-}
-
-struct FamilyResident<E: JsonlFamilyError> {
-    ownership_initialized: bool,
-    owned_sources: HashMap<[u8; 32], SourceKey>,
-    terminal_sources: HashMap<[u8; 32], TerminalSourceEvidence<E>>,
-    absent_sources: Vec<JsonlFamilyAbsentMember<E>>,
-    opening_membership: Option<JsonlFamilyMembershipObservation<E>>,
-    certified_inventory: Option<CertifiedSourceInventory>,
-    opening_inventory: Option<JsonlFamilyInventory<E>>,
-}
-
-impl<E: JsonlFamilyError> Default for FamilyResident<E> {
-    fn default() -> Self {
-        Self {
-            ownership_initialized: false,
-            owned_sources: HashMap::new(),
-            terminal_sources: HashMap::new(),
-            absent_sources: Vec::new(),
-            opening_membership: None,
-            certified_inventory: None,
-            opening_inventory: None,
-        }
     }
 }
 

@@ -23,6 +23,7 @@ use super::{
 };
 mod checkpoint;
 mod evidence;
+mod outcomes;
 mod output;
 mod prepare;
 mod semantic;
@@ -41,9 +42,13 @@ use ctx_history_capture_runtime::{
 };
 pub(super) use evidence::TerminalSourceEvidence;
 use evidence::{
-    candidate_would_replace_retained_records_with_only_rejections,
-    reconcile_parallel_source_outcomes, terminal_byte_remainder,
+    candidate_would_replace_retained_records_with_only_rejections, terminal_byte_remainder,
 };
+use outcomes::{
+    collect_leaf_outcomes, quarantine_leaf, reconcile_parallel_leaf_outcomes,
+    JsonlFamilyWorkerContexts, JsonlLeafJob, LeafScanOutcome,
+};
+pub(super) use outcomes::{LeafScanResult, PreparedLeaf};
 pub(super) use output::{JsonlLeafOutput, JsonlLeafOutputEvent};
 #[cfg(test)]
 pub(super) use prepare::prepare_leaf;
@@ -52,48 +57,8 @@ use semantic::{prepare_semantic_leaf, SemanticLeafExecution, SemanticLeafPlan};
 
 const JSONL_SINGLE_LEAF_PIPELINE_MIN_BYTES: u64 = 1024 * 1024;
 
-pub(super) struct PreparedLeaf<E: JsonlFamilyError> {
-    pub(super) certificate: CertifiedSource,
-    pub(super) append: Option<CertifiedSourceAppend>,
-    pub(super) terminal_proof: JsonlFamilyTerminalProof<E>,
-    pub(super) record_rejections: SourceBackedRecordRejectionDrafts,
-}
-
-struct JsonlLeafJob<E: JsonlFamilyError> {
-    leaf: JsonlFamilyLeaf<E>,
-    base: Option<CertifiedSource>,
-    context_shard: Option<u64>,
-}
-
 const JSONL_PARTITION_CONTEXT_SHARDS: usize = 16;
 const JSONL_PARTITION_COMPONENTS_PER_WAVE: usize = 16;
-
-// Partitioned adapters receive deterministic logical cache lanes rather than
-// caches tied to the physical worker count. Source-local event-time state is
-// cleared by `begin_leaf()`, while revalidated repository certification caches
-// remain stable across worker counts and physical scheduling decisions.
-struct JsonlFamilyWorkerContexts<R: JsonlFamilyRuntime> {
-    independent: JsonlFamilyWorkerContext<R>,
-    partition_cache_lanes: BTreeMap<u64, JsonlFamilyWorkerContext<R>>,
-}
-
-impl<R: JsonlFamilyRuntime> Default for JsonlFamilyWorkerContexts<R> {
-    fn default() -> Self {
-        Self {
-            independent: JsonlFamilyWorkerContext::default(),
-            partition_cache_lanes: BTreeMap::new(),
-        }
-    }
-}
-
-impl<R: JsonlFamilyRuntime> JsonlFamilyWorkerContexts<R> {
-    fn for_job(&mut self, context_shard: Option<u64>) -> &mut JsonlFamilyWorkerContext<R> {
-        match context_shard {
-            Some(context_shard) => self.partition_cache_lanes.entry(context_shard).or_default(),
-            None => &mut self.independent,
-        }
-    }
-}
 
 fn scan_leaf_serial<R: JsonlFamilyRuntime>(
     adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
@@ -103,7 +68,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
     worker: &mut JsonlFamilyWorkerContext<R>,
     sink: &mut SourceBackedGenerationSink<'_, R::Lifecycle>,
     append_only_trust_allowed: bool,
-) -> SourceBackedRouteResult<TerminalSourceEvidence<JsonlRuntimeError<R>>> {
+) -> SourceBackedRouteResult<LeafScanOutcome<JsonlRuntimeError<R>>> {
     let mut staging_started = false;
     let mut append_staging = false;
     let mut sink_failure = None;
@@ -188,7 +153,24 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
         append,
         terminal_proof,
         record_rejections,
+        logical_source_quarantine,
     } = prepared;
+    if let Some(logical_source_quarantine) = logical_source_quarantine {
+        let quarantined = quarantine_leaf(
+            leaf,
+            &certificate,
+            append.as_ref(),
+            staging_started,
+            logical_source_quarantine,
+        )
+        .map_err(|error| route_scan(adapter, error))?;
+        sink.report_completed_bytes_with_exact(
+            quarantined.certified_bytes,
+            quarantined.exact_scan_bytes,
+        )
+        .map_err(route_internal)?;
+        return Ok(LeafScanOutcome::Quarantined(quarantined));
+    }
     if candidate_would_replace_retained_records_with_only_rejections(&certificate, base) {
         let retained = base.cloned();
         let publication_certificate = retained.clone().unwrap_or_else(|| certificate.clone());
@@ -208,7 +190,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
                 .map(|observation| observation.length()),
         )
         .map_err(route_internal)?;
-        return Ok(TerminalSourceEvidence {
+        return Ok(LeafScanOutcome::Certified(TerminalSourceEvidence {
             certificate: publication_certificate,
             terminal_certificate: Some(certificate),
             terminal_proof,
@@ -217,7 +199,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
                 .frozen_scan_observation()
                 .map(|observation| observation.length()),
             record_rejections: SourceBackedRecordRejectionDrafts::default(),
-        });
+        }));
     }
     sink.record_rejections(record_rejections);
     match append {
@@ -242,7 +224,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
                     .and_then(|observation| observation.length().checked_sub(emitted_bytes)),
             )
             .map_err(route_internal)?;
-            Ok(TerminalSourceEvidence {
+            Ok(LeafScanOutcome::Certified(TerminalSourceEvidence {
                 certificate,
                 terminal_certificate: None,
                 terminal_proof,
@@ -251,7 +233,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
                     .frozen_scan_observation()
                     .map(|observation| observation.length()),
                 record_rejections: SourceBackedRecordRejectionDrafts::default(),
-            })
+            }))
         }
         None => {
             if staging_started && append_staging {
@@ -271,7 +253,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
                     .and_then(|observation| observation.length().checked_sub(emitted_bytes)),
             )
             .map_err(route_internal)?;
-            Ok(TerminalSourceEvidence {
+            Ok(LeafScanOutcome::Certified(TerminalSourceEvidence {
                 certificate,
                 terminal_certificate: None,
                 terminal_proof,
@@ -280,7 +262,7 @@ fn scan_leaf_serial<R: JsonlFamilyRuntime>(
                     .frozen_scan_observation()
                     .map(|observation| observation.length()),
                 record_rejections: SourceBackedRecordRejectionDrafts::default(),
-            })
+            }))
         }
     }
 }
@@ -293,7 +275,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
     sink: &mut SourceBackedGenerationSink<'_, R::Lifecycle>,
     append_only_trust_allowed: bool,
     #[cfg(test)] scanner_probe: Option<&JsonlFamilyScannerProbe>,
-) -> SourceBackedRouteResult<Vec<TerminalSourceEvidence<JsonlRuntimeError<R>>>> {
+) -> SourceBackedRouteResult<Vec<LeafScanOutcome<JsonlRuntimeError<R>>>> {
     let failed_evidences = Mutex::new(Vec::new());
     let result = sink.run_parallel_leaf_scans_with_worker_states_and_source_outcomes(
         jobs,
@@ -430,7 +412,26 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                 append,
                 terminal_proof,
                 record_rejections,
+                logical_source_quarantine,
             } = prepared;
+            if let Some(logical_source_quarantine) = logical_source_quarantine {
+                let quarantined = quarantine_leaf(
+                    leaf,
+                    &certificate,
+                    append.as_ref(),
+                    staging_started,
+                    logical_source_quarantine,
+                )
+                .map_err(|error| {
+                    ParallelLeafScanWorkerError::provider(route_scan(adapter, error))
+                })?;
+                emitter
+                    .complete(ParallelLeafScanComplete::skipped(
+                        LeafScanOutcome::Quarantined(quarantined),
+                    ))
+                    .map_err(ParallelLeafScanWorkerError::from)?;
+                return Ok(());
+            }
             if candidate_would_replace_retained_records_with_only_rejections(
                 &certificate,
                 job.leaf().base.as_ref(),
@@ -488,7 +489,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                     emitter
                         .complete(ParallelLeafScanComplete::append(
                             append,
-                            TerminalSourceEvidence {
+                            LeafScanOutcome::Certified(TerminalSourceEvidence {
                                 certificate,
                                 terminal_certificate: None,
                                 terminal_proof,
@@ -497,7 +498,7 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                                     .frozen_scan_observation()
                                     .map(|observation| observation.length()),
                                 record_rejections,
-                            },
+                            }),
                         ))
                         .map_err(ParallelLeafScanWorkerError::from)?;
                 }
@@ -523,7 +524,10 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                         record_rejections,
                     };
                     emitter
-                        .complete(ParallelLeafScanComplete::replace(certificate, evidence))
+                        .complete(ParallelLeafScanComplete::replace(
+                            certificate,
+                            LeafScanOutcome::Certified(evidence),
+                        ))
                         .map_err(ParallelLeafScanWorkerError::from)?;
                 }
             }
@@ -534,18 +538,31 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
     let failed_evidences = failed_evidences
         .into_inner()
         .map_err(|_| route_internal("JSONL failed-evidence lock was poisoned"))?;
-    let evidences = reconcile_parallel_source_outcomes(outcomes, failed_evidences)?;
-    for evidence in &evidences {
-        sink.record_rejections(evidence.record_rejections.clone());
-        sink.report_completed_bytes_with_exact(
-            terminal_byte_remainder(evidence.observed_certificate(), evidence.emitted_bytes)?,
-            evidence
-                .exact_scan_bytes
-                .and_then(|total| total.checked_sub(evidence.emitted_bytes)),
-        )
-        .map_err(route_internal)?;
+    let outcomes = reconcile_parallel_leaf_outcomes(outcomes, failed_evidences)?;
+    for outcome in &outcomes {
+        match outcome {
+            LeafScanOutcome::Certified(evidence) => {
+                sink.record_rejections(evidence.record_rejections.clone());
+                sink.report_completed_bytes_with_exact(
+                    terminal_byte_remainder(
+                        evidence.observed_certificate(),
+                        evidence.emitted_bytes,
+                    )?,
+                    evidence
+                        .exact_scan_bytes
+                        .and_then(|total| total.checked_sub(evidence.emitted_bytes)),
+                )
+                .map_err(route_internal)?;
+            }
+            LeafScanOutcome::Quarantined(quarantined) => sink
+                .report_completed_bytes_with_exact(
+                    quarantined.certified_bytes,
+                    quarantined.exact_scan_bytes,
+                )
+                .map_err(route_internal)?,
+        }
     }
-    Ok(evidences)
+    Ok(outcomes)
 }
 
 pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
@@ -555,7 +572,7 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
     base_event_lookup: JsonlRuntimeLookup<R>,
     sink: &mut SourceBackedGenerationSink<'_, R::Lifecycle>,
     append_only_trust_allowed: bool,
-) -> SourceBackedRouteResult<HashMap<[u8; 32], TerminalSourceEvidence<JsonlRuntimeError<R>>>> {
+) -> SourceBackedRouteResult<LeafScanResult<JsonlRuntimeError<R>>> {
     let worker_limit = adapter
         .prepare_leaf_scans(leaves, bases)
         .map_err(|error| route_scan(adapter, error))?;
@@ -611,7 +628,7 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
             leaf.estimated_scan_bytes() >= JSONL_SINGLE_LEAF_PIPELINE_MIN_BYTES
         });
     if worker_count <= 1 && leaves.len() <= 1 && !large_single_leaf {
-        let mut terminal_sources = HashMap::with_capacity(leaves.len());
+        let mut outcomes = Vec::with_capacity(leaves.len());
         for (leaf_index, leaf) in leaves.iter().enumerate() {
             let partition = leaf_metadata
                 .get(leaf_index)
@@ -639,18 +656,13 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
                         .map_err(|error| route_scan(adapter, error))
                 })
                 .transpose();
-            let evidence = evidence?;
+            let outcome = evidence?;
             finish_partition?;
-            if terminal_sources
-                .insert(leaf.source().exact_descriptor_digest(), evidence)
-                .is_some()
-            {
-                return Err(route_invalid("duplicate JSONL source identity"));
-            }
+            outcomes.push(outcome);
         }
         #[cfg(test)]
         record_jsonl_family_scanner_activity(worker_count, scanner_probe.as_deref());
-        return Ok(terminal_sources);
+        return collect_leaf_outcomes(outcomes);
     }
 
     let mut worker_states = (0..worker_count)
@@ -683,7 +695,7 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
                     .then_with(|| left_partition.cmp(right_partition))
             },
         );
-        let mut evidences = Vec::with_capacity(leaves.len());
+        let mut outcomes = Vec::with_capacity(leaves.len());
         for wave in partitions.chunks(partition_wave_limit) {
             let mut begun = Vec::with_capacity(wave.len());
             for (partition, _) in wave {
@@ -704,7 +716,7 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
                 }
             }
 
-            let batch: SourceBackedRouteResult<Vec<TerminalSourceEvidence<JsonlRuntimeError<R>>>> =
+            let batch: SourceBackedRouteResult<Vec<LeafScanOutcome<JsonlRuntimeError<R>>>> =
                 (|| {
                     let mut batch = Vec::new();
                     for (_, mut frontier) in frontiers {
@@ -770,11 +782,11 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
             if let Some(error) = finish_error {
                 return Err(error);
             }
-            evidences.extend(batch);
+            outcomes.extend(batch);
         }
         #[cfg(test)]
         record_jsonl_family_scanner_activity(worker_count, scanner_probe.as_deref());
-        return collect_terminal_sources(evidences);
+        return collect_leaf_outcomes(outcomes);
     }
 
     let phases = leaf_metadata
@@ -782,7 +794,7 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
         .map(|(phase, _)| *phase)
         .collect::<Vec<_>>();
 
-    let mut evidences = Vec::with_capacity(leaves.len());
+    let mut outcomes = Vec::with_capacity(leaves.len());
     let mut phase_start = 0_usize;
     while phase_start < leaves.len() {
         let phase = phases[phase_start];
@@ -809,7 +821,7 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
                 None => job,
             });
         }
-        let phase_evidences = run_parallel_leaf_job_batch(
+        let phase_outcomes = run_parallel_leaf_job_batch(
             adapter,
             jobs,
             &mut worker_states,
@@ -819,30 +831,13 @@ pub(super) fn scan_leaves<R: JsonlFamilyRuntime>(
             #[cfg(test)]
             scanner_probe.as_deref(),
         )?;
-        evidences.extend(phase_evidences);
+        outcomes.extend(phase_outcomes);
         phase_start = phase_end;
     }
     #[cfg(test)]
     record_jsonl_family_scanner_activity(worker_count, scanner_probe.as_deref());
 
-    collect_terminal_sources(evidences)
-}
-
-fn collect_terminal_sources<E: JsonlFamilyError>(
-    evidences: Vec<TerminalSourceEvidence<E>>,
-) -> SourceBackedRouteResult<HashMap<[u8; 32], TerminalSourceEvidence<E>>> {
-    let mut terminal_sources = HashMap::with_capacity(evidences.len());
-    for evidence in evidences {
-        let digest = evidence
-            .certificate
-            .observation()
-            .source()
-            .exact_descriptor_digest();
-        if terminal_sources.insert(digest, evidence).is_some() {
-            return Err(route_invalid("duplicate JSONL source identity"));
-        }
-    }
-    Ok(terminal_sources)
+    collect_leaf_outcomes(outcomes)
 }
 
 fn open_leaf_reader<R: JsonlFamilyRuntime>(
@@ -951,6 +946,7 @@ pub(super) fn validate_optimized_outcome<R: JsonlFamilyRuntime>(
         append: outcome.append,
         terminal_proof: outcome.terminal_proof,
         record_rejections: SourceBackedRecordRejectionDrafts::default(),
+        logical_source_quarantine: None,
     })
 }
 

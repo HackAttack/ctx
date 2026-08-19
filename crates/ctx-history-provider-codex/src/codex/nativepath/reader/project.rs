@@ -134,7 +134,7 @@ impl CodexNativeScanner {
         }
     }
 
-    fn observe_session_metadata(&mut self, metadata: CodexSessionRow) -> Result<()> {
+    pub(super) fn observe_session_metadata(&mut self, metadata: CodexSessionRow) -> Result<()> {
         let is_owner = self.source.catalog_native_session_id.as_deref()
             == Some(metadata.native_session_id.as_str());
         if let Some(existing) = self

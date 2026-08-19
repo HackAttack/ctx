@@ -141,6 +141,7 @@ pub(in super::super) fn prepare_leaf_with_resources<R: JsonlFamilyRuntime>(
                 append_only_trust_allowed,
             )?,
             record_rejections: SourceBackedRecordRejectionDrafts::default(),
+            logical_source_quarantine: None,
         });
     }
 
@@ -435,5 +436,6 @@ pub(in super::super) fn prepare_leaf_with_resources<R: JsonlFamilyRuntime>(
         append,
         terminal_proof,
         record_rejections: SourceBackedRecordRejectionDrafts::default(),
+        logical_source_quarantine: None,
     })
 }

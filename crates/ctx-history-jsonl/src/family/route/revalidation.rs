@@ -51,6 +51,7 @@ pub(super) fn reset_terminal<E: JsonlFamilyError>(
     let mut resident = resident
         .lock()
         .map_err(|_| route_internal("JSONL resident catalog lock was poisoned"))?;
+    resident.quarantined_sources.clear();
     resident.terminal_sources.clear();
     resident.absent_sources.clear();
     resident.opening_membership = None;
@@ -210,6 +211,7 @@ pub(super) fn inventory_observation<E: JsonlFamilyError>(
         digest.update(leaf.authority_path.as_os_str().as_encoded_bytes());
         digest.update((leaf.source_path.as_os_str().as_encoded_bytes().len() as u64).to_be_bytes());
         digest.update(leaf.source_path.as_os_str().as_encoded_bytes());
+        digest.update(serde_json::to_vec(&leaf.observation)?);
         digest.update(serde_json::to_vec(&leaf.proof)?);
     }
     SourceInventoryObservation::new(

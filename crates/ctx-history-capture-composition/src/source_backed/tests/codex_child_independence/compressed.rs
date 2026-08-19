@@ -458,7 +458,11 @@ fn automatic_compressed_route_rejects_later_concatenated_frame_owner() {
     );
 
     let registry = register_tree(&[&sessions]);
-    assert_compressed_registry_rejected(&registry, &index_root);
+    let receipt = refresh_source_backed_generation(&index_root, &registry, writer_options())
+        .expect("ambiguous rollout ownership is a leaf-local quarantine");
+    assert!(receipt.failed_routes.is_empty());
+    assert_eq!(receipt.logical_source_failures.total(), 1);
+    assert!(receipt.sources.is_empty());
 }
 
 #[test]

@@ -54,12 +54,16 @@ fn register_openhands_route_with_current_root(
 mod automatic_lifecycle_tests;
 
 #[cfg(test)]
+mod test_helpers;
+
+#[cfg(test)]
 mod tests {
+    use super::test_helpers::{indexed_bodies, indexed_events};
     use super::*;
     use crate::{
         ProviderCatalogSupport, ProviderImportSupport, ProviderSourceKind, ProviderSourceStatus,
     };
-    use ctx_history_core::{CaptureProvider, CertifiedSource, CoreRecord};
+    use ctx_history_core::{CaptureProvider, CertifiedSource};
     use ctx_history_index::{
         GenerationWriter, RevalidationTarget, SourceRouteSnapshot, VerifiedIndex, WriterOptions,
     };
@@ -183,6 +187,25 @@ mod tests {
         );
         assert_eq!(receipt.record_rejections.total(), 1);
         assert_eq!(indexed_bodies(&index, &receipt), vec!["healthy"]);
+    }
+
+    #[test]
+    fn cold_only_malformed_openhands_source_remains_fail_closed() {
+        let temp = crate::test_support_paths::tempdir().unwrap();
+        let selected = temp.path().join("openhands");
+        let malformed = write_message(&selected, "conversation-a", "event-a", "unused");
+        fs::write(malformed, b"{not-json").unwrap();
+
+        let error = refresh_source_backed_generation(
+            temp.path().join("index"),
+            &registry(&selected),
+            WriterOptions::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            SourceBackedCoordinatorError::NoUsableLogicalSources { .. }
+        ));
     }
 
     #[test]
@@ -839,49 +862,6 @@ mod tests {
         assert_eq!(replay.commit.generation_id, deleted.commit.generation_id);
         assert_eq!(replay.sources, deleted.sources);
         assert_eq!(indexed_bodies(&index, &replay), vec!["one rewritten"]);
-    }
-
-    fn indexed_bodies(index: &Path, receipt: &SourceBackedRefreshReceipt) -> Vec<String> {
-        let verified = VerifiedIndex::open(index).unwrap();
-        let mut bodies = receipt
-            .sources
-            .iter()
-            .flat_map(|source| {
-                verified
-                    .core_source_event_page(source.observation().source(), None, 32)
-                    .unwrap()
-                    .items
-                    .into_iter()
-                    .map(|event| event.core_record.content.meaningful_text().to_owned())
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        bodies.sort();
-        bodies
-    }
-
-    fn indexed_events(index: &Path, receipt: &SourceBackedRefreshReceipt) -> Vec<CoreRecord> {
-        let verified = VerifiedIndex::open(index).unwrap();
-        let mut events = receipt
-            .sources
-            .iter()
-            .flat_map(|source| {
-                verified
-                    .core_source_event_page(source.observation().source(), None, 64)
-                    .unwrap()
-                    .items
-                    .into_iter()
-                    .map(|event| event.core_record)
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        events.sort_by(|left, right| {
-            left.source
-                .exact_descriptor_digest()
-                .cmp(&right.source.exact_descriptor_digest())
-                .then_with(|| left.event_sequence.cmp(&right.event_sequence))
-        });
-        events
     }
 
     fn provider_source(path: &Path) -> ProviderSource {

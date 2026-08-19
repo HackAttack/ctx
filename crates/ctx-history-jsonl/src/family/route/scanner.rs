@@ -216,6 +216,7 @@ pub struct JsonlFamilySemanticSummary {
     rejected_logical_records: Option<u64>,
     provider_checkpoint: Option<TypedKey>,
     record_rejections: SourceBackedRecordRejectionDrafts,
+    logical_source_quarantine: Option<(SourceKey, String)>,
 }
 
 impl JsonlFamilySemanticSummary {
@@ -231,6 +232,7 @@ impl JsonlFamilySemanticSummary {
             rejected_logical_records: None,
             provider_checkpoint,
             record_rejections: SourceBackedRecordRejectionDrafts::default(),
+            logical_source_quarantine: None,
         }
     }
 
@@ -248,6 +250,7 @@ impl JsonlFamilySemanticSummary {
             rejected_logical_records: Some(rejected_logical_records),
             provider_checkpoint,
             record_rejections: SourceBackedRecordRejectionDrafts::default(),
+            logical_source_quarantine: None,
         }
     }
 
@@ -259,12 +262,27 @@ impl JsonlFamilySemanticSummary {
         self
     }
 
+    /// Marks this scanned leaf as unpublishable without attributing it to the
+    /// provider-native source key that ownership validation rejected.
+    pub fn with_logical_source_quarantine(
+        mut self,
+        source: SourceKey,
+        detail: impl Into<String>,
+    ) -> Self {
+        self.logical_source_quarantine = Some((source, detail.into()));
+        self
+    }
+
     pub(super) fn represented_physical_records(&self) -> u64 {
         self.represented_physical_records
     }
 
     pub(super) fn rejected_records(&self) -> u64 {
         self.rejected_records
+    }
+
+    pub(super) fn logical_source_quarantine(&self) -> Option<&(SourceKey, String)> {
+        self.logical_source_quarantine.as_ref()
     }
 
     pub(super) fn logical_complete_records(&self) -> Option<u64> {

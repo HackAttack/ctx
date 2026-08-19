@@ -28,6 +28,7 @@ impl CodexNativeScanner {
                 .unwrap_or_default(),
             active_core_page: None,
             exhausted: false,
+            ownership_quarantined: false,
         })
     }
 
@@ -68,11 +69,69 @@ impl CodexNativeScanner {
             if record.oversized() {
                 self.terminal_authority.saturate();
             } else if !record.terminal_nul_padding() {
-                self.terminal_authority
-                    .observe_record(input.record_bytes(record)?);
+                let bytes = input.record_bytes(record)?;
+                self.terminal_authority.observe_record(bytes);
+                if !self.ownership_quarantined
+                    && classify_codex_record(bytes)
+                        .ok()
+                        .filter(|probe| !probe.lineage_malformed())
+                        .or_else(|| classify_after_selector_ambiguity(bytes))
+                        .is_some_and(|probe| probe.class == CodexRecordClass::SessionMeta)
+                {
+                    match parse_session_meta(bytes) {
+                        Some(metadata) => {
+                            if let Err(error) = self.observe_session_metadata(metadata) {
+                                match error {
+                                    CaptureError::InvalidPayload(_) => self.quarantine_ownership(),
+                                    error => return Err(error),
+                                }
+                            }
+                        }
+                        // A recognized ownership record whose complete schema
+                        // is malformed cannot be safely ignored while sibling
+                        // events from this rollout are published.
+                        None => self.quarantine_ownership(),
+                    }
+                }
             }
         }
-        Ok(direct_append && self.terminal_authority.append_requires_replacement())
+        if !self.ownership_quarantined {
+            if let Err(error) = self.validate_session_metadata_owner() {
+                match error {
+                    // Ownership admission is the only semantic failure this
+                    // preflight contains locally. I/O, source-change, and
+                    // invariant errors still abort the route.
+                    CaptureError::InvalidPayload(_) => self.quarantine_ownership(),
+                    error => return Err(error),
+                }
+            }
+        }
+        // Ownership observations above are admission-only. Projection owns the
+        // published counters and will re-observe the same metadata on a normal
+        // scan after this seek-free streaming preflight settles.
+        self.counters = CodexScanCounters::default();
+        Ok(direct_append
+            && (self.ownership_quarantined
+                || self.terminal_authority.append_requires_replacement()))
+    }
+
+    fn quarantine_ownership(&mut self) {
+        self.ownership_quarantined = true;
+        // A direct-append checkpoint may have restored an admitted owner and
+        // pending state before the full-file preflight finds ambiguity. Clear
+        // it so this leaf cannot retain or project prior ownership state.
+        self.owner = None;
+        self.session_metadata.clear();
+        self.pending_calls.clear();
+        self.local_turn_started = false;
+        self.event_identity_state = CodexEventIdentityStateV0::default();
+        self.active_core_page = None;
+    }
+
+    pub(in crate::codex::nativepath) fn ownership_quarantined_source(
+        &self,
+    ) -> Option<&CodexCatalogSource> {
+        self.ownership_quarantined.then_some(&self.source)
     }
 
     pub(in crate::codex::nativepath) fn next_semantic_page(
@@ -125,7 +184,14 @@ impl CodexNativeScanner {
             }
 
             self.counters.complete_records = self.counters.complete_records.saturating_add(1);
-            let mut projection = if record.terminal_nul_padding() {
+            let mut projection = if self.ownership_quarantined {
+                if record.terminal_nul_padding() {
+                    self.counters.ignored_records = self.counters.ignored_records.saturating_add(1);
+                } else {
+                    self.reject(record.oversized());
+                }
+                CodexRecordProjection::default()
+            } else if record.terminal_nul_padding() {
                 self.counters.ignored_records = self.counters.ignored_records.saturating_add(1);
                 CodexRecordProjection::default()
             } else if record.oversized() {

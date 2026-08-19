@@ -509,6 +509,30 @@ impl<E: JsonlFamilyError> JsonlFamilyTerminalProof<E> {
         Self::exact_opened_path(source_path, authority, authority_path, &opened)
     }
 
+    /// Binds an exact terminal proof only when the reopened member is still
+    /// the observation admitted by discovery. Rejected members need this
+    /// constructor because they have no scan certificate to carry that fence.
+    pub fn exact_admitted_path(
+        source_path: PathBuf,
+        authority: Arc<ProviderSourceRoot<E>>,
+        authority_path: PathBuf,
+        admitted: &JsonlFileObservation,
+    ) -> JsonlResult<Self, E> {
+        let opened = authority.open_file(&authority_path)?;
+        let current = observe_opened_file(&source_path, &opened)?;
+        if &current != admitted {
+            return Err(E::source_changed());
+        }
+        opened.revalidate_leaf()?;
+        Ok(Self::ExactFile {
+            binding: None,
+            source_path,
+            authority_path,
+            authority,
+            observation: current,
+        })
+    }
+
     pub fn exact_opened_path(
         source_path: PathBuf,
         authority: Arc<ProviderSourceRoot<E>>,

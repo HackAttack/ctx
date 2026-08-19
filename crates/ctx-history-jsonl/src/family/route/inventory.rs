@@ -124,6 +124,14 @@ impl<E: JsonlFamilyError> JsonlFamilyInventory<E> {
         self
     }
 
+    pub(super) fn with_appended_exact_dependencies(
+        mut self,
+        mut exact_dependencies: Vec<JsonlFamilyTerminalProof<E>>,
+    ) -> Self {
+        self.exact_dependencies.append(&mut exact_dependencies);
+        self
+    }
+
     pub fn root_missing(&self) -> bool {
         self.root_missing
     }

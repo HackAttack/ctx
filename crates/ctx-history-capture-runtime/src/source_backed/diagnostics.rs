@@ -360,6 +360,7 @@ pub struct SourceBackedLogicalSourceFailure {
     pub class: SourceBackedSourceFailureClass,
     pub carried_forward: bool,
     pub detail: String,
+    pub(super) allows_empty_route: bool,
 }
 
 /// Bounded logical-source failures from provider routes that still committed.
@@ -375,6 +376,7 @@ pub struct SourceBackedLogicalSourceFailures {
     failures: Vec<SourceBackedLogicalSourceFailure>,
     omitted: usize,
     route_totals: BTreeMap<SourceRouteIdentity, usize>,
+    route_allows_empty: BTreeMap<SourceRouteIdentity, bool>,
 }
 
 pub struct SourceBackedLogicalSourceFailureCheckpoint {
@@ -382,6 +384,7 @@ pub struct SourceBackedLogicalSourceFailureCheckpoint {
     omitted: usize,
     route_identity: SourceRouteIdentity,
     route_total: usize,
+    route_allows_empty: Option<bool>,
 }
 
 impl SourceBackedLogicalSourceFailures {
@@ -402,6 +405,10 @@ impl SourceBackedLogicalSourceFailures {
     }
 
     pub fn record(&mut self, failure: SourceBackedLogicalSourceFailure) {
+        self.route_allows_empty
+            .entry(failure.route_identity.clone())
+            .and_modify(|allowed| *allowed &= failure.allows_empty_route)
+            .or_insert(failure.allows_empty_route);
         *self
             .route_totals
             .entry(failure.route_identity.clone())
@@ -420,6 +427,12 @@ impl SourceBackedLogicalSourceFailures {
             .unwrap_or_default()
     }
 
+    pub fn all_failures_allow_empty_route(&self) -> bool {
+        !self.is_empty()
+            && self.route_allows_empty.len() == self.route_totals.len()
+            && self.route_allows_empty.values().all(|allowed| *allowed)
+    }
+
     pub fn checkpoint(
         &self,
         route_identity: SourceRouteIdentity,
@@ -428,6 +441,7 @@ impl SourceBackedLogicalSourceFailures {
             retained: self.failures.len(),
             omitted: self.omitted,
             route_total: self.route_total(&route_identity),
+            route_allows_empty: self.route_allows_empty.get(&route_identity).copied(),
             route_identity,
         }
     }
@@ -437,9 +451,14 @@ impl SourceBackedLogicalSourceFailures {
         self.omitted = checkpoint.omitted;
         if checkpoint.route_total == 0 {
             self.route_totals.remove(&checkpoint.route_identity);
+            self.route_allows_empty.remove(&checkpoint.route_identity);
         } else {
             self.route_totals
-                .insert(checkpoint.route_identity, checkpoint.route_total);
+                .insert(checkpoint.route_identity.clone(), checkpoint.route_total);
+            if let Some(allows_empty) = checkpoint.route_allows_empty {
+                self.route_allows_empty
+                    .insert(checkpoint.route_identity, allows_empty);
+            }
         }
     }
 }

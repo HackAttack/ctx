@@ -94,6 +94,7 @@ pub(crate) struct CodexNativeScanner {
     event_identity_state: CodexEventIdentityStateV0,
     active_core_page: Option<CodexNativePage>,
     exhausted: bool,
+    ownership_quarantined: bool,
 }
 
 struct SemanticScannerPosition {

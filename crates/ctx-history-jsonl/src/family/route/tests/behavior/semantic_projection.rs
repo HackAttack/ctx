@@ -2,6 +2,28 @@ use super::*;
 use ctx_history_capture_runtime::{CaptureLifecycleOpenOutcome, CaptureLifecycleSink};
 
 #[test]
+fn rejected_leaf_exact_proof_rejects_change_since_discovery() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    fs::create_dir_all(&root).unwrap();
+    let transcript = root.join("rejected.jsonl");
+    fs::write(&transcript, TEST_RECORD).unwrap();
+    let inventory = TestAdapter.discover(&root).unwrap();
+    let leaf = inventory.leaves().first().unwrap();
+    fs::write(&transcript, b"{\"message\":\"repaired\"}\n").unwrap();
+
+    let error = JsonlFamilyTerminalProof::exact_admitted_path(
+        leaf.source_path.clone(),
+        Arc::clone(&leaf.authority),
+        leaf.authority_path.clone(),
+        leaf.observation(),
+    )
+    .err()
+    .expect("changed rejected member must not receive an exact terminal proof");
+    assert!(matches!(error, SourceIoError::SourceChangedDuringCapture));
+}
+
+#[test]
 fn semantic_retry_restarts_as_replacement_before_emission_and_reports_shared_progress() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let root = temp.path().join("sessions");

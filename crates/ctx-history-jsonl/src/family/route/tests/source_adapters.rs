@@ -266,6 +266,7 @@ pub(super) fn expected_state(
         FamilyResident {
             ownership_initialized: true,
             owned_sources,
+            quarantined_sources: HashMap::new(),
             terminal_sources,
             absent_sources: Vec::new(),
             opening_membership: Some(opening_membership),

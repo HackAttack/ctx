@@ -704,14 +704,20 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
             && !has_successful_retained_source
             && !has_successful_source
         {
-            if failed_routes.is_empty() {
+            if failed_routes.is_empty() && !logical_source_failures.all_failures_allow_empty_route()
+            {
                 return Err(SourceBackedCoordinatorError::NoUsableLogicalSources {
                     failed_sources: logical_source_failures.clone(),
                 });
             }
-            return Err(SourceBackedCoordinatorError::NoUsableSourceRoutes {
-                failed_routes: bounded_source_failures(failed_routes.values()),
-            });
+            if !failed_routes.is_empty() {
+                return Err(SourceBackedCoordinatorError::NoUsableSourceRoutes {
+                    failed_routes: bounded_source_failures(failed_routes.values()),
+                });
+            }
+            // An explicitly quarantined ownership member can leave a
+            // successfully certified route empty without weakening the
+            // ordinary all-logical-failures guard above.
         }
 
         let history_progress = attempt_history_progress.borrow().snapshot();

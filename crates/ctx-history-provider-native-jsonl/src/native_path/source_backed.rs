@@ -508,6 +508,7 @@ fn bind_opened_leaf<R: NativeJsonlRuntime>(
         rejected_leaves.push(JsonlFamilyRejectedLeaf::bind_observed(
             path,
             authority_path,
+            probe.observation().clone(),
             TypedKey::bytes(serde_json::to_vec(&proof)?)
                 .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?,
             rejected_records,
