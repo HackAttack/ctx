@@ -10,6 +10,12 @@ pub enum EnvironmentKey {
     DbusSessionBusAddress,
     XdgRuntimeDir,
     LocalUsageEnabled,
+    Term,
+    ColorTerm,
+    NoColor,
+    CliColor,
+    CliColorForce,
+    Ci,
 }
 
 impl EnvironmentKey {
@@ -23,6 +29,12 @@ impl EnvironmentKey {
             Self::DbusSessionBusAddress => "DBUS_SESSION_BUS_ADDRESS",
             Self::XdgRuntimeDir => "XDG_RUNTIME_DIR",
             Self::LocalUsageEnabled => "CTX_LOCAL_USAGE_ENABLED",
+            Self::Term => "TERM",
+            Self::ColorTerm => "COLORTERM",
+            Self::NoColor => "NO_COLOR",
+            Self::CliColor => "CLICOLOR",
+            Self::CliColorForce => "CLICOLOR_FORCE",
+            Self::Ci => "CI",
         }
     }
 }

@@ -275,7 +275,7 @@ fn relative_and_directory_pro_paths_have_typed_errors() {
 #[test]
 fn typed_environment_allowlist_is_preserved_and_ambient_is_cleared() {
     let fixture = Fixture::new(
-        b"#!/usr/bin/python3\nimport os\nvalues=[os.getenv('PATH','<missing>'),os.getenv('LANG','<missing>'),os.getenv('HOME','<missing>')]\nos.write(1, '\\0'.join(values).encode())\n",
+        b"#!/usr/bin/python3\nimport os\nnames=['PATH','LANG','HOME','TERM','COLORTERM','NO_COLOR','CLICOLOR','CLICOLOR_FORCE','CI']\nvalues=[os.getenv(name,'<missing>') for name in names]\nos.write(1, '\\0'.join(values).encode())\n",
     );
     let mut request = McpRequest::new(Vec::new());
     request
@@ -285,7 +285,13 @@ fn typed_environment_allowlist_is_preserved_and_ambient_is_cleared() {
             EnvironmentKey::Path,
             OsStr::new("/usr/local/bin:/usr/bin:/bin"),
         )
-        .set(EnvironmentKey::Lang, OsStr::new("C.UTF-8"));
+        .set(EnvironmentKey::Lang, OsStr::new("C.UTF-8"))
+        .set(EnvironmentKey::Term, OsStr::new("xterm-256color"))
+        .set(EnvironmentKey::ColorTerm, OsStr::new("truecolor"))
+        .set(EnvironmentKey::NoColor, OsStr::new("0"))
+        .set(EnvironmentKey::CliColor, OsStr::new("1"))
+        .set(EnvironmentKey::CliColorForce, OsStr::new("1"))
+        .set(EnvironmentKey::Ci, OsStr::new("true"));
     let output = launch_mcp_with(
         &fixture,
         request,
@@ -299,7 +305,13 @@ fn typed_environment_allowlist_is_preserved_and_ambient_is_cleared() {
         [
             b"/usr/local/bin:/usr/bin:/bin".as_slice(),
             b"C.UTF-8",
-            b"/home/tester"
+            b"/home/tester",
+            b"xterm-256color",
+            b"truecolor",
+            b"0",
+            b"1",
+            b"1",
+            b"true",
         ]
     );
 }

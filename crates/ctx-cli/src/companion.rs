@@ -31,6 +31,14 @@ const FORWARDED_ENVIRONMENT: [(EnvironmentKey, &str); 8] = [
     (EnvironmentKey::XdgRuntimeDir, "XDG_RUNTIME_DIR"),
     (EnvironmentKey::LocalUsageEnabled, "CTX_LOCAL_USAGE_ENABLED"),
 ];
+const FORWARDED_TERMINAL_ENVIRONMENT: [(EnvironmentKey, &str); 6] = [
+    (EnvironmentKey::Term, "TERM"),
+    (EnvironmentKey::ColorTerm, "COLORTERM"),
+    (EnvironmentKey::NoColor, "NO_COLOR"),
+    (EnvironmentKey::CliColor, "CLICOLOR"),
+    (EnvironmentKey::CliColorForce, "CLICOLOR_FORCE"),
+    (EnvironmentKey::Ci, "CI"),
+];
 static COMPANION_CANCELLATION: OnceLock<Result<CancellationToken, ()>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -189,6 +197,7 @@ fn forward_paid_cli(arguments: Vec<OsString>) -> Result<ExitCode, CompanionLaunc
     let companion = installed_companion()?;
     let mut request = CliRequest::new(arguments);
     forward_environment(request.environment_mut());
+    forward_terminal_environment(request.environment_mut());
     let exit = CompanionBridge::new(BridgeLimits::default())
         .launch_cli(&companion, request, companion_cancellation()?)
         .map_err(classify_bridge_error)?;
@@ -196,7 +205,18 @@ fn forward_paid_cli(arguments: Vec<OsString>) -> Result<ExitCode, CompanionLaunc
 }
 
 fn forward_environment(environment: &mut CompanionEnvironment) {
-    for (key, name) in FORWARDED_ENVIRONMENT {
+    forward_selected_environment(environment, FORWARDED_ENVIRONMENT);
+}
+
+fn forward_terminal_environment(environment: &mut CompanionEnvironment) {
+    forward_selected_environment(environment, FORWARDED_TERMINAL_ENVIRONMENT);
+}
+
+fn forward_selected_environment<const N: usize>(
+    environment: &mut CompanionEnvironment,
+    selected: [(EnvironmentKey, &str); N],
+) {
+    for (key, name) in selected {
         if let Some(value) = std::env::var_os(name) {
             if environment_value_is_forwardable(key, value.as_os_str()) {
                 environment.set(key, value);
@@ -562,11 +582,21 @@ mod tests {
 
     #[test]
     fn forwarded_environment_is_the_complete_typed_allowlist() {
-        assert_eq!(FORWARDED_ENVIRONMENT.len(), MAX_ENVIRONMENT_ENTRIES);
+        assert_eq!(
+            FORWARDED_ENVIRONMENT.len() + FORWARDED_TERMINAL_ENVIRONMENT.len(),
+            MAX_ENVIRONMENT_ENTRIES
+        );
         assert!(FORWARDED_ENVIRONMENT
             .contains(&(EnvironmentKey::LocalUsageEnabled, "CTX_LOCAL_USAGE_ENABLED")));
         assert!(FORWARDED_ENVIRONMENT.contains(&(EnvironmentKey::Home, "HOME")));
         assert!(FORWARDED_ENVIRONMENT.contains(&(EnvironmentKey::Path, "PATH")));
+        assert!(FORWARDED_TERMINAL_ENVIRONMENT.contains(&(EnvironmentKey::Term, "TERM")));
+        assert!(FORWARDED_TERMINAL_ENVIRONMENT.contains(&(EnvironmentKey::ColorTerm, "COLORTERM")));
+        assert!(FORWARDED_TERMINAL_ENVIRONMENT.contains(&(EnvironmentKey::NoColor, "NO_COLOR")));
+        assert!(FORWARDED_TERMINAL_ENVIRONMENT.contains(&(EnvironmentKey::CliColor, "CLICOLOR")));
+        assert!(FORWARDED_TERMINAL_ENVIRONMENT
+            .contains(&(EnvironmentKey::CliColorForce, "CLICOLOR_FORCE")));
+        assert!(FORWARDED_TERMINAL_ENVIRONMENT.contains(&(EnvironmentKey::Ci, "CI")));
         assert!(environment_value_is_forwardable(
             EnvironmentKey::Home,
             OsStr::new("/home/tester")
