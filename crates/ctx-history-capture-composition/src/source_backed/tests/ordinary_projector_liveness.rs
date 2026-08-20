@@ -209,7 +209,7 @@ fn callback_failure_cancels_and_joins_long_production_jsonl_scan() {
     let started = Instant::now();
 
     let error = refresh_source_backed_generation_with_detailed_progress(
-        &temp.path().join("index"),
+        temp.path().join("index"),
         &registry,
         WriterOptions {
             indexer_threads: 1,
