@@ -1,6 +1,6 @@
 use super::hosted_pair_install::{
     acquire_hosted_install_lock, hosted_source_path, replace_hosted_file, stage_hosted_bytes,
-    HostedInstallMarker,
+    stage_hosted_file_if_changed, HostedInstallMarker, HostedPairPublication,
 };
 use super::progress_events::{CapabilityEventSink, IgnoreEvents, ProtocolEventWriter};
 use super::*;
@@ -56,6 +56,256 @@ fn hosted_pair_replacement_is_atomic_and_idempotently_repairable() {
         replace_hosted_file(&staged, &target, "test Pro").unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"protocol-v3-pro");
         assert!(!staged.exists());
+    }
+}
+
+#[test]
+fn hosted_pair_exact_core_reinstall_preserves_the_running_inode() {
+    let root = tempfile::tempdir().unwrap();
+    let candidate = root.path().join("candidate-ctx");
+    let installed = root.path().join("bin/ctx");
+    let installed_envelope = root.path().join("share/ctx/envelope.json");
+    let installed_companion = root.path().join("libexec/ctx-pro");
+    let installed_marker = root.path().join("bin/ctx.install.json");
+    let installed_receipt = root.path().join("share/ctx/receipt.json");
+    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(installed_envelope.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(installed_companion.parent().unwrap()).unwrap();
+    std::fs::write(&candidate, b"exact-signed-core").unwrap();
+    std::fs::write(&installed, b"exact-signed-core").unwrap();
+    let digest = format!("{:x}", Sha256::digest(b"exact-signed-core"));
+    #[cfg(unix)]
+    let inode_before = {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::metadata(&installed).unwrap().ino()
+    };
+
+    let staged_core = stage_hosted_file_if_changed(
+        &candidate,
+        &installed,
+        b"exact-signed-core".len() as u64,
+        &digest,
+        0o755,
+        "Core artifact",
+    )
+    .unwrap();
+    let staged_envelope = stage_hosted_bytes(
+        b"new-envelope",
+        &installed_envelope,
+        0o600,
+        "signed envelope",
+    )
+    .unwrap();
+    let staged_companion = stage_hosted_bytes(
+        b"new-pro",
+        &installed_companion,
+        0o755,
+        "companion artifact",
+    )
+    .unwrap();
+    let staged_marker =
+        stage_hosted_bytes(b"new-marker", &installed_marker, 0o600, "install marker").unwrap();
+    let staged_receipt =
+        stage_hosted_bytes(b"new-receipt", &installed_receipt, 0o600, "install receipt").unwrap();
+
+    HostedPairPublication {
+        staged_envelope: &staged_envelope,
+        installed_envelope: &installed_envelope,
+        staged_companion: &staged_companion,
+        installed_companion: &installed_companion,
+        staged_core: staged_core.as_deref(),
+        installed_core: &installed,
+        staged_marker: &staged_marker,
+        installed_marker: &installed_marker,
+        staged_receipt: &staged_receipt,
+        installed_receipt: &installed_receipt,
+    }
+    .publish()
+    .unwrap();
+
+    assert!(staged_core.is_none());
+    assert_eq!(std::fs::read(&installed).unwrap(), b"exact-signed-core");
+    assert_eq!(std::fs::read(installed_envelope).unwrap(), b"new-envelope");
+    assert_eq!(std::fs::read(installed_companion).unwrap(), b"new-pro");
+    assert_eq!(std::fs::read(installed_marker).unwrap(), b"new-marker");
+    assert_eq!(std::fs::read(installed_receipt).unwrap(), b"new-receipt");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        assert_eq!(std::fs::metadata(&installed).unwrap().ino(), inode_before);
+    }
+}
+
+#[test]
+fn hosted_pair_changed_core_is_staged_for_atomic_publication() {
+    let root = tempfile::tempdir().unwrap();
+    let candidate = root.path().join("candidate-ctx");
+    let installed = root.path().join("bin/ctx");
+    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    std::fs::write(&candidate, b"same-size-core-B").unwrap();
+    std::fs::write(&installed, b"same-size-core-A").unwrap();
+    let digest = format!("{:x}", Sha256::digest(b"same-size-core-B"));
+
+    let staged = stage_hosted_file_if_changed(
+        &candidate,
+        &installed,
+        b"same-size-core-B".len() as u64,
+        &digest,
+        0o755,
+        "Core artifact",
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(std::fs::read(&installed).unwrap(), b"same-size-core-A");
+    assert_eq!(std::fs::read(staged).unwrap(), b"same-size-core-B");
+}
+
+#[test]
+fn hosted_pair_exact_reinstall_failure_preserves_publication_prefix_and_receipt_last() {
+    let root = tempfile::tempdir().unwrap();
+    let candidate = root.path().join("candidate-ctx");
+    let installed = root.path().join("bin/ctx");
+    let installed_envelope = root.path().join("share/ctx/envelope.json");
+    let installed_companion = root.path().join("libexec/ctx-pro");
+    let installed_marker = root.path().join("bin/ctx.install.json");
+    let installed_receipt = root.path().join("share/ctx/receipt.json");
+    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(installed_envelope.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(installed_companion.parent().unwrap()).unwrap();
+    std::fs::write(&candidate, b"exact-signed-core").unwrap();
+    std::fs::write(&installed, b"exact-signed-core").unwrap();
+    std::fs::write(&installed_envelope, b"old-envelope").unwrap();
+    std::fs::write(&installed_companion, b"old-pro").unwrap();
+    std::fs::create_dir(&installed_marker).unwrap();
+    std::fs::write(&installed_receipt, b"old-receipt").unwrap();
+    let digest = format!("{:x}", Sha256::digest(b"exact-signed-core"));
+    #[cfg(unix)]
+    let inode_before = {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::metadata(&installed).unwrap().ino()
+    };
+
+    let staged_core = stage_hosted_file_if_changed(
+        &candidate,
+        &installed,
+        b"exact-signed-core".len() as u64,
+        &digest,
+        0o755,
+        "Core artifact",
+    )
+    .unwrap();
+    let staged_envelope = stage_hosted_bytes(
+        b"new-envelope",
+        &installed_envelope,
+        0o600,
+        "signed envelope",
+    )
+    .unwrap();
+    let staged_companion = stage_hosted_bytes(
+        b"new-pro",
+        &installed_companion,
+        0o755,
+        "companion artifact",
+    )
+    .unwrap();
+    let staged_marker =
+        stage_hosted_bytes(b"new-marker", &installed_marker, 0o600, "install marker").unwrap();
+    let staged_receipt =
+        stage_hosted_bytes(b"new-receipt", &installed_receipt, 0o600, "install receipt").unwrap();
+
+    assert!(HostedPairPublication {
+        staged_envelope: &staged_envelope,
+        installed_envelope: &installed_envelope,
+        staged_companion: &staged_companion,
+        installed_companion: &installed_companion,
+        staged_core: staged_core.as_deref(),
+        installed_core: &installed,
+        staged_marker: &staged_marker,
+        installed_marker: &installed_marker,
+        staged_receipt: &staged_receipt,
+        installed_receipt: &installed_receipt,
+    }
+    .publish()
+    .is_err());
+
+    assert_eq!(std::fs::read(installed_envelope).unwrap(), b"new-envelope");
+    assert_eq!(std::fs::read(installed_companion).unwrap(), b"new-pro");
+    assert_eq!(std::fs::read(&installed).unwrap(), b"exact-signed-core");
+    assert!(installed_marker.is_dir());
+    assert_eq!(std::fs::read(installed_receipt).unwrap(), b"old-receipt");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        assert_eq!(std::fs::metadata(&installed).unwrap().ino(), inode_before);
+    }
+}
+
+#[test]
+fn hosted_pair_exact_reinstall_publishes_rollback_watermark_before_companion() {
+    let root = tempfile::tempdir().unwrap();
+    let installed = root.path().join("bin/ctx");
+    let installed_envelope = root.path().join("share/ctx/envelope.json");
+    let installed_companion = root.path().join("libexec/ctx-pro");
+    let installed_marker = root.path().join("bin/ctx.install.json");
+    let installed_receipt = root.path().join("share/ctx/receipt.json");
+    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(installed_envelope.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(installed_companion.parent().unwrap()).unwrap();
+    std::fs::write(&installed, b"exact-signed-core").unwrap();
+    std::fs::write(&installed_envelope, b"old-envelope").unwrap();
+    std::fs::create_dir(&installed_companion).unwrap();
+    std::fs::write(&installed_marker, b"old-marker").unwrap();
+    std::fs::write(&installed_receipt, b"old-receipt").unwrap();
+    #[cfg(unix)]
+    let inode_before = {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::metadata(&installed).unwrap().ino()
+    };
+
+    let staged_envelope = stage_hosted_bytes(
+        b"new-envelope",
+        &installed_envelope,
+        0o600,
+        "signed envelope",
+    )
+    .unwrap();
+    let staged_companion = stage_hosted_bytes(
+        b"new-pro",
+        &installed_companion,
+        0o755,
+        "companion artifact",
+    )
+    .unwrap();
+    let staged_marker =
+        stage_hosted_bytes(b"new-marker", &installed_marker, 0o600, "install marker").unwrap();
+    let staged_receipt =
+        stage_hosted_bytes(b"new-receipt", &installed_receipt, 0o600, "install receipt").unwrap();
+
+    assert!(HostedPairPublication {
+        staged_envelope: &staged_envelope,
+        installed_envelope: &installed_envelope,
+        staged_companion: &staged_companion,
+        installed_companion: &installed_companion,
+        staged_core: None,
+        installed_core: &installed,
+        staged_marker: &staged_marker,
+        installed_marker: &installed_marker,
+        staged_receipt: &staged_receipt,
+        installed_receipt: &installed_receipt,
+    }
+    .publish()
+    .is_err());
+
+    assert_eq!(std::fs::read(installed_envelope).unwrap(), b"new-envelope");
+    assert!(installed_companion.is_dir());
+    assert_eq!(std::fs::read(&installed).unwrap(), b"exact-signed-core");
+    assert_eq!(std::fs::read(installed_marker).unwrap(), b"old-marker");
+    assert_eq!(std::fs::read(installed_receipt).unwrap(), b"old-receipt");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        assert_eq!(std::fs::metadata(&installed).unwrap().ino(), inode_before);
     }
 }
 

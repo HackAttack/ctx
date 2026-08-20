@@ -94,7 +94,14 @@ pub(super) fn run(arguments: &[std::ffi::OsString]) -> Result<()> {
         0o755,
         "companion artifact",
     )?;
-    let staged_core = stage_hosted_file(&candidate_core, &core, 0o755, "Core artifact")?;
+    let staged_core = stage_hosted_file_if_changed(
+        &candidate_core,
+        &core,
+        signed_identity.core().size_bytes(),
+        &signed_identity.core().sha256().to_hex(),
+        0o755,
+        "Core artifact",
+    )?;
     let staged_envelope =
         stage_hosted_file(&envelope, &installed_envelope, 0o600, "signed envelope")?;
     let staged_marker = stage_hosted_file(
@@ -106,18 +113,19 @@ pub(super) fn run(arguments: &[std::ffi::OsString]) -> Result<()> {
     let staged_receipt =
         stage_hosted_bytes(&receipt, &installed_receipt, 0o600, "install receipt")?;
 
-    // The signed rollback watermark advances before binaries. Every binary
-    // replacement remains usable because V3 makes old/new Core and Pro
-    // interoperable; the receipt is evidence only, so it is last.
-    replace_hosted_file(&staged_envelope, &installed_envelope, "signed envelope")?;
-    replace_hosted_file(
-        &staged_companion,
-        &installed_companion,
-        "companion artifact",
-    )?;
-    replace_hosted_file(&staged_core, &core, "Core artifact")?;
-    replace_hosted_file(&staged_marker, &current_marker_path, "install marker")?;
-    replace_hosted_file(&staged_receipt, &installed_receipt, "install receipt")?;
+    HostedPairPublication {
+        staged_envelope: &staged_envelope,
+        installed_envelope: &installed_envelope,
+        staged_companion: &staged_companion,
+        installed_companion: &installed_companion,
+        staged_core: staged_core.as_deref(),
+        installed_core: &core,
+        staged_marker: &staged_marker,
+        installed_marker: &current_marker_path,
+        staged_receipt: &staged_receipt,
+        installed_receipt: &installed_receipt,
+    }
+    .publish()?;
 
     let receipt = json!({
         "command": "hosted_managed_pair_install",
@@ -282,6 +290,70 @@ fn hosted_pair_receipt(identity: &VerifiedManagedPairIdentity, envelope: &[u8]) 
 fn stage_hosted_file(source: &Path, target: &Path, mode: u32, label: &str) -> Result<PathBuf> {
     let bytes = fs::read(source).with_context(|| format!("read hosted {label}"))?;
     stage_hosted_bytes(&bytes, target, mode, label)
+}
+
+pub(super) fn stage_hosted_file_if_changed(
+    source: &Path,
+    target: &Path,
+    expected_size: u64,
+    expected_sha256: &str,
+    mode: u32,
+    label: &str,
+) -> Result<Option<PathBuf>> {
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(anyhow!("installed hosted {label} path is unsafe"));
+        }
+        Ok(metadata)
+            if metadata.len() == expected_size && sha256_file(target)? == expected_sha256 =>
+        {
+            return Ok(None);
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).with_context(|| format!("inspect installed {label}")),
+    }
+    stage_hosted_file(source, target, mode, label).map(Some)
+}
+
+pub(super) struct HostedPairPublication<'a> {
+    pub(super) staged_envelope: &'a Path,
+    pub(super) installed_envelope: &'a Path,
+    pub(super) staged_companion: &'a Path,
+    pub(super) installed_companion: &'a Path,
+    pub(super) staged_core: Option<&'a Path>,
+    pub(super) installed_core: &'a Path,
+    pub(super) staged_marker: &'a Path,
+    pub(super) installed_marker: &'a Path,
+    pub(super) staged_receipt: &'a Path,
+    pub(super) installed_receipt: &'a Path,
+}
+
+impl HostedPairPublication<'_> {
+    pub(super) fn publish(self) -> Result<()> {
+        // The signed rollback watermark advances before binaries. Every
+        // binary replacement remains usable because V3 makes old/new Core and
+        // Pro interoperable; the receipt is evidence only, so it is last.
+        replace_hosted_file(
+            self.staged_envelope,
+            self.installed_envelope,
+            "signed envelope",
+        )?;
+        replace_hosted_file(
+            self.staged_companion,
+            self.installed_companion,
+            "companion artifact",
+        )?;
+        if let Some(staged_core) = self.staged_core {
+            replace_hosted_file(staged_core, self.installed_core, "Core artifact")?;
+        }
+        replace_hosted_file(self.staged_marker, self.installed_marker, "install marker")?;
+        replace_hosted_file(
+            self.staged_receipt,
+            self.installed_receipt,
+            "install receipt",
+        )
+    }
 }
 
 pub(super) fn stage_hosted_bytes(
