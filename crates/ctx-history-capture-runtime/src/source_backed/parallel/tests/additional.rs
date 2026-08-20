@@ -935,12 +935,13 @@ fn batch_emitter_chunks_projector_fanout_at_the_protocol_bound() {
 #[test]
 fn batch_application_preserves_order_accounts_progress_and_releases_reservations() {
     let temp = tempdir();
-    let index_root = temp.path().join("index");
     let source = test_source(34);
     let records = (1..=3)
         .map(|sequence| test_core_record(&source, sequence, 34))
         .collect::<Vec<_>>();
-    let mut harness = SinkHarness::open(&index_root);
+    let admission_delay = Duration::from_millis(20);
+    let mut harness =
+        SinkHarness::with_lifecycle(FakeLifecycle::with_add_prepared_delay(admission_delay));
     let preparer = harness.writer.core_preparation();
     let prepared_sizes = records
         .iter()
@@ -952,9 +953,11 @@ fn batch_application_preserves_order_accounts_progress_and_releases_reservations
     let resources = SourceBackedRouteResources::for_test(1, total_prepared_bytes, u64::MAX);
     let progress_resources = resources.clone();
     let mut progress = Vec::new();
+    let mut progress_observed_at = Vec::new();
     let mut live_bytes_after_acceptance = Vec::new();
     let mut report_progress = |delta| {
         progress.push(delta);
+        progress_observed_at.push(Instant::now());
         live_bytes_after_acceptance
             .push(progress_resources.live_bytes(SourceBackedRouteResourceKind::CoreOutput));
         Ok(())
@@ -986,20 +989,36 @@ fn batch_application_preserves_order_accounts_progress_and_releases_reservations
     assert_eq!(results, [()]);
     assert_eq!(
         progress,
-        vec![SourceBackedRecordProgressDelta {
-            accepted_records: 3,
-            completed_bytes: 512,
-            exact_total_bytes: None,
-            exact_completed_bytes: None,
-            session_ids: vec![records[0].session_id.digest()],
-            messages: 3,
-            tool_calls: 0,
-        }]
+        vec![
+            SourceBackedRecordProgressDelta {
+                accepted_records: 0,
+                completed_bytes: 512,
+                exact_total_bytes: None,
+                exact_completed_bytes: None,
+                session_ids: vec![records[0].session_id.digest()],
+                messages: 3,
+                tool_calls: 0,
+            },
+            SourceBackedRecordProgressDelta {
+                accepted_records: 3,
+                completed_bytes: 0,
+                exact_total_bytes: None,
+                exact_completed_bytes: None,
+                session_ids: Vec::new(),
+                messages: 0,
+                tool_calls: 0,
+            },
+        ]
     );
     assert_eq!(
         live_bytes_after_acceptance,
-        [0],
-        "batch progress is reported after every accepted record releases its reservation"
+        [total_prepared_bytes, 0],
+        "history progress precedes writer admission, while accepted-record progress follows it"
+    );
+    assert!(
+        progress_observed_at[1].saturating_duration_since(progress_observed_at[0])
+            >= admission_delay.saturating_mul(3),
+        "the history callback must be observable before the delayed writer completes the batch"
     );
     assert_eq!(
         resources.live_bytes(SourceBackedRouteResourceKind::CoreOutput),
@@ -1091,10 +1110,11 @@ fn scanner_and_slow_writer_activity_precede_durable_batch_acceptance() {
         observations.into_inner(),
         [
             Observation::Activity(SourceBackedCurrentSourceProgressStage::Parsing),
+            Observation::Accepted(0),
             Observation::Activity(SourceBackedCurrentSourceProgressStage::IndexWriting),
             Observation::Accepted(1),
         ],
-        "scanner and writer liveness must not fabricate accepted Core counters"
+        "scan history must precede writer activity without fabricating accepted Core counters"
     );
     assert_eq!(harness.writer.records.len(), 1);
 }

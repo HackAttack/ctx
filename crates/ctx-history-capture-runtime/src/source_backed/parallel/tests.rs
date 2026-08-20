@@ -1320,6 +1320,55 @@ fn ready_driven_transport_accepts_a_later_worker_while_the_first_job_is_withheld
     assert_eq!(results, [0, 1, 2, 3]);
 }
 
+#[test]
+fn pre_admission_batch_progress_failure_cancels_without_admitting_records() {
+    let temp = tempdir();
+    let source = test_source(40);
+    let resources = SourceBackedRouteResources::production(1);
+    let mut callback_count = 0;
+    let mut fail_progress = |_delta: SourceBackedRecordProgressDelta| {
+        callback_count += 1;
+        Err(SourceBackedCoordinatorError::Progress(
+            SourceBackedRouteError::new(
+                SourceBackedRouteErrorKind::Internal,
+                "injected pre-admission progress failure",
+            ),
+        ))
+    };
+    let mut harness = SinkHarness::open(&temp.path().join("pre-admission-progress-index"));
+    let error = harness
+        .run_with_resources_and_record_progress::<_, (), _>(
+            vec![ParallelLeafScanJob::new(source.clone(), ())],
+            1,
+            resources.clone(),
+            &mut fail_progress,
+            move |job, emitter| {
+                emitter.begin(ParallelLeafScanBegin::replace(job.source().clone()))?;
+                emitter.emit_core_records_with_completed_bytes(
+                    &mut CoreRecordEmissionBatchBuilder::default(),
+                    vec![test_core_record(&source, 1, 40)],
+                    512,
+                )?;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ParallelLeafScanError::Sink {
+            operation: ParallelLeafSinkOperation::AddCoreRecordBatch,
+            source: SourceBackedCoordinatorError::Progress(SourceBackedRouteError { detail, .. }),
+            ..
+        } if detail == "injected pre-admission progress failure"
+    ));
+    assert_eq!(callback_count, 1);
+    assert!(harness.writer.records.is_empty());
+    assert_eq!(
+        resources.live_bytes(SourceBackedRouteResourceKind::CoreOutput),
+        0
+    );
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct FailureOrderingSummary {
     failed_outcomes: Vec<bool>,

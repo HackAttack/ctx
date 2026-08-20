@@ -172,6 +172,17 @@ pub struct SourceBackedRecordProgressDelta {
     pub tool_calls: u64,
 }
 
+impl SourceBackedRecordProgressDelta {
+    fn has_live_history_or_scan_progress(&self) -> bool {
+        self.completed_bytes != 0
+            || self.exact_total_bytes.is_some()
+            || self.exact_completed_bytes.is_some()
+            || !self.session_ids.is_empty()
+            || self.messages != 0
+            || self.tool_calls != 0
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CoreRecordProgress {
     pub session_id: [u8; 32],
@@ -242,16 +253,27 @@ impl AttemptHistoryProgress {
 }
 
 impl SourceRecordProgress {
+    /// Incorporates durable admission without claiming a new UI cadence slot.
+    fn advance_accepted_records_without_emitting(&mut self, accepted_records: u64) {
+        self.completed_records = self.completed_records.saturating_add(accepted_records);
+    }
+
+    fn advance(&mut self, delta: SourceBackedRecordProgressDelta) {
+        self.advance_accepted_records_without_emitting(delta.accepted_records);
+        self.completed_bytes = self.completed_bytes.saturating_add(delta.completed_bytes);
+    }
+
     pub fn advanced_at(
         &mut self,
         delta: SourceBackedRecordProgressDelta,
         now: Instant,
         minimum_emit_interval: Duration,
     ) -> Option<SourceRecordProgressSnapshot> {
-        self.completed_records = self
-            .completed_records
-            .saturating_add(delta.accepted_records);
-        self.completed_bytes = self.completed_bytes.saturating_add(delta.completed_bytes);
+        if !delta.has_live_history_or_scan_progress() {
+            self.advance_accepted_records_without_emitting(delta.accepted_records);
+            return None;
+        }
+        self.advance(delta);
         let should_emit = self
             .last_emitted_at
             .is_none_or(|last| now.saturating_duration_since(last) >= minimum_emit_interval);
@@ -286,7 +308,7 @@ mod tests {
     const SOURCE_RECORD_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
     #[test]
-    fn source_record_progress_is_prompt_throttled_monotonic_and_flushable() {
+    fn source_record_progress_uses_scan_cadence_and_flushes_admission() {
         let started = Instant::now();
         let mut progress = SourceRecordProgress::default();
         let accepted = SourceBackedRecordProgressDelta {
@@ -349,6 +371,10 @@ mod tests {
         assert_eq!(next_source.completed_bytes, 0);
         assert_eq!(
             next_source.advanced_at(accepted, started, SOURCE_RECORD_PROGRESS_INTERVAL),
+            None
+        );
+        assert_eq!(
+            next_source.flush_at(started),
             Some(SourceRecordProgressSnapshot {
                 completed_records: 1,
                 completed_bytes: 0,
