@@ -150,7 +150,7 @@ pub(super) fn admitted_refresh_for_test(
         ctx_history_refresh_execution::AdmittedRefreshCoverage::CompleteCatalog,
         route_observations.keys().cloned().collect(),
         ctx_history_refresh_execution::SourceBackedAdmittedDiscovery::new(
-            ctx_history_capture_model::DiscoveryReport {
+            ctx_history_capture::DiscoveryReport {
                 sources: Vec::new(),
                 issues: Vec::new(),
             },
