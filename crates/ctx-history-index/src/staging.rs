@@ -243,14 +243,14 @@ pub(super) fn manifest_source_replacements(
     Ok(replacements)
 }
 
-/// Discards a completed one-pass staging run when it reproduced the full
-/// verified base manifest exactly.
+/// Finishes a completed one-pass run when it reproduced the full verified
+/// base manifest exactly.
 ///
 /// Requiring every retained base source to have a pending certificate prevents
 /// an incomplete route scan from turning a carried source into a false no-op.
-/// The already-created Tantivy writer is rolled back, so physical churn that
-/// leaves the logical corpus unchanged does not publish `meta.json`, advance
-/// the opstamp, or create a generation.
+/// An already-created Tantivy writer is rolled back; a writerless run is reused
+/// directly. Physical work that leaves the logical corpus unchanged therefore
+/// does not publish `meta.json`, advance the opstamp, or create a generation.
 pub(super) fn finish_identical_staging<F, I>(
     generation: &mut GenerationWriter,
     manifest: &GenerationManifest,
@@ -302,11 +302,10 @@ where
         .ok_or(IndexError::WriterInvariant(
             "staged no-op is missing its verified base manifest",
         ))?;
-    let mut writer = generation.writer.take().ok_or(IndexError::WriterInvariant(
-        "staged no-op is missing its Tantivy writer",
-    ))?;
-    writer.rollback()?;
-    writer.wait_merging_threads()?;
+    if let Some(mut writer) = generation.writer.take() {
+        writer.rollback()?;
+        writer.wait_merging_threads()?;
+    }
     Ok(true)
 }
 
@@ -314,7 +313,14 @@ fn staged_manifest_matches_base(
     generation: &GenerationWriter,
     manifest: &GenerationManifest,
 ) -> Result<bool> {
-    if generation.writer.is_none() {
+    if generation.writer.is_none()
+        && generation.complete_inventories.is_empty()
+        && generation.source_route_plan.is_none()
+    {
+        // A writerless candidate still needs current inventory authority. An
+        // exact route plan plus the manifest equality and source coverage
+        // checks below supplies it; otherwise preserve the ordinary path so
+        // its terminal witness can reject races.
         return Ok(false);
     }
     let Some(base) = generation
