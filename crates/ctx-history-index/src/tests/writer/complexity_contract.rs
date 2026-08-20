@@ -108,8 +108,12 @@ fn measure_exact_noop(retained_documents: u64) -> PublicationWork {
     )
 }
 
-fn measure_one_record_append(retained_documents: u64) -> PublicationWork {
+fn measure_one_record_append(retained_documents: u64) -> (PublicationWork, usize) {
     let fixture = retained_fixture(retained_documents);
+    let base_segment_count = {
+        let (searcher, _) = open_unverified_generation(fixture.root.path());
+        searcher.segment_readers().len()
+    };
     let mut writer = GenerationWriter::open(fixture.root.path(), WriterOptions::default())
         .unwrap()
         .into_writer()
@@ -146,9 +150,12 @@ fn measure_one_record_append(retained_documents: u64) -> PublicationWork {
 
     crate::publication::reset_verification_activity();
     writer.commit(|_| true).unwrap();
-    PublicationWork::capture(
-        constructions.load(Ordering::SeqCst),
-        crate::prior_session_identity_lookup_work(),
+    (
+        PublicationWork::capture(
+            constructions.load(Ordering::SeqCst),
+            crate::prior_session_identity_lookup_work(),
+        ),
+        base_segment_count,
     )
 }
 
@@ -270,8 +277,8 @@ fn exact_noop_work_is_zero_for_n_and_2n_retained_documents() {
 
 #[test]
 fn one_record_append_verification_work_is_independent_of_retained_corpus_size() {
-    let n = measure_one_record_append(RETAINED_N);
-    let two_n = measure_one_record_append(RETAINED_2N);
+    let (n, n_base_segments) = measure_one_record_append(RETAINED_N);
+    let (two_n, two_n_base_segments) = measure_one_record_append(RETAINED_2N);
 
     assert_eq!(
         n.logical_passes, 0,
@@ -287,7 +294,15 @@ fn one_record_append_verification_work_is_independent_of_retained_corpus_size() 
     assert_eq!(n.lineage_spills, 0);
     assert_eq!(n.complete_session_id_traversals, 0);
     assert_eq!(n.writer_constructions, 1);
-    assert_eq!(n.authority_lookup.segment_range_probes, 1);
+    assert_eq!(
+        n.authority_lookup.segment_range_probes, n_base_segments,
+        "the append must probe each live base segment exactly once"
+    );
+    assert_eq!(
+        two_n.authority_lookup.segment_range_probes, two_n_base_segments,
+        "the append must probe each live base segment exactly once"
+    );
+    assert!(n.authority_lookup.segment_range_probes <= MAX_SESSION_WITNESS_SEGMENT_PROBES);
     assert_eq!(n.authority_lookup.dictionary_terms, 1);
     assert_eq!(two_n.identity_terms, n.identity_terms);
     assert_eq!(two_n.identity_documents, n.identity_documents);
@@ -323,8 +338,11 @@ fn same_session_append_charges_each_live_segment_and_not_each_session_event() {
 #[test]
 #[ignore = "high-cardinality authority dictionary contract; tier-nightly"]
 fn high_cardinality_same_session_append_reads_only_the_live_witness() {
-    let work = measure_one_record_append(4_096);
-    assert_eq!(work.authority_lookup.segment_range_probes, 1);
+    let (work, base_segment_count) = measure_one_record_append(4_096);
+    assert_eq!(
+        work.authority_lookup.segment_range_probes,
+        base_segment_count
+    );
     assert_eq!(work.authority_lookup.dictionary_terms, 1);
     assert_eq!(work.authority_lookup.postings, 1);
     assert_eq!(work.authority_lookup.core_decodes, 1);

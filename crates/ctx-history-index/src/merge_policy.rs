@@ -139,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn append_tiering_waits_for_eight_one_doc_deltas_before_merging() {
+    fn append_tiering_waits_for_fan_in_one_doc_deltas_before_merging() {
         let index = Index::create_in_ram(Schema::builder().build());
         let base = segment(&index, 1_024, 0);
         let one_doc_deltas = (0..(LEXICAL_SEGMENT_MERGE_FAN_IN - 1))
@@ -150,7 +150,7 @@ mod tests {
             .compute_merge_candidates(&[vec![base], one_doc_deltas].concat());
         assert!(
             candidates.is_empty(),
-            "seven one-doc deltas must stay below the merge threshold even when a larger packed base exists"
+            "fan-in minus one one-doc deltas must stay below the merge threshold even when a larger packed base exists"
         );
     }
 }

@@ -224,7 +224,7 @@ invocation terms become searchable.
 
 Lexical publication keeps the active generation and one previous generation
 for recovery and pinned readers; their manifests and integrity receipts use the
-same two-generation bound. Append-only segments merge after eight comparable
+same two-generation bound. Append-only segments merge after sixteen comparable
 segments accumulate. A refresh that rewrites, replaces, or deletes indexed
 records marks the superseded documents deleted in their Tantivy segments. This
 incremental behavior is independent of the removed `relational.sqlite` path.
