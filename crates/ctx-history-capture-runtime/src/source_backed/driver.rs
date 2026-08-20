@@ -657,26 +657,17 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
                 "Core-record emission batch count overflowed",
             ))
         })?;
-        let progress = batch.progress().clone();
         let (prepared_records, reservation) = batch.into_prepared();
-        // A page is fully scanned before it reaches this coordinator. Make its
-        // literal scan and normalized-history facts visible before a blocked
-        // writer admission, but keep the durable Core-record count strictly
-        // behind successful admission of the whole batch.
-        self.report_record_progress(
-            0,
-            completed_bytes,
-            &progress.session_ids,
-            progress.messages,
-            progress.tool_calls,
-        )?;
         for prepared in prepared_records {
             self.report_index_writer_activity()?;
             self.lifecycle.add_prepared(prepared)?;
             self.flush_intermediate_activity()?;
         }
         drop(reservation);
-        self.report_record_progress(accepted_records, 0, &[], 0, 0)
+        // Parallel workers already publish exact history facts before their
+        // rendezvous. Reconcile source-local bytes once, after the whole batch
+        // is admitted, without recounting those facts.
+        self.report_record_progress(accepted_records, completed_bytes, &[], 0, 0)
     }
 
     pub fn record_logical_source_failure(

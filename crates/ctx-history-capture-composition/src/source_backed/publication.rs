@@ -1,5 +1,6 @@
 use super::*;
 
+mod completion;
 mod exact_scan;
 mod execution;
 mod model;
@@ -7,8 +8,9 @@ mod ownership;
 mod route_content;
 mod route_outcomes;
 
+use completion::run_after_successful_publication;
 use ctx_history_capture_model::{
-    source_level_progress, AttemptHistoryProgress, SourceRecordProgress,
+    source_level_progress, SharedAttemptHistoryProgress, SourceRecordProgress,
 };
 pub use ctx_history_capture_model::{
     SourceBackedDetailedRefreshProgress, SourceBackedRefreshProgress,
@@ -98,6 +100,7 @@ pub struct SourceBackedRefreshExecutor {
     discovery_duration: Duration,
     work_budget: usize,
     base_route_controls: BTreeMap<SourceRouteIdentity, Vec<u8>>,
+    attempt_history_progress: SharedAttemptHistoryProgress,
 }
 
 impl SourceBackedRefreshExecutor {
@@ -117,6 +120,7 @@ impl SourceBackedRefreshExecutor {
             discovery_duration,
             work_budget,
             base_route_controls: BTreeMap::new(),
+            attempt_history_progress: SharedAttemptHistoryProgress::default(),
         }
     }
 
@@ -125,6 +129,14 @@ impl SourceBackedRefreshExecutor {
         controls: BTreeMap<SourceRouteIdentity, Vec<u8>>,
     ) -> Self {
         self.base_route_controls = controls;
+        self
+    }
+
+    /// Attaches transient attempt-local scanner facts supplied by the refresh
+    /// engine. Ordinary standalone capture callers retain an isolated handle.
+    #[doc(hidden)]
+    pub fn with_attempt_history_progress(mut self, progress: SharedAttemptHistoryProgress) -> Self {
+        self.attempt_history_progress = progress;
         self
     }
 
@@ -304,7 +316,8 @@ impl SourceBackedRefreshExecutor {
             (
                 SourceBackedRefreshPlan::isolate(scope)
                     .with_reconciliation_demand(reconciliation_demand)
-                    .with_route_worksets(route_worksets),
+                    .with_route_worksets(route_worksets)
+                    .with_attempt_history_progress(self.attempt_history_progress.clone()),
                 &self.base_route_controls,
             ),
             report_progress,

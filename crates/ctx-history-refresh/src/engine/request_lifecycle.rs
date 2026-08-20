@@ -365,6 +365,7 @@ impl CoreRefreshEngine {
                 return None;
             }
             attempt.state = SourceBackedRefreshState::Running;
+            attempt.attempt_history_progress = Some(Default::default());
             attempt.started_at_ms = Some(utc_now().timestamp_millis());
             // The executor owns provider discovery. Persist the truthful live
             // phase before entering it so a long discovery cannot leave an
@@ -493,6 +494,12 @@ impl CoreRefreshEngine {
             },
         };
         let mut state = self.lock_state();
+        // Publication receipts and terminal progress are authoritative. Do
+        // not project transient producer facts once this attempt exits.
+        if let Some(attempt) = find_attempt_mut(&mut state, &request_id) {
+            attempt.snapshot_attempt_history_progress();
+            attempt.attempt_history_progress = None;
+        }
         let mut newly_published_generation = None;
         let mut terminal_persistence_pending = false;
         let (failed_run, did_work) = match verified {

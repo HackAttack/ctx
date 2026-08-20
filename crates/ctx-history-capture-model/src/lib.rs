@@ -31,10 +31,11 @@ pub use import::{
 pub use output::{OutputObservationKind, OutputOutcome, OutputOutcomeMetadata};
 pub use progress::{
     source_level_progress, AttemptHistoryProgress, AttemptHistoryProgressSnapshot,
-    CoreRecordBatchProgress, CoreRecordProgress, SourceBackedCurrentSourceProgress,
-    SourceBackedCurrentSourceProgressStage, SourceBackedDetailedRefreshProgress,
-    SourceBackedExactScanProgress, SourceBackedRecordProgressDelta, SourceBackedRefreshProgress,
-    SourceRecordProgress, SourceRecordProgressSnapshot,
+    CoreRecordBatchProgress, CoreRecordProgress, SharedAttemptHistoryProgress,
+    SourceBackedCurrentSourceProgress, SourceBackedCurrentSourceProgressStage,
+    SourceBackedDetailedRefreshProgress, SourceBackedExactScanProgress,
+    SourceBackedRecordProgressDelta, SourceBackedRefreshProgress, SourceRecordProgress,
+    SourceRecordProgressSnapshot,
 };
 pub use record::RecordDigest;
 pub use route::{SourceRouteIdentity, SourceRouteIdentityError};

@@ -80,7 +80,7 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
                 .then_some(route.metadata.source.provider)
         })
         .collect::<Vec<_>>();
-    let attempt_history_progress = std::cell::RefCell::new(AttemptHistoryProgress::default());
+    let attempt_history_progress = plan.attempt_history_progress.clone();
     let exact_scan_accounting = std::cell::RefCell::new(AttemptExactScanAccounting::default());
     let exact_scan_accounting_valid = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let mut report_progress = |mut update: SourceBackedDetailedRefreshProgress| {
@@ -245,7 +245,8 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
                 continue;
             };
             exact_scan_accounting.borrow_mut().begin_route();
-            let history_progress = attempt_history_progress.borrow().snapshot();
+            attempt_history_progress.reset_parallel_byte_debt();
+            let history_progress = attempt_history_progress.snapshot();
             report_progress(source_level_progress(SourceBackedRefreshProgress {
                 phase: "refreshing",
                 completed_sources: completed_routes,
@@ -301,7 +302,7 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
                         return Err(SourceBackedCoordinatorError::Progress(error.clone()));
                     }
                     exact_scan_accounting.borrow_mut().observe(&delta);
-                    attempt_history_progress.borrow_mut().advance(&delta);
+                    attempt_history_progress.advance_coordinator(&delta);
                     let Some(source_progress) = record_progress.borrow_mut().advanced_at(
                         delta,
                         Instant::now(),
@@ -309,7 +310,7 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
                     ) else {
                         return Ok(());
                     };
-                    let history_progress = attempt_history_progress.borrow().snapshot();
+                    let history_progress = attempt_history_progress.snapshot();
                     match progress_callback.borrow_mut()(source_level_progress(
                         SourceBackedRefreshProgress {
                             phase: "refreshing",
@@ -340,7 +341,7 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
                     if let Some(error) = progress_failure.borrow().as_ref() {
                         return Err(error.clone());
                     }
-                    let history_progress = attempt_history_progress.borrow().snapshot();
+                    let history_progress = attempt_history_progress.snapshot();
                     match progress_callback.borrow_mut()(SourceBackedDetailedRefreshProgress {
                         progress: SourceBackedRefreshProgress {
                             phase: "refreshing",
@@ -397,7 +398,7 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
                 return Err(SourceBackedCoordinatorError::Progress(error));
             }
             if let Some(source_progress) = record_progress.flush_at(Instant::now()) {
-                let history_progress = attempt_history_progress.borrow().snapshot();
+                let history_progress = attempt_history_progress.snapshot();
                 report_progress(source_level_progress(SourceBackedRefreshProgress {
                     phase: "refreshing",
                     completed_sources: completed_routes,
@@ -420,6 +421,20 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
             let terminal_route_for_eta = exact_scan_accounting
                 .borrow_mut()
                 .finish_route(scan_result.is_ok());
+            if scan_result.is_err() {
+                // Parallel workers have joined before scan returns. Their
+                // cumulative scanner facts remain available for this failed
+                // attempt, but no next route may consume their byte debt.
+                attempt_history_progress.reset_parallel_byte_debt();
+            } else if attempt_history_progress.parallel_byte_debt() != 0 {
+                return Err(SourceBackedCoordinatorError::RouteScan {
+                    provider: route.metadata.source.provider,
+                    source: SourceBackedRouteError::new(
+                        SourceBackedRouteErrorKind::Internal,
+                        "parallel scanner byte debt was not reconciled before route completion",
+                    ),
+                });
+            }
             match scan_result {
                 Ok(()) => {
                     let replacement_control_identity =
@@ -464,7 +479,7 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
                         route_index,
                         &mut owners,
                     )?;
-                    let history_progress = attempt_history_progress.borrow().snapshot();
+                    let history_progress = attempt_history_progress.snapshot();
                     report_progress(source_level_progress(SourceBackedRefreshProgress {
                         phase: "verifying",
                         completed_sources: completed_routes,
@@ -602,7 +617,7 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
                 continue;
             }
             lifecycle.begin_route_stage(route_identity.clone())?;
-            let history_progress = attempt_history_progress.borrow().snapshot();
+            let history_progress = attempt_history_progress.snapshot();
             report_progress(source_level_progress(SourceBackedRefreshProgress {
                 phase: "verifying",
                 completed_sources: completed_routes,
@@ -720,7 +735,7 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
             // ordinary all-logical-failures guard above.
         }
 
-        let history_progress = attempt_history_progress.borrow().snapshot();
+        let history_progress = attempt_history_progress.snapshot();
         report_progress(source_level_progress(SourceBackedRefreshProgress {
             phase: "committing",
             completed_sources: scanned_routes,
@@ -926,24 +941,9 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
             commit.snapshot(),
         )
     });
-    for route in &registry.routes {
-        if route
-            .metadata
-            .route_identity
-            .as_ref()
-            .is_some_and(|identity| successful_route_ids.contains(identity))
-        {
-            if let Some(after_publication) = route
-                .driver
-                .as_ref()
-                .and_then(|driver| driver.after_successful_publication.as_ref())
-            {
-                after_publication();
-            }
-        }
-    }
+    run_after_successful_publication(registry, &successful_route_ids);
     let scan_stage_duration = scan_started.elapsed();
-    let history_progress = attempt_history_progress.borrow().snapshot();
+    let history_progress = attempt_history_progress.snapshot();
     let _ = report_progress(source_level_progress(SourceBackedRefreshProgress {
         phase: "committed",
         completed_sources: scanned_routes,

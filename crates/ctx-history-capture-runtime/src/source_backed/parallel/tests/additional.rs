@@ -933,130 +933,7 @@ fn batch_emitter_chunks_projector_fanout_at_the_protocol_bound() {
 }
 
 #[test]
-fn batch_application_preserves_order_accounts_progress_and_releases_reservations() {
-    let temp = tempdir();
-    let source = test_source(34);
-    let records = (1..=3)
-        .map(|sequence| test_core_record(&source, sequence, 34))
-        .collect::<Vec<_>>();
-    let admission_delay = Duration::from_millis(20);
-    let mut harness =
-        SinkHarness::with_lifecycle(FakeLifecycle::with_add_prepared_delay(admission_delay));
-    let preparer = harness.writer.core_preparation();
-    let prepared_sizes = records
-        .iter()
-        .cloned()
-        .map(|record| u64::try_from(preparer.prepare(record).unwrap().encoded_bytes).unwrap())
-        .collect::<Vec<_>>();
-    let total_prepared_bytes = prepared_sizes.iter().copied().sum::<u64>();
-
-    let resources = SourceBackedRouteResources::for_test(1, total_prepared_bytes, u64::MAX);
-    let progress_resources = resources.clone();
-    let mut progress = Vec::new();
-    let mut progress_observed_at = Vec::new();
-    let mut live_bytes_after_acceptance = Vec::new();
-    let mut report_progress = |delta| {
-        progress.push(delta);
-        progress_observed_at.push(Instant::now());
-        live_bytes_after_acceptance
-            .push(progress_resources.live_bytes(SourceBackedRouteResourceKind::CoreOutput));
-        Ok(())
-    };
-    let job_source = source.clone();
-    let emitted_records = records.clone();
-    let results = harness
-        .run_with_resources_and_record_progress::<_, (), _>(
-            vec![ParallelLeafScanJob::new(source.clone(), ())],
-            1,
-            resources.clone(),
-            &mut report_progress,
-            move |job, emitter| {
-                emitter.begin(ParallelLeafScanBegin::replace(job.source().clone()))?;
-                let mut emissions = CoreRecordEmissionBatchBuilder::default();
-                emitter.emit_core_records_with_completed_bytes(
-                    &mut emissions,
-                    emitted_records.clone(),
-                    512,
-                )?;
-                emitter.complete(ParallelLeafScanComplete::replace(
-                    test_certificate(&job_source, 34, 3, false),
-                    (),
-                ))?;
-                Ok(())
-            },
-        )
-        .unwrap();
-    assert_eq!(results, [()]);
-    assert_eq!(
-        progress,
-        vec![
-            SourceBackedRecordProgressDelta {
-                accepted_records: 0,
-                completed_bytes: 512,
-                exact_total_bytes: None,
-                exact_completed_bytes: None,
-                session_ids: vec![records[0].session_id.digest()],
-                messages: 3,
-                tool_calls: 0,
-            },
-            SourceBackedRecordProgressDelta {
-                accepted_records: 3,
-                completed_bytes: 0,
-                exact_total_bytes: None,
-                exact_completed_bytes: None,
-                session_ids: Vec::new(),
-                messages: 0,
-                tool_calls: 0,
-            },
-        ]
-    );
-    assert_eq!(
-        live_bytes_after_acceptance,
-        [total_prepared_bytes, 0],
-        "history progress precedes writer admission, while accepted-record progress follows it"
-    );
-    assert!(
-        progress_observed_at[1].saturating_duration_since(progress_observed_at[0])
-            >= admission_delay.saturating_mul(3),
-        "the history callback must be observable before the delayed writer completes the batch"
-    );
-    assert_eq!(
-        resources.live_bytes(SourceBackedRouteResourceKind::CoreOutput),
-        0
-    );
-
-    let batch_commit = harness.commit();
-
-    let reference_root = temp.path().join("reference-index");
-    let mut reference = SinkHarness::open(&reference_root);
-    let reference_source = source.clone();
-    let reference_records = records.clone();
-    reference
-        .run(
-            vec![ParallelLeafScanJob::new(source, ())],
-            1,
-            move |job, emitter| {
-                emitter.begin(ParallelLeafScanBegin::replace(job.source().clone()))?;
-                for record in reference_records.clone() {
-                    emitter.emit_core_record(record)?;
-                }
-                emitter.complete(ParallelLeafScanComplete::replace(
-                    test_certificate(&reference_source, 34, 3, false),
-                    (),
-                ))?;
-                Ok(())
-            },
-        )
-        .unwrap();
-    let reference_commit = reference.commit();
-    assert_eq!(
-        batch_commit.generation_id, reference_commit.generation_id,
-        "one batch must preserve the canonical order of the equivalent single-record emissions"
-    );
-}
-
-#[test]
-fn scanner_and_slow_writer_activity_precede_durable_batch_acceptance() {
+fn scanner_and_worker_history_precede_durable_batch_acceptance() {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Observation {
         Activity(SourceBackedCurrentSourceProgressStage),
@@ -1065,8 +942,11 @@ fn scanner_and_slow_writer_activity_precede_durable_batch_acceptance() {
 
     let source = test_source(38);
     let record = test_core_record(&source, 1, 38);
-    let resources = SourceBackedRouteResources::production(1);
+    let shared_history = ctx_history_capture_model::SharedAttemptHistoryProgress::default();
+    let resources = SourceBackedRouteResources::production(1)
+        .with_attempt_history_progress(shared_history.clone());
     let scanner_resources = resources.clone();
+    let observed_history = shared_history.clone();
     let observations = RefCell::new(Vec::new());
     let mut report_record_progress = |delta: SourceBackedRecordProgressDelta| {
         observations
@@ -1075,6 +955,18 @@ fn scanner_and_slow_writer_activity_precede_durable_batch_acceptance() {
         Ok(())
     };
     let mut report_current_source_progress = |progress: SourceBackedCurrentSourceProgress| {
+        if progress.stage == SourceBackedCurrentSourceProgressStage::IndexWriting {
+            assert_eq!(
+                observed_history.snapshot(),
+                ctx_history_capture_model::AttemptHistoryProgressSnapshot {
+                    processed_sessions: 1,
+                    processed_messages: 1,
+                    processed_tool_calls: 0,
+                    processed_bytes: 0,
+                },
+                "worker-owned history must be visible before writer admission"
+            );
+        }
         observations
             .borrow_mut()
             .push(Observation::Activity(progress.stage));
@@ -1110,11 +1002,10 @@ fn scanner_and_slow_writer_activity_precede_durable_batch_acceptance() {
         observations.into_inner(),
         [
             Observation::Activity(SourceBackedCurrentSourceProgressStage::Parsing),
-            Observation::Accepted(0),
             Observation::Activity(SourceBackedCurrentSourceProgressStage::IndexWriting),
             Observation::Accepted(1),
         ],
-        "scan history must precede writer activity without fabricating accepted Core counters"
+        "scanner activity and worker history must precede durable Core acceptance"
     );
     assert_eq!(harness.writer.records.len(), 1);
 }

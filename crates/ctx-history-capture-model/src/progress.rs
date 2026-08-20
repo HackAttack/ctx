@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -19,9 +20,9 @@ pub struct SourceBackedRefreshProgress {
     pub providers: Vec<CaptureProvider>,
     /// Distinct normalized sessions observed across this refresh attempt.
     pub processed_sessions: u64,
-    /// Normalized message records accepted across this refresh attempt.
+    /// Normalized message records observed across this refresh attempt.
     pub processed_messages: u64,
-    /// Normalized tool-call records accepted across this refresh attempt.
+    /// Normalized tool-call records observed across this refresh attempt.
     pub processed_tool_calls: u64,
     /// Logical input bytes processed across this refresh attempt.
     pub processed_bytes: u64,
@@ -172,17 +173,6 @@ pub struct SourceBackedRecordProgressDelta {
     pub tool_calls: u64,
 }
 
-impl SourceBackedRecordProgressDelta {
-    fn has_live_history_or_scan_progress(&self) -> bool {
-        self.completed_bytes != 0
-            || self.exact_total_bytes.is_some()
-            || self.exact_completed_bytes.is_some()
-            || !self.session_ids.is_empty()
-            || self.messages != 0
-            || self.tool_calls != 0
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CoreRecordProgress {
     pub session_id: [u8; 32],
@@ -252,28 +242,113 @@ impl AttemptHistoryProgress {
     }
 }
 
+/// Attempt-local live history facts shared by parallel scanners and the
+/// coordinator. This is intentionally transient: it makes already-prepared
+/// page facts observable while the coordinator is blocked, but the terminal
+/// publication receipt remains the durable authority.
+#[doc(hidden)]
+#[derive(Debug, Clone, Default)]
+pub struct SharedAttemptHistoryProgress {
+    state: Arc<Mutex<SharedAttemptHistoryProgressState>>,
+}
+
+#[derive(Debug, Default)]
+struct SharedAttemptHistoryProgressState {
+    history: AttemptHistoryProgress,
+    parallel_byte_debt: u64,
+}
+
+impl SharedAttemptHistoryProgress {
+    pub fn snapshot(&self) -> AttemptHistoryProgressSnapshot {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .history
+            .snapshot()
+    }
+
+    /// Publishes exact scanner-owned page facts before the worker rendezvous.
+    /// The coordinator later consumes the byte debt when it reports the same
+    /// source-local progress, so the shared attempt total is never summed.
+    pub fn publish_parallel_page(&self, completed_bytes: u64, progress: &CoreRecordBatchProgress) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state
+            .history
+            .processed_session_ids
+            .extend(progress.session_ids.iter().copied());
+        state.history.processed_messages = state
+            .history
+            .processed_messages
+            .saturating_add(progress.messages);
+        state.history.processed_tool_calls = state
+            .history
+            .processed_tool_calls
+            .saturating_add(progress.tool_calls);
+        state.history.processed_bytes = state
+            .history
+            .processed_bytes
+            .saturating_add(completed_bytes);
+        state.parallel_byte_debt = state.parallel_byte_debt.saturating_add(completed_bytes);
+    }
+
+    /// Incorporates coordinator-owned progress, consuming bytes that were
+    /// already published by a parallel worker first. Session/message/tool
+    /// facts are supplied only by serial coordinator paths.
+    pub fn advance_coordinator(&self, delta: &SourceBackedRecordProgressDelta) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let covered = state.parallel_byte_debt.min(delta.completed_bytes);
+        state.parallel_byte_debt -= covered;
+        state
+            .history
+            .processed_session_ids
+            .extend(delta.session_ids.iter().copied());
+        state.history.processed_messages = state
+            .history
+            .processed_messages
+            .saturating_add(delta.messages);
+        state.history.processed_tool_calls = state
+            .history
+            .processed_tool_calls
+            .saturating_add(delta.tool_calls);
+        state.history.processed_bytes = state
+            .history
+            .processed_bytes
+            .saturating_add(delta.completed_bytes.saturating_sub(covered));
+    }
+
+    /// A new route must not consume a prior route's parallel byte debt.
+    pub fn reset_parallel_byte_debt(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .parallel_byte_debt = 0;
+    }
+
+    pub fn parallel_byte_debt(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .parallel_byte_debt
+    }
+}
+
 impl SourceRecordProgress {
-    /// Incorporates durable admission without claiming a new UI cadence slot.
-    fn advance_accepted_records_without_emitting(&mut self, accepted_records: u64) {
-        self.completed_records = self.completed_records.saturating_add(accepted_records);
-    }
-
-    fn advance(&mut self, delta: SourceBackedRecordProgressDelta) {
-        self.advance_accepted_records_without_emitting(delta.accepted_records);
-        self.completed_bytes = self.completed_bytes.saturating_add(delta.completed_bytes);
-    }
-
     pub fn advanced_at(
         &mut self,
         delta: SourceBackedRecordProgressDelta,
         now: Instant,
         minimum_emit_interval: Duration,
     ) -> Option<SourceRecordProgressSnapshot> {
-        if !delta.has_live_history_or_scan_progress() {
-            self.advance_accepted_records_without_emitting(delta.accepted_records);
-            return None;
-        }
-        self.advance(delta);
+        self.completed_records = self
+            .completed_records
+            .saturating_add(delta.accepted_records);
+        self.completed_bytes = self.completed_bytes.saturating_add(delta.completed_bytes);
         let should_emit = self
             .last_emitted_at
             .is_none_or(|last| now.saturating_duration_since(last) >= minimum_emit_interval);
@@ -308,7 +383,39 @@ mod tests {
     const SOURCE_RECORD_PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 
     #[test]
-    fn source_record_progress_uses_scan_cadence_and_flushes_admission() {
+    fn shared_attempt_progress_deduplicates_workers_and_consumes_parallel_byte_debt() {
+        let shared = SharedAttemptHistoryProgress::default();
+        let first = CoreRecordBatchProgress {
+            session_ids: vec![[7; 32]],
+            messages: 2,
+            tool_calls: 1,
+        };
+        let duplicate = CoreRecordBatchProgress {
+            session_ids: vec![[7; 32]],
+            messages: 3,
+            tool_calls: 2,
+        };
+        shared.publish_parallel_page(40, &first);
+        shared.publish_parallel_page(60, &duplicate);
+        assert_eq!(
+            shared.snapshot(),
+            AttemptHistoryProgressSnapshot {
+                processed_sessions: 1,
+                processed_messages: 5,
+                processed_tool_calls: 3,
+                processed_bytes: 100,
+            }
+        );
+        shared.advance_coordinator(&SourceBackedRecordProgressDelta {
+            completed_bytes: 100,
+            ..Default::default()
+        });
+        assert_eq!(shared.parallel_byte_debt(), 0);
+        assert_eq!(shared.snapshot().processed_bytes, 100);
+    }
+
+    #[test]
+    fn source_record_progress_is_prompt_throttled_monotonic_and_flushable() {
         let started = Instant::now();
         let mut progress = SourceRecordProgress::default();
         let accepted = SourceBackedRecordProgressDelta {
@@ -371,15 +478,12 @@ mod tests {
         assert_eq!(next_source.completed_bytes, 0);
         assert_eq!(
             next_source.advanced_at(accepted, started, SOURCE_RECORD_PROGRESS_INTERVAL),
-            None
-        );
-        assert_eq!(
-            next_source.flush_at(started),
             Some(SourceRecordProgressSnapshot {
                 completed_records: 1,
                 completed_bytes: 0,
             })
         );
+        assert_eq!(next_source.flush_at(started), None);
     }
 
     #[test]

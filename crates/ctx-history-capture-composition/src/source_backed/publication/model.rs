@@ -1,9 +1,11 @@
 use super::*;
+use ctx_history_capture_model::SharedAttemptHistoryProgress;
 
 pub(super) struct SourceBackedRefreshPlan {
     pub(super) scope: SourceBackedRefreshScope,
     pub(super) reconciliation_demand: SourceBackedReconciliationDemand,
     pub(super) route_worksets: BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
+    pub(super) attempt_history_progress: SharedAttemptHistoryProgress,
     #[cfg(test)]
     resource_limits: Option<(u64, u64)>,
 }
@@ -14,6 +16,7 @@ impl SourceBackedRefreshPlan {
             scope,
             reconciliation_demand: SourceBackedReconciliationDemand::Exhaustive,
             route_worksets: BTreeMap::new(),
+            attempt_history_progress: SharedAttemptHistoryProgress::default(),
             #[cfg(test)]
             resource_limits: None,
         }
@@ -32,6 +35,14 @@ impl SourceBackedRefreshPlan {
         route_worksets: BTreeMap<SourceRouteIdentity, BTreeSet<PathBuf>>,
     ) -> Self {
         self.route_worksets = route_worksets;
+        self
+    }
+
+    pub(super) fn with_attempt_history_progress(
+        mut self,
+        progress: SharedAttemptHistoryProgress,
+    ) -> Self {
+        self.attempt_history_progress = progress;
         self
     }
 
@@ -54,11 +65,13 @@ impl SourceBackedRefreshPlan {
         if let Some((output, scratch)) = self.resource_limits {
             return SourceBackedRouteResources::for_test(work_budget, output, scratch)
                 .with_reconciliation_demand(self.reconciliation_demand)
-                .with_member_workset(self.route_worksets.get(route).cloned());
+                .with_member_workset(self.route_worksets.get(route).cloned())
+                .with_attempt_history_progress(self.attempt_history_progress.clone());
         }
         SourceBackedRouteResources::production(work_budget)
             .with_reconciliation_demand(self.reconciliation_demand)
             .with_member_workset(self.route_worksets.get(route).cloned())
+            .with_attempt_history_progress(self.attempt_history_progress.clone())
     }
 }
 

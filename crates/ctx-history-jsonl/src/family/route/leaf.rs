@@ -4,6 +4,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_model::CoreRecordBatchProgress;
 use ctx_history_core::{CertifiedSource, CertifiedSourceAppend};
 
 use super::super::{
@@ -26,6 +27,7 @@ mod evidence;
 mod outcomes;
 mod output;
 mod prepare;
+mod scheduling;
 mod semantic;
 #[cfg(test)]
 use super::{
@@ -53,6 +55,9 @@ pub(super) use output::{JsonlLeafOutput, JsonlLeafOutputEvent};
 #[cfg(test)]
 pub(super) use prepare::prepare_leaf;
 use prepare::prepare_leaf_with_resources;
+use scheduling::family_scanner_worker_count;
+#[cfg(test)]
+pub(super) use scheduling::family_scanner_worker_count_policy;
 use semantic::{prepare_semantic_leaf, SemanticLeafExecution, SemanticLeafPlan};
 
 const JSONL_SINGLE_LEAF_PIPELINE_MIN_BYTES: u64 = 1024 * 1024;
@@ -294,10 +299,24 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
             let mut emitted_bytes = 0_u64;
             let route_resources = emitter.route_resources();
             let mut emit = |event| {
+                let completed_bytes = match &event {
+                    JsonlLeafOutputEvent::Page {
+                        completed_bytes, ..
+                    } => *completed_bytes,
+                    JsonlLeafOutputEvent::Record { .. } | JsonlLeafOutputEvent::Flush => 0,
+                };
                 if matches!(
                     &event,
                     JsonlLeafOutputEvent::Page { records, .. } if records.is_empty()
                 ) {
+                    // An ignored physical page still has exact scan bytes.
+                    // It has no protocol message, so publish its transient
+                    // attempt facts directly and let terminal accounting
+                    // consume the matching byte debt.
+                    route_resources.publish_parallel_page_progress(
+                        completed_bytes,
+                        &CoreRecordBatchProgress::default(),
+                    );
                     return Ok(());
                 }
                 let flush = matches!(
@@ -308,12 +327,6 @@ fn run_parallel_leaf_job_batch<R: JsonlFamilyRuntime>(
                     JsonlLeafOutputEvent::Page { append, .. }
                     | JsonlLeafOutputEvent::Record { append, .. } => Some(*append),
                     JsonlLeafOutputEvent::Flush => None,
-                };
-                let completed_bytes = match &event {
-                    JsonlLeafOutputEvent::Page {
-                        completed_bytes, ..
-                    } => *completed_bytes,
-                    JsonlLeafOutputEvent::Record { .. } | JsonlLeafOutputEvent::Flush => 0,
                 };
                 if let Some(append) = append {
                     if !staging_started {
@@ -962,31 +975,6 @@ pub(super) fn base_for_leaf<'a, E: JsonlFamilyError>(
                 .source()
                 .exact_descriptor_eq(leaf.source())
         })
-}
-
-pub(super) fn family_scanner_worker_count_policy(
-    recommended: usize,
-    requested_workers: Option<usize>,
-) -> usize {
-    if recommended == 0 {
-        return 0;
-    }
-    requested_workers
-        .unwrap_or(recommended)
-        .clamp(1, recommended)
-}
-
-fn family_scanner_worker_count(recommended: usize) -> usize {
-    #[cfg(test)]
-    {
-        super::FAMILY_SCANNER_WORKERS_OVERRIDE.with(|value| {
-            family_scanner_worker_count_policy(recommended, Some(value.get().unwrap_or(1)))
-        })
-    }
-    #[cfg(not(test))]
-    {
-        family_scanner_worker_count_policy(recommended, None)
-    }
 }
 
 fn checked_increment<E: JsonlFamilyError>(value: u64) -> JsonlResult<u64, E> {

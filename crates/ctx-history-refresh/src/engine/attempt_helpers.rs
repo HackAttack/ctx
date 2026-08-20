@@ -535,6 +535,7 @@ pub(super) fn new_refresh_attempt(
         admission_durability_indeterminate: false,
         coalesced_requests: 0,
         progress: SourceBackedRefreshProgress::default(),
+        attempt_history_progress: None,
         progress_total_sources_known: false,
         whole_run_eta: WholeRunEtaEstimator::new(eta_eligible),
         scanned_routes: None,

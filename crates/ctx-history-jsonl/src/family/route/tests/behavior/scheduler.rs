@@ -104,6 +104,115 @@ fn parallel_all_rejected_candidates_preserve_cold_and_warm_source_semantics() {
 }
 
 #[test]
+fn parallel_all_ignored_pages_publish_bytes_before_terminal_reconciliation() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    fs::create_dir_all(&root).unwrap();
+    let payloads = [
+        b"{\"message\":\"ignored-a\"}\n".as_slice(),
+        b"{\"message\":\"ignored-b\"}\n".as_slice(),
+    ];
+    for (index, payload) in payloads.iter().enumerate() {
+        fs::write(root.join(format!("{index}.jsonl")), payload).unwrap();
+    }
+    let expected_bytes = payloads
+        .iter()
+        .map(|payload| u64::try_from(payload.len()).unwrap())
+        .sum::<u64>();
+    let adapter = DirectAppendTestAdapter::default();
+    let resident = Mutex::new(FamilyResident::default());
+    let mut writer = match IndexCaptureLifecycle::open(&temp.path().join("index"), ()).unwrap() {
+        CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
+        CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => {
+            panic!("test lifecycle unexpectedly requires recovery")
+        }
+    };
+    let shared_history = ctx_history_capture_model::SharedAttemptHistoryProgress::default();
+    let callback_history = shared_history.clone();
+    let mut coordinator_bytes = 0_u64;
+    let mut accepted_records = 0_u64;
+    let mut observed_ignored_progress = false;
+    let mut report_record_progress =
+        |delta: ctx_history_capture_model::SourceBackedRecordProgressDelta| -> std::result::Result<
+            (),
+            ctx_history_capture_runtime::SourceBackedCoordinatorError<CaptureError>,
+        > {
+            if delta.completed_bytes != 0 {
+                let before = callback_history.snapshot();
+                assert!(
+                    before.processed_bytes
+                        >= coordinator_bytes.saturating_add(delta.completed_bytes),
+                    "ignored JSONL bytes must be producer-published before terminal reconciliation: before={before:?}, coordinator_bytes={coordinator_bytes}, delta={delta:?}"
+                );
+                assert_eq!(before.processed_sessions, 0);
+                assert_eq!(before.processed_messages, 0);
+                assert_eq!(before.processed_tool_calls, 0);
+                observed_ignored_progress = true;
+            }
+            callback_history.advance_coordinator(&delta);
+            coordinator_bytes = coordinator_bytes.saturating_add(delta.completed_bytes);
+            accepted_records = accepted_records.saturating_add(delta.accepted_records);
+            Ok(())
+        };
+    let mut owners = HashMap::new();
+    let mut complete_inventories = Vec::new();
+    let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
+    let mut record_rejections = SourceBackedRecordRejections::default();
+    let mut applied_removals = Vec::new();
+    let resources = SourceBackedRouteResources::production(2)
+        .with_attempt_history_progress(shared_history.clone());
+    let mut sink = SourceBackedGenerationSink::new(
+        &mut writer,
+        &mut owners,
+        &mut complete_inventories,
+        &mut applied_removals,
+        0,
+        test_route_identity(),
+        None,
+        resources.clone(),
+        &mut logical_source_failures,
+        &mut record_rejections,
+        Some(&mut report_record_progress),
+        None,
+        None,
+    );
+
+    with_family_scanner_workers(2, || {
+        capture(&adapter, &root, &resident, &mut sink).unwrap();
+    });
+    drop(sink);
+    drop(report_record_progress);
+
+    assert!(observed_ignored_progress);
+    assert_eq!(accepted_records, 0);
+    assert_eq!(coordinator_bytes, expected_bytes);
+    assert!(writer.records.is_empty());
+    assert_eq!(writer.certified_sources.len(), 2);
+    assert!(writer.certified_sources.iter().all(|source| {
+        let counts = source.counts();
+        counts.complete_records == 1
+            && counts.ignored_records == 1
+            && counts.retained_records == 0
+            && counts.indexed_documents == 0
+    }));
+    assert_eq!(
+        shared_history.snapshot(),
+        ctx_history_capture_model::AttemptHistoryProgressSnapshot {
+            processed_sessions: 0,
+            processed_messages: 0,
+            processed_tool_calls: 0,
+            processed_bytes: expected_bytes,
+        }
+    );
+    assert_eq!(shared_history.parallel_byte_debt(), 0);
+    assert_eq!(
+        resources
+            .live_bytes(ctx_history_capture_runtime::SourceBackedRouteResourceKind::CoreOutput),
+        0
+    );
+}
+
+#[test]
 fn dependency_phases_bar_later_jsonl_scans_without_serializing_each_phase() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let root = temp.path().join("sessions");

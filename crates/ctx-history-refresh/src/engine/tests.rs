@@ -15,7 +15,8 @@ use ctx_history_capture::{
     provider_source_for_path, DiscoveryPlatform, DiscoveryPlatformDirs, SourceBackedFailedRoute,
 };
 use ctx_history_capture_model::{
-    ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
+    CoreRecordBatchProgress, ProviderCatalogSupport, ProviderImportSupport, ProviderSource,
+    ProviderSourceKind,
 };
 use ctx_history_core::{
     derive_event_id, derive_session_id, AgentScope, CertifiedSource, CoreRecord,
@@ -79,6 +80,56 @@ fn read_model_source_count_uses_request_routes_not_global_or_diagnostic_counts()
         assert_eq!(job["certified_source_count"], global_sources, "{name}");
         assert_eq!(job["progress"]["total_sources"], route_inventory, "{name}");
     }
+}
+
+#[test]
+fn active_status_overlays_worker_facts_and_snapshots_them_on_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    let (published, published_rx) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let release_rx = Arc::new(Mutex::new(release_rx));
+    let executor_release = Arc::clone(&release_rx);
+    let executor = Arc::new(move |execution: SourceBackedRefreshExecution<'_>| {
+        let page = CoreRecordBatchProgress {
+            // Duplicate IDs model independently prepared pages from workers.
+            session_ids: vec![[9; 32], [9; 32]],
+            messages: 4,
+            tool_calls: 2,
+        };
+        execution
+            .attempt_history_progress
+            .publish_parallel_page(768, &page);
+        published.send(()).unwrap();
+        executor_release.lock().unwrap().recv().unwrap();
+        Err(anyhow!("injected blocked add_prepared failure"))
+    });
+    let coordinator = Arc::new(CoreRefreshEngine::with_executor(executor));
+    let queued = coordinator.enqueue_periodic(&data_root).unwrap();
+    let request_id = request_id(&queued);
+    std::thread::scope(|scope| {
+        let runner = Arc::clone(&coordinator);
+        let root = data_root.clone();
+        let run = scope.spawn(move || runner.run_next(&root).unwrap());
+        published_rx.recv().unwrap();
+
+        let live = coordinator.status(&request_id).unwrap();
+        assert_eq!(live["request_state"], "running");
+        assert_eq!(live["progress"]["processed_sessions"], 1);
+        assert_eq!(live["progress"]["processed_messages"], 4);
+        assert_eq!(live["progress"]["processed_tool_calls"], 2);
+        assert_eq!(live["progress"]["processed_bytes"], 768);
+        assert_eq!(live["progress"]["completed_records"], Value::Null);
+
+        release.send(()).unwrap();
+        assert!(run.join().unwrap().failed);
+    });
+    let terminal = coordinator.status(&request_id).unwrap();
+    assert_eq!(terminal["request_state"], "failed");
+    assert_eq!(terminal["progress"]["processed_sessions"], 1);
+    assert_eq!(terminal["progress"]["processed_messages"], 4);
+    assert_eq!(terminal["progress"]["processed_tool_calls"], 2);
+    assert_eq!(terminal["progress"]["processed_bytes"], 768);
 }
 
 #[path = "tests/observation_fence.rs"]

@@ -11,6 +11,7 @@ use std::{
 use crate::{
     CoreRouteByteLease, CoreRouteResourceError, CoreRouteResourceKind, CoreRouteResources,
 };
+use ctx_history_capture_model::{CoreRecordBatchProgress, SharedAttemptHistoryProgress};
 
 use super::{SourceBackedCurrentSourceProgressStage, SourceBackedReconciliationDemand};
 
@@ -46,6 +47,7 @@ pub struct SourceBackedRouteResources {
     member_workset: Option<Arc<BTreeSet<PathBuf>>>,
     intermediate_activity: Arc<SourceBackedIntermediateActivity>,
     scan_cancellation: Option<Arc<AtomicBool>>,
+    attempt_history_progress: SharedAttemptHistoryProgress,
 }
 
 impl SourceBackedRouteResources {
@@ -56,6 +58,7 @@ impl SourceBackedRouteResources {
             member_workset: None,
             intermediate_activity: Arc::new(SourceBackedIntermediateActivity::default()),
             scan_cancellation: None,
+            attempt_history_progress: SharedAttemptHistoryProgress::default(),
         }
     }
 
@@ -75,12 +78,31 @@ impl SourceBackedRouteResources {
             member_workset: None,
             intermediate_activity: Arc::new(SourceBackedIntermediateActivity::default()),
             scan_cancellation: None,
+            attempt_history_progress: SharedAttemptHistoryProgress::default(),
         }
     }
 
     pub(super) fn with_scan_cancellation(mut self, cancellation: Arc<AtomicBool>) -> Self {
         self.scan_cancellation = Some(cancellation);
         self
+    }
+
+    #[doc(hidden)]
+    pub fn with_attempt_history_progress(mut self, progress: SharedAttemptHistoryProgress) -> Self {
+        self.attempt_history_progress = progress;
+        self
+    }
+
+    /// Publishes scanner-owned facts without touching the coordinator callback,
+    /// journal, or engine state lock.
+    #[doc(hidden)]
+    pub fn publish_parallel_page_progress(
+        &self,
+        completed_bytes: u64,
+        progress: &CoreRecordBatchProgress,
+    ) {
+        self.attempt_history_progress
+            .publish_parallel_page(completed_bytes, progress);
     }
 
     /// Reports cancellation of the parallel scan that owns these resources.

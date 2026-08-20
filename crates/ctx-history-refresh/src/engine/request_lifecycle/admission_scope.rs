@@ -1,6 +1,18 @@
 use super::*;
 
 impl CoreRefreshEngine {
+    pub(crate) fn attempt_history_progress(
+        &self,
+        request_id: &str,
+    ) -> Result<ctx_history_capture_model::SharedAttemptHistoryProgress> {
+        let state = self.lock_state();
+        find_attempt(&state, request_id)
+            .and_then(|attempt| attempt.attempt_history_progress.clone())
+            .ok_or_else(|| {
+                anyhow!("source refresh execution has no active history progress handle")
+            })
+    }
+
     pub fn status(&self, request_id: &str) -> Option<RefreshStatus> {
         let state = self.lock_state();
         projected_status_json(&state, request_id).map(RefreshStatus::from_schema_v1_fields)

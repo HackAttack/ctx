@@ -36,6 +36,7 @@ pub(super) fn execute_source_backed_refresh(
     admitted: ctx_history_refresh_execution::AdmittedRefresh,
 ) -> Result<SourceBackedRefreshPublication> {
     let index_root = source_backed_index_root(data_root);
+    let attempt_history_progress = coordinator.attempt_history_progress(request_id)?;
     let discovery_context = coordinator.runtime.discovery_context(data_root)?;
     let published_state = RetainedPublishedState {
         journal: coordinator.journal.as_ref(),
@@ -75,7 +76,8 @@ pub(super) fn execute_source_backed_refresh(
             &published_state,
             &report_progress,
         )
-        .with_reconciliation_demand(reconciliation_demand),
+        .with_reconciliation_demand(reconciliation_demand)
+        .with_attempt_history_progress(attempt_history_progress),
     )
 }
 

@@ -15,7 +15,7 @@ use crate::{
     CoreMaterialization, CorePreparationError, CorePreparationPort, CorePreparedBatch,
     CorePreparedBatchBuilder, CorePreparedCapture, CoreRouteResourceError,
 };
-use ctx_history_capture_model::CoreRecordProgress;
+use ctx_history_capture_model::{CoreRecordBatchProgress, CoreRecordProgress};
 use ctx_history_core::{
     CertifiedSource, CertifiedSourceAppend, CoreRecord, SourceKey, MAX_ENCODED_CORE_RECORD_BYTES,
 };
@@ -655,6 +655,13 @@ impl<R, E, P: CorePreparationPort> ParallelLeafScanEmitter<'_, R, E, P> {
             .map_err(SourceBackedRouteError::from)?
             .map(Box::new);
         if batch.is_some() || completed_bytes != 0 {
+            let empty_progress = CoreRecordBatchProgress::default();
+            let progress = batch
+                .as_ref()
+                .map(|batch| batch.progress())
+                .unwrap_or(&empty_progress);
+            self.resources
+                .publish_parallel_page_progress(completed_bytes, progress);
             self.resources
                 .record_intermediate_activity(SourceBackedCurrentSourceProgressStage::IndexWriting);
             self.send(ParallelLeafProtocolMessage::CoreRecordBatch {

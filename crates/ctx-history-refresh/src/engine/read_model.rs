@@ -107,6 +107,10 @@ pub(super) struct SourceBackedRefreshAttempt {
     pub(super) admission_durability_indeterminate: bool,
     pub(super) coalesced_requests: u64,
     pub(super) progress: SourceBackedRefreshProgress,
+    /// Transient producer-owned scanner facts. This is deliberately excluded
+    /// from the durable job representation and terminal receipts.
+    pub(super) attempt_history_progress:
+        Option<ctx_history_capture_model::SharedAttemptHistoryProgress>,
     pub(super) progress_total_sources_known: bool,
     pub(super) whole_run_eta: WholeRunEtaEstimator,
     pub(super) scanned_routes: Option<usize>,
@@ -131,6 +135,44 @@ pub(super) struct SourceBackedRefreshAttempt {
 }
 
 impl SourceBackedRefreshAttempt {
+    pub(super) fn snapshot_attempt_history_progress(&mut self) {
+        let Some(history) = &self.attempt_history_progress else {
+            return;
+        };
+        let history = history.snapshot();
+        self.progress.processed_sessions = self
+            .progress
+            .processed_sessions
+            .max(history.processed_sessions);
+        self.progress.processed_messages = self
+            .progress
+            .processed_messages
+            .max(history.processed_messages);
+        self.progress.processed_tool_calls = self
+            .progress
+            .processed_tool_calls
+            .max(history.processed_tool_calls);
+        self.progress.processed_bytes = self.progress.processed_bytes.max(history.processed_bytes);
+    }
+
+    fn live_progress(&self) -> SourceBackedRefreshProgress {
+        let mut progress = self.progress.clone();
+        if self.state == SourceBackedRefreshState::Running {
+            if let Some(history) = &self.attempt_history_progress {
+                let history = history.snapshot();
+                progress.processed_sessions =
+                    progress.processed_sessions.max(history.processed_sessions);
+                progress.processed_messages =
+                    progress.processed_messages.max(history.processed_messages);
+                progress.processed_tool_calls = progress
+                    .processed_tool_calls
+                    .max(history.processed_tool_calls);
+                progress.processed_bytes = progress.processed_bytes.max(history.processed_bytes);
+            }
+        }
+        progress
+    }
+
     pub(super) fn operation(&self) -> SourceBackedRefreshOperation {
         self.intent.operation()
     }
@@ -278,6 +320,7 @@ impl SourceBackedRefreshAttempt {
 
     pub(super) fn to_json(&self) -> Value {
         let publication_receipt = self.publication_receipt.as_ref().or(self.receipt.as_ref());
+        let progress = self.live_progress();
         self.apply_base_read_fields(compact_json(json!({
             "ok": true,
             "schema_version": 1,
@@ -307,7 +350,7 @@ impl SourceBackedRefreshAttempt {
                 .map(SourceBackedRefreshReceipt::to_json),
             "outcome": self.receipt.as_ref().map(SourceBackedRefreshReceipt::terminal_outcome),
             "coalesced_requests": self.coalesced_requests,
-            "progress": self.progress.to_json_with_total_known(
+            "progress": progress.to_json_with_total_known(
                 self.progress_total_sources_known,
                 self.whole_run_eta.estimated_remaining_millis(),
             ),
@@ -436,9 +479,14 @@ fn apply_read_projection(
         "progress_owner_attempt_state".to_owned(),
         json!(progress_owner.state.as_str()),
     );
+    let progress = if job {
+        progress_owner.progress.clone()
+    } else {
+        progress_owner.live_progress()
+    };
     fields.insert(
         "progress".to_owned(),
-        progress_owner.progress.to_json_with_total_known(
+        progress.to_json_with_total_known(
             progress_owner.progress_total_sources_known,
             progress_owner.whole_run_eta.estimated_remaining_millis(),
         ),

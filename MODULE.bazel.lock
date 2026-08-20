@@ -565,7 +565,7 @@
           "FILE:@@//crates/ctx-history-providers-sqlite-logical/Cargo.toml 38506bd18593f1d06951a389197041beb0c7aa7cb4660de16df66121a9036fe2",
           "FILE:@@//crates/ctx-history-providers-sqlite-selected/Cargo.toml 517860ded876db85bb8b2c4ed0f34789063720e48334cd2a35b82177fc443a76",
           "FILE:@@//crates/ctx-history-providers-task-docs/Cargo.toml 956b6957f0f7e8943508e64dd59ed74fac3bc42896fe22cb340a29640777a624",
-          "FILE:@@//crates/ctx-history-refresh/Cargo.toml 23ec2866198f6113603154519a5e90cb989040633b20bdfd5c904c967cdce57d",
+          "FILE:@@//crates/ctx-history-refresh/Cargo.toml f75804a0ce6b3470ec12d1a1a4d4384214b9ec783b437731d659232335400948",
           "FILE:@@//crates/ctx-history-refresh-execution/Cargo.toml ce213b7397e140d65aee40a3c378d12779d2e0be34d8c987ca8eaf2c231384b2",
           "FILE:@@//crates/ctx-semantic-index/Cargo.toml 43fb0eb458acc23981d2032b619feb1e5536a87818a53c44f51dcaf37b1c5902",
           "FILE:@@//crates/ctx-upgrade-engine/Cargo.toml 0196e247a165cd62f864aa3603d6279d0862d0be0a7fcebb63ab6fae9bb2a102",

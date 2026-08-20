@@ -336,6 +336,8 @@ pub struct SourceBackedRefreshExecution<'a> {
     pub discovery_context: &'a DiscoveryContext,
     #[doc(hidden)]
     pub published_state: &'a dyn PublishedSourceBackedStatePort,
+    #[doc(hidden)]
+    pub attempt_history_progress: ctx_history_capture_model::SharedAttemptHistoryProgress,
     report_progress: &'a dyn Fn(SourceBackedRefreshProgressUpdate) -> Result<()>,
 }
 
@@ -367,12 +369,22 @@ impl<'a> SourceBackedRefreshExecution<'a> {
             admitted_refresh,
             discovery_context,
             published_state,
+            attempt_history_progress: Default::default(),
             report_progress,
         }
     }
 
     pub fn with_reconciliation_demand(mut self, demand: SourceBackedReconciliationDemand) -> Self {
         self.reconciliation_demand = demand;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn with_attempt_history_progress(
+        mut self,
+        progress: ctx_history_capture_model::SharedAttemptHistoryProgress,
+    ) -> Self {
+        self.attempt_history_progress = progress;
         self
     }
 
