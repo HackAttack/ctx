@@ -82,7 +82,6 @@ pub fn ensure_native_supervisor_with<E>(
         return Ok(outcome);
     }
     let artifact = backend.artifact_path(data_root)?;
-    backend.prepare_mutation(data_root, executable)?;
     if backend.verify_registration(data_root, executable).is_ok() {
         match backend.verify_live_owner(data_root, executable) {
             Ok(owner_pid) => {
@@ -141,6 +140,10 @@ pub fn ensure_native_supervisor_with<E>(
     if let Some(outcome) = manager_unavailable_after_probe(data_root, backend, false, None)? {
         return Ok(outcome);
     }
+    // A valid registration is handled above without mutating or handing off
+    // its live owner. Prepare the daemon handoff only when registration really
+    // must be replaced.
+    backend.prepare_mutation(data_root, executable)?;
 
     let installation = backend
         .install(data_root, executable, environment)
@@ -586,31 +589,36 @@ mod tests {
     }
 
     #[test]
-    fn ensure_reuses_registered_live_owner_without_installing() {
+    fn repeated_ensure_reuses_registered_live_owner_without_mutation() {
         let backend = StubBackend::new(true, Some(41), false);
-        let outcome = ensure_native_supervisor_with(
-            Path::new("/tmp/data"),
-            Path::new("/tmp/ctx"),
-            &(),
-            &backend,
-        )
-        .unwrap();
-        assert!(matches!(
-            outcome,
-            SupervisorEnsureOutcome::Native {
-                owner_pid: 41,
-                environment_installed: false,
-                ..
-            }
-        ));
+        for _ in 0..2 {
+            let outcome = ensure_native_supervisor_with(
+                Path::new("/tmp/data"),
+                Path::new("/tmp/ctx"),
+                &(),
+                &backend,
+            )
+            .unwrap();
+            assert!(matches!(
+                outcome,
+                SupervisorEnsureOutcome::Native {
+                    owner_pid: 41,
+                    environment_installed: false,
+                    ..
+                }
+            ));
+        }
         assert_eq!(
             backend.calls(),
             [
                 "probe_manager",
                 "artifact_path",
-                "prepare_mutation",
                 "verify_registration",
-                "verify_live_owner"
+                "verify_live_owner",
+                "probe_manager",
+                "artifact_path",
+                "verify_registration",
+                "verify_live_owner",
             ]
         );
     }
@@ -678,9 +686,9 @@ mod tests {
             [
                 "probe_manager",
                 "artifact_path",
-                "prepare_mutation",
                 "verify_registration",
                 "probe_manager",
+                "prepare_mutation",
                 "install",
                 "probe_manager",
                 "verify_registration",
@@ -828,7 +836,6 @@ mod tests {
             [
                 "probe_manager",
                 "artifact_path",
-                "prepare_mutation",
                 "verify_registration",
                 "verify_live_owner",
                 "probe_manager",
@@ -837,7 +844,6 @@ mod tests {
                 "verify_live_owner",
                 "probe_manager",
                 "artifact_path",
-                "prepare_mutation",
                 "verify_registration",
                 "verify_live_owner",
             ]
