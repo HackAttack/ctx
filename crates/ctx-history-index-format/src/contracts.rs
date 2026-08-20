@@ -33,7 +33,7 @@ pub const MAX_DOCUMENT_METADATA_BYTES: usize = 64 * 1024;
 /// active segments, bounding merge publications amortized over tiny appends
 /// while avoiding a full-index rewrite for each append. Delete-heavy segments
 /// use the independent reclamation threshold in the lexical merge policy.
-pub const LEXICAL_SEGMENT_MERGE_FAN_IN: usize = 8;
+pub const LEXICAL_SEGMENT_MERGE_FAN_IN: usize = 16;
 
 /// Published active segments may contain at most 1/4 deleted documents.
 ///
