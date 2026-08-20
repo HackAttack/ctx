@@ -6,6 +6,9 @@ pub struct SourceBackedRefreshRouteResult {
     pub outcome: SourceBackedRefreshRouteOutcome,
     /// Exact number of source-level failures observed inside this route.
     pub source_failure_total: usize,
+    /// Exact retryable subset of `source_failure_total`. This remains exact
+    /// even when human-readable source diagnostics are bounded.
+    pub source_retryable_failure_total: usize,
     /// Bounded details owned by this route result; omitted detail is derived
     /// from `source_failure_total` and this vector's length.
     pub source_failures: Vec<SourceBackedRefreshSourceFailure>,
@@ -21,6 +24,7 @@ impl SourceBackedRefreshRouteResult {
             route_identity,
             outcome: SourceBackedRefreshRouteOutcome::Succeeded { changed },
             source_failure_total: 0,
+            source_retryable_failure_total: 0,
             source_failures: Vec::new(),
             rejected_record_total: 0,
             rejection_diagnostics: Vec::new(),
@@ -28,6 +32,8 @@ impl SourceBackedRefreshRouteResult {
     }
 
     pub fn failed(route_identity: String, class: String, carried_forward: bool) -> Self {
+        let source_retryable_failure_total =
+            usize::from(matches!(class.as_str(), "unavailable" | "source_changed"));
         Self {
             route_identity,
             outcome: SourceBackedRefreshRouteOutcome::Failed {
@@ -35,6 +41,7 @@ impl SourceBackedRefreshRouteResult {
                 carried_forward,
             },
             source_failure_total: 1,
+            source_retryable_failure_total,
             source_failures: Vec::new(),
             rejected_record_total: 0,
             rejection_diagnostics: Vec::new(),
@@ -50,8 +57,35 @@ impl SourceBackedRefreshRouteResult {
         if self.source_failures.len() > self.source_failure_total {
             bail!("terminal route result has more diagnostics than source failures");
         }
+        if self.source_retryable_failure_total > self.source_failure_total {
+            bail!("terminal route result has more retryable failures than source failures");
+        }
+        let retained_retryable = self
+            .source_failures
+            .iter()
+            .filter(|failure| matches!(failure.class.as_str(), "unavailable" | "source_changed"))
+            .count();
+        let retained_non_retryable = self.source_failures.len() - retained_retryable;
+        if retained_retryable > self.source_retryable_failure_total
+            || retained_non_retryable
+                > self
+                    .source_failure_total
+                    .saturating_sub(self.source_retryable_failure_total)
+        {
+            bail!("terminal route result has inconsistent retryable failure totals");
+        }
         if self.outcome.is_failure() && self.source_failure_total == 0 {
             bail!("failed terminal route result has no source failure count");
+        }
+        if let Some(class) = self.outcome.failure_class() {
+            let expected_retryable = if matches!(class, "unavailable" | "source_changed") {
+                self.source_failure_total
+            } else {
+                0
+            };
+            if self.source_retryable_failure_total != expected_retryable {
+                bail!("failed terminal route result has inconsistent retryability");
+            }
         }
         let mut diagnostics = BTreeSet::new();
         for failure in &self.source_failures {
@@ -125,6 +159,7 @@ impl SourceBackedRefreshRouteResult {
                     "s",
                     changed,
                     self.source_failure_total,
+                    self.source_retryable_failure_total,
                     details,
                     self.rejected_record_total,
                     self.rejection_diagnostics
@@ -184,9 +219,8 @@ impl SourceBackedRefreshRouteOutcome {
 
 /// Returns `None` when the route is clean, `Some(true)` when it should retry,
 /// and `Some(false)` when the admitted observation should remain blocked.
-/// The route outcome and exact source-failure count are authoritative. A
-/// truncated diagnostic vector can only make a partial success retryable; it
-/// can never incorrectly classify unknown failures as permanently blocked.
+/// The route outcome and exact source-failure counts are authoritative, while
+/// bounded diagnostic prose is presentation-only.
 pub fn source_backed_route_retry_disposition(
     result: &SourceBackedRefreshRouteResult,
 ) -> Option<bool> {
@@ -196,15 +230,7 @@ pub fn source_backed_route_retry_disposition(
     if result.source_failure_total == 0 {
         return None;
     }
-    if result.source_failures.len() < result.source_failure_total {
-        return Some(true);
-    }
-    Some(
-        result
-            .source_failures
-            .iter()
-            .any(|failure| matches!(failure.class.as_str(), "unavailable" | "source_changed")),
-    )
+    Some(result.source_retryable_failure_total != 0)
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

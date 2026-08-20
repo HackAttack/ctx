@@ -318,9 +318,9 @@ fn successful_route_with_rejection_is_canonical_and_keeps_location_and_payload_t
     assert_eq!(receipt.successful_route_total(), 1);
     assert_eq!(receipt.rejected_record_total(), 1);
     let wire = receipt.to_json();
-    assert_eq!(wire["route_results"][&route_identity][4], 1);
+    assert_eq!(wire["route_results"][&route_identity][5], 1);
     assert_eq!(
-        wire["route_results"][&route_identity][5][0],
+        wire["route_results"][&route_identity][6][0],
         json!([
             source_identity,
             "opencode",
@@ -330,6 +330,40 @@ fn successful_route_with_rejection_is_canonical_and_keeps_location_and_payload_t
             "u",
             "unsupported record body was rejected"
         ])
+    );
+}
+
+#[test]
+fn bounded_failure_receipt_keeps_exact_nonretryable_disposition() {
+    let route_identity = "46".repeat(32);
+    let mut result = SourceBackedRefreshRouteResult::succeeded(route_identity.clone(), false);
+    result.source_failure_total = 234;
+    result.source_retryable_failure_total = 0;
+    let mut publication = test_publication("generation-with-bounded-failures");
+    publication.route_results = vec![result];
+    let receipt = SourceBackedRefreshReceipt::from_verified_publication(
+        None,
+        publication.generation_id.clone(),
+        &publication,
+    )
+    .unwrap();
+    let wire = receipt.to_json();
+
+    assert_eq!(wire["route_results"][&route_identity][3], 0);
+    let parsed = required_route_results(wire.get("route_results")).unwrap();
+    assert_eq!(
+        source_backed_route_retry_disposition(&parsed[0]),
+        Some(false)
+    );
+
+    let legacy = json!({
+        (route_identity): ["s", false, 234, [], 0, []]
+    });
+    let parsed_legacy = required_route_results(Some(&legacy)).unwrap();
+    assert_eq!(
+        source_backed_route_retry_disposition(&parsed_legacy[0]),
+        Some(true),
+        "old truncated receipts remain conservative"
     );
 }
 

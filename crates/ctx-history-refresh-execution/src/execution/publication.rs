@@ -156,7 +156,11 @@ pub(super) fn provider_route_results<S: ImmutableCaptureSnapshot + ?Sized>(
         .map(|outcome| {
             (
                 outcome.route_identity.as_str().to_owned(),
-                (outcome.changed, outcome.logical_source_failure_total),
+                (
+                    outcome.changed,
+                    outcome.logical_source_failure_total,
+                    outcome.logical_source_retryable_failure_total,
+                ),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -248,12 +252,17 @@ pub(super) fn provider_route_results<S: ImmutableCaptureSnapshot + ?Sized>(
             let mut result = successful_route_changes
                 .get(route_identity)
                 .copied()
-                .map(|(changed, source_failure_total)| {
-                    let mut result =
-                        SourceBackedRefreshRouteResult::succeeded(route_identity.clone(), changed);
-                    result.source_failure_total = source_failure_total;
-                    result
-                })
+                .map(
+                    |(changed, source_failure_total, source_retryable_failure_total)| {
+                        let mut result = SourceBackedRefreshRouteResult::succeeded(
+                            route_identity.clone(),
+                            changed,
+                        );
+                        result.source_failure_total = source_failure_total;
+                        result.source_retryable_failure_total = source_retryable_failure_total;
+                        result
+                    },
+                )
                 .or_else(|| {
                     failed_route_outcomes
                         .get(route_identity)

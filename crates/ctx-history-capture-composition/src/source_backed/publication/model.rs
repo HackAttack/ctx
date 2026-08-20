@@ -254,6 +254,9 @@ pub struct SourceBackedSuccessfulRouteOutcome {
     /// Exact logical-source failure count for this successful route, including
     /// entries omitted from the bounded diagnostic vector.
     pub logical_source_failure_total: usize,
+    /// Exact retryable subset of `logical_source_failure_total`, including
+    /// entries omitted from the bounded diagnostic vector.
+    pub logical_source_retryable_failure_total: usize,
 }
 
 #[cfg(test)]

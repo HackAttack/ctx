@@ -239,6 +239,7 @@ fn successful_partial_publication_retains_mixed_route_retry_dispositions() {
                 let mut result =
                     SourceBackedRefreshRouteResult::succeeded(route.as_str().to_owned(), false);
                 result.source_failure_total = 1;
+                result.source_retryable_failure_total = usize::from(class == "unavailable");
                 result.source_failures = vec![SourceBackedRefreshSourceFailure {
                     route_identity: route.as_str().to_owned(),
                     source_identity: "ef".repeat(32),
@@ -298,6 +299,60 @@ fn successful_partial_publication_retains_mixed_route_retry_dispositions() {
         observed_at_ms,
     );
     assert!(!coordinator.route_is_permanently_blocked_for_test(&blocked_route));
+}
+
+#[test]
+fn bounded_nonretryable_partial_publication_does_not_schedule_route_retry() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
+    let route = route_identity(0x64);
+    let executor_route = route.clone();
+    let executor: Arc<dyn SourceBackedRefreshExecutor> =
+        Arc::new(move |execution: SourceBackedRefreshExecution<'_>| {
+            let commit = ctx_history_index::GenerationWriter::open(
+                execution.index_root,
+                WriterOptions::default(),
+            )?
+            .into_writer()
+            .map_err(crate::committed_generation_recovery_error)?
+            .commit(|_| true)?;
+            let mut publication = empty_test_publication(commit.generation_id);
+            let mut result = SourceBackedRefreshRouteResult::succeeded(
+                executor_route.as_str().to_owned(),
+                false,
+            );
+            result.source_failure_total = 234;
+            result.source_retryable_failure_total = 0;
+            publication.route_results = vec![result];
+            Ok(publication)
+        });
+    let coordinator =
+        CoreRefreshEngine::with_executor_and_admitted_routes(executor, [route.clone()]);
+    coordinator.reconcile_watch_routes(
+        [route.clone()],
+        EventWatermark::new(5, 0),
+        ledger_now_ms().saturating_sub(1_000),
+    );
+    assert!(coordinator
+        .enqueue_next_dirty_route(&data_root, ledger_now_ms())
+        .unwrap());
+
+    let run = coordinator
+        .run_next(&data_root)
+        .expect("partial publication");
+
+    assert!(!run.failed, "{:#}", run.job);
+    assert_eq!(
+        run.job["structured_outcome"]["code"],
+        "completed_with_source_failures"
+    );
+    assert_eq!(run.job["structured_outcome"]["retryable"], false);
+    assert_eq!(
+        run.job["structured_outcome"]["blocked_routes"],
+        json!([route.as_str()])
+    );
+    assert!(!coordinator.has_scheduled_route_work());
 }
 
 #[test]

@@ -154,6 +154,7 @@ fn mixed_route_dispositions_schedule_only_retryable_routes() {
                 let mut result =
                     SourceBackedRefreshRouteResult::succeeded(route.as_str().to_owned(), false);
                 result.source_failure_total = 1;
+                result.source_retryable_failure_total = usize::from(class == "unavailable");
                 result.source_failures = vec![SourceBackedRefreshSourceFailure {
                     route_identity: route.as_str().to_owned(),
                     source_identity: "dd".repeat(32),

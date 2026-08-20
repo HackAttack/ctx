@@ -19,6 +19,8 @@ pub(super) fn successful_route_outcomes_for_snapshot(
         .cloned()
         .map(|route_identity| SourceBackedSuccessfulRouteOutcome {
             logical_source_failure_total: logical_source_failures.route_total(&route_identity),
+            logical_source_retryable_failure_total: logical_source_failures
+                .route_retryable_total(&route_identity),
             changed: base_route_content
                 .get(&route_identity)
                 .unwrap_or(&empty_route_content)

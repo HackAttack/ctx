@@ -219,6 +219,7 @@ pub fn required_route_results(
             let (
                 outcome,
                 source_failure_total,
+                source_retryable_failure_total,
                 source_failures,
                 rejected_record_total,
                 rejection_diagnostics,
@@ -230,30 +231,52 @@ pub fn required_route_results(
                     (
                         SourceBackedRefreshRouteOutcome::Succeeded { changed },
                         0,
+                        0,
                         Vec::new(),
                         0,
                         Vec::new(),
                     )
                 }
-                Some("s") if fields.len() == 6 => {
+                Some("s") if matches!(fields.len(), 6 | 7) => {
                     let changed = fields[1].as_bool().ok_or_else(|| {
                         anyhow!("published daemon successful route result has no changed fact")
                     })?;
                     let total =
                         required_usize_from_value(fields.get(2), "route source_failure_total")?;
+                    let has_exact_retryability = fields.len() == 7;
+                    let diagnostic_index = usize::from(has_exact_retryability) + 3;
                     let failures = required_route_source_failures(
                         parsed_route_identity.as_str(),
-                        fields.get(3),
+                        fields.get(diagnostic_index),
                     )?;
-                    let rejected_record_total =
-                        required_u64_from_value(fields.get(4), "route rejected_record_total")?;
+                    let retryable_total = if has_exact_retryability {
+                        required_usize_from_value(
+                            fields.get(3),
+                            "route source_retryable_failure_total",
+                        )?
+                    } else {
+                        // Older receipts remain conservative when bounded
+                        // diagnostics could hide a transient failure.
+                        failures
+                            .iter()
+                            .filter(|failure| {
+                                matches!(failure.class.as_str(), "unavailable" | "source_changed")
+                            })
+                            .count()
+                            .saturating_add(total.saturating_sub(failures.len()))
+                    };
+                    let rejected_record_total = required_u64_from_value(
+                        fields.get(diagnostic_index + 1),
+                        "route rejected_record_total",
+                    )?;
                     let rejection_diagnostics = required_route_rejection_diagnostics(
                         parsed_route_identity.as_str(),
-                        fields.get(5),
+                        fields.get(diagnostic_index + 2),
                     )?;
                     (
                         SourceBackedRefreshRouteOutcome::Succeeded { changed },
                         total,
+                        retryable_total,
                         failures,
                         rejected_record_total,
                         rejection_diagnostics,
@@ -276,6 +299,11 @@ pub fn required_route_results(
                             carried_forward,
                         },
                         total,
+                        if matches!(fields[1].as_str(), Some("u") | Some("c")) {
+                            total
+                        } else {
+                            0
+                        },
                         failures,
                         0,
                         Vec::new(),
@@ -287,6 +315,7 @@ pub fn required_route_results(
                 route_identity: parsed_route_identity.as_str().to_owned(),
                 outcome,
                 source_failure_total,
+                source_retryable_failure_total,
                 source_failures,
                 rejected_record_total,
                 rejection_diagnostics,

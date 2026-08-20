@@ -525,6 +525,7 @@ fn automatic_failure_rejection_totals_and_bounded_omissions_remain_exact() {
     let source_path = write_source(&temp);
     let mut result = SourceBackedRefreshRouteResult::succeeded(ROUTE.into(), true);
     result.source_failure_total = 4;
+    result.source_retryable_failure_total = 4;
     result.source_failures = vec![SourceBackedRefreshSourceFailure {
         route_identity: ROUTE.to_owned(),
         source_identity: SOURCE_ID.to_owned(),

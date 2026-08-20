@@ -273,6 +273,7 @@ mod tests {
         assert_eq!(receipt.logical_source_failures.total(), 70);
         let outcome = &receipt.successful_route_outcomes[0];
         assert_eq!(outcome.logical_source_failure_total, 70);
+        assert_eq!(outcome.logical_source_retryable_failure_total, 0);
         assert!(receipt
             .logical_source_failures
             .failures()
