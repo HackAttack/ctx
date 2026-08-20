@@ -1228,7 +1228,7 @@ mod unix {
                 "install_path": target,
                 "platform": test_platform_key().replace('_', "-"),
                 "channel": "stable",
-                "version": "1.0.0",
+                "version": env!("CARGO_PKG_VERSION"),
                 "sha256": sha256_hex(&fs::read(&target).unwrap()),
                 "installed_at": "2026-07-30T00:00:00Z",
             }))

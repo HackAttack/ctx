@@ -113,6 +113,7 @@ ctx_rust_binary(
     aliases = aliases(),
     deps = all_crate_deps(normal = True),
     proc_macro_deps = all_crate_deps(proc_macro = True),
+    rustc_env_files = ["//crates/ctx-cli:cargo_toml_env_vars"],
 )
 
 ctx_binary_contract_test(
