@@ -52,7 +52,7 @@ const NATIVE_EVENT_NAMESPACE: &str = "pi.entry";
 const LOGICAL_SESSION_KIND: &str = "pi-session";
 const LOGICAL_EVENT_KIND: &str = "pi-event";
 const SOURCE_SCHEMA_VARIANT: &str = "pi-nativepath-jsonl-v1";
-const PARSER_REVISION: &str = "pi-shared-jsonl-v8-optional-activity-admission";
+const PARSER_REVISION: &str = "pi-shared-jsonl-v9-omp-title-slot";
 const EVENT_IDENTITY_REVISION: &str = "pi-content-occurrence-v1";
 const FALLBACK_FINGERPRINT_DOMAIN: &[u8] = b"ctx.pi.fallback-event-fingerprint.v1\0";
 const MAX_TOUCHES_PER_RECORD: usize = 63;
@@ -207,11 +207,13 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for PiJsonlAdapter<R> {
                         MAX_HEADER_PROBE_RECORDS,
                         |record| -> Result<Option<Binding>> {
                             let Some(mut binding) = parse_header_binding(record)? else {
-                                leading_rejected_records = leading_rejected_records
-                                    .checked_add(1)
-                                    .ok_or(CaptureError::SystemInvariant(
-                                        "Pi identity rejection count overflowed",
-                                    ))?;
+                                if !is_omp_title_slot(record) {
+                                    leading_rejected_records = leading_rejected_records
+                                        .checked_add(1)
+                                        .ok_or(CaptureError::SystemInvariant(
+                                            "Pi identity rejection count overflowed",
+                                        ))?;
+                                }
                                 return Ok(None);
                             };
                             binding.leading_rejected_records = leading_rejected_records;
@@ -375,14 +377,13 @@ impl<R: JsonlProviderRuntime> JsonlFamilyProjector for PiProjector<R> {
             return Ok(());
         }
         let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
-            self.rejected_records =
-                self.rejected_records
-                    .checked_add(1)
-                    .ok_or(CaptureError::SystemInvariant(
-                        "Pi projection rejection count overflowed",
-                    ))?;
+            self.reject_record()?;
             return Ok(());
         };
+        if value.get("type").and_then(Value::as_str) == Some("title") {
+            self.reject_record()?;
+            return Ok(());
+        }
         if value.get("type").and_then(Value::as_str) == Some("session") {
             return Err(CaptureError::InvalidPayload(
                 "Pi source contains more than one session header".to_owned(),
@@ -496,6 +497,18 @@ impl<R: JsonlProviderRuntime> JsonlFamilyProjector for PiProjector<R> {
     }
 }
 
+impl<R: JsonlProviderRuntime> PiProjector<R> {
+    fn reject_record(&mut self) -> Result<()> {
+        self.rejected_records =
+            self.rejected_records
+                .checked_add(1)
+                .ok_or(CaptureError::SystemInvariant(
+                    "Pi projection rejection count overflowed",
+                ))?;
+        Ok(())
+    }
+}
+
 fn fallback_fingerprint(bytes: &[u8]) -> Result<TypedKey> {
     let mut digest = Sha256::new();
     digest.update(FALLBACK_FINGERPRINT_DOMAIN);
@@ -535,6 +548,24 @@ fn parse_header_binding(record: JsonlRecordRef<'_>) -> Result<Option<Binding>> {
         header_digest: Sha256::digest(record.bytes()).into(),
         leading_rejected_records: 0,
     }))
+}
+
+fn is_omp_title_slot(record: JsonlRecordRef<'_>) -> bool {
+    if record.evidence().physical_ordinal() != 0 {
+        return false;
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(record.bytes()) else {
+        return false;
+    };
+    value.get("type").and_then(Value::as_str) == Some("title")
+        && value.get("v").and_then(Value::as_f64) == Some(1.0)
+        && value.get("title").is_some_and(Value::is_string)
+        && value.get("updatedAt").is_some_and(Value::is_string)
+        && value.get("pad").is_some_and(Value::is_string)
+        && match value.get("source") {
+            None => true,
+            Some(source) => matches!(source.as_str(), Some("auto" | "user")),
+        }
 }
 
 fn resolve_pi_lineage(discovered: &mut [DiscoveredPiSource]) -> Result<()> {
@@ -769,6 +800,25 @@ fn contract(error: impl std::fmt::Display) -> CaptureError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn omp_title_slot_is_ignored_only_at_the_first_physical_record() {
+        let title = br#"{"type":"title","v":1,"title":"fixture","updatedAt":"2026-08-20T15:12:20.989Z","pad":""}"#;
+
+        assert!(is_omp_title_slot(JsonlRecordRef::for_test(title, 0)));
+        assert!(!is_omp_title_slot(JsonlRecordRef::for_test(title, 1)));
+    }
+
+    #[test]
+    fn malformed_omp_title_slots_remain_rejected() {
+        for title in [
+            br#"{"type":"title","v":2,"title":"fixture","updatedAt":"2026-08-20T15:12:20.989Z","pad":""}"#.as_slice(),
+            br#"{"type":"title","v":1,"title":"fixture","updatedAt":"2026-08-20T15:12:20.989Z"}"#.as_slice(),
+            br#"{"type":"title","v":1,"title":"fixture","updatedAt":"2026-08-20T15:12:20.989Z","pad":"","source":"other"}"#.as_slice(),
+        ] {
+            assert!(!is_omp_title_slot(JsonlRecordRef::for_test(title, 0)));
+        }
+    }
 
     #[test]
     fn unlinked_output_withholds_result_but_preserves_literal_facts() {

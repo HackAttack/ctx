@@ -5,7 +5,11 @@ fn pi_cli_import_search_flow() {
         .path()
         .join(".pi/agent/sessions/--workspace--/pi-session.jsonl");
     fs::create_dir_all(fixture.parent().unwrap()).unwrap();
-    fs::copy(provider_history_fixture("pi-session.jsonl"), &fixture).unwrap();
+    fs::copy(
+        provider_history_fixture("pi-omp-v17.4.0-title-slot.jsonl"),
+        &fixture,
+    )
+    .unwrap();
     let _daemon = start_source_refresh_daemon(&temp);
 
     let imported = json_output(ctx(&temp).args([
@@ -17,20 +21,21 @@ fn pi_cli_import_search_flow() {
     ]));
     assert_authoritative_provider_publication(&imported);
     assert_eq!(imported["totals"]["current_rejected_records"], 0);
+    assert_eq!(imported["totals"]["current_ignored_records"], 2);
     let first_generation = imported["sources"][0]["published_generation"]
         .as_str()
         .expect("Pi provider import must publish a Core generation");
 
     let search = json_output(ctx(&temp).args([
         "search",
-        "provider metadata",
+        "current OMP session envelope",
         "--provider",
         "pi",
         "--refresh",
         "off",
         "--format=json",
     ]));
-    assert_source_backed_search(&search, "pi", "provider metadata");
+    assert_source_backed_search(&search, "pi", "current OMP session envelope");
 
     let second = json_output(ctx(&temp).args([
         "import",
@@ -44,6 +49,7 @@ fn pi_cli_import_search_flow() {
     assert_eq!(second["resume_mode"], "idempotent_rescan");
     assert_authoritative_provider_publication(&second);
     assert_eq!(second["totals"]["current_rejected_records"], 0);
+    assert_eq!(second["totals"]["current_ignored_records"], 2);
     assert_eq!(
         second["sources"][0]["published_generation"], first_generation,
         "{second:#}"

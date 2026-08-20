@@ -197,6 +197,36 @@ fn write_pi_session(path: &Path, session_id: &str, parent: Option<&Path>, body: 
     fs::write(path, format!("{header}\n{message}\n")).unwrap();
 }
 
+fn write_omp_pi_session(path: &Path, title: &str, body: &str) {
+    let mut title_slot = serde_json::to_string(&serde_json::json!({
+        "type": "title",
+        "v": 1,
+        "title": title,
+        "updatedAt": "2026-08-20T15:12:20.989Z",
+        "pad": "",
+        "source": "user",
+    }))
+    .unwrap();
+    let padding = 255_usize.checked_sub(title_slot.len()).unwrap();
+    title_slot.insert_str(title_slot.len() - 2, &" ".repeat(padding));
+    assert_eq!(title_slot.len(), 255);
+
+    let header = serde_json::json!({
+        "type": "session",
+        "version": 3,
+        "id": "omp-title-slot-session",
+        "timestamp": "2026-08-20T15:12:20.990Z",
+        "cwd": "/workspace/omp-title-slot",
+    });
+    let message = serde_json::json!({
+        "type": "message",
+        "id": "omp-title-slot-message",
+        "timestamp": "2026-08-20T15:12:21.000Z",
+        "message": {"role": "user", "content": body},
+    });
+    fs::write(path, format!("{title_slot}\n{header}\n{message}\n")).unwrap();
+}
+
 fn pi_registry(root: &Path) -> SourceBackedProviderRegistry {
     let mut registry = SourceBackedProviderRegistry::new();
     register_landed_source_backed_route(
@@ -746,6 +776,52 @@ fn pi_parent_session_path_preserves_literal_parent_identity() {
     assert_ne!(parent.event_id, child.event_id);
     assert_eq!(child.provider_session_id.as_deref(), Some("pi-child"));
     assert_eq!(parent.provider_session_id.as_deref(), Some("pi-parent"));
+}
+
+#[test]
+fn pi_omp_title_slot_cold_repeat_and_rewrite_are_rejection_free() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let index_temp = crate::test_support_paths::tempdir().unwrap();
+    let transcript = temp.path().join("omp-title-slot.jsonl");
+    write_omp_pi_session(&transcript, "alpha", "stable OMP message");
+    let registry = pi_registry(temp.path());
+    let index = index_temp.path().join("index");
+
+    let cold = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(cold.failed_routes.is_empty());
+    assert_eq!(cold.commit.indexed_documents, 1);
+    assert_eq!(cold.sources.len(), 1);
+    assert_eq!(cold.sources[0].counts().complete_records, 3);
+    assert_eq!(cold.sources[0].counts().retained_records, 1);
+    assert_eq!(cold.sources[0].counts().rejected_records, 0);
+    assert_eq!(cold.sources[0].counts().ignored_records, 2);
+    let cold_generation = cold.commit.generation_id.clone();
+    let cold_records = all_indexed_records(&index);
+
+    let unchanged = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert_eq!(unchanged.commit.generation_id, cold_generation);
+    assert_eq!(all_indexed_records(&index), cold_records);
+
+    write_omp_pi_session(&transcript, "bravo", "stable OMP message");
+    let rewritten = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(rewritten.failed_routes.is_empty());
+    assert_ne!(rewritten.commit.generation_id, cold_generation);
+    assert_eq!(rewritten.commit.indexed_documents, 1);
+    assert_eq!(rewritten.sources[0].counts().rejected_records, 0);
+    assert_eq!(rewritten.sources[0].counts().ignored_records, 2);
+    assert_eq!(all_indexed_records(&index), cold_records);
+
+    let bytes = fs::read(&transcript).unwrap();
+    let title_end = bytes.iter().position(|byte| *byte == b'\n').unwrap() + 1;
+    let mut transcript_file = OpenOptions::new().append(true).open(&transcript).unwrap();
+    transcript_file.write_all(&bytes[..title_end]).unwrap();
+    transcript_file.sync_all().unwrap();
+    let late_title = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(late_title.failed_routes.is_empty());
+    assert_eq!(late_title.commit.indexed_documents, 1);
+    assert_eq!(late_title.sources[0].counts().rejected_records, 1);
+    assert_eq!(late_title.sources[0].counts().ignored_records, 2);
+    assert_eq!(all_indexed_records(&index), cold_records);
 }
 
 #[test]

@@ -1,5 +1,5 @@
 const PI_V6_PARSER_REVISION: &str = "pi-shared-jsonl-v6-linked-core-activity";
-const PI_V8_PARSER_REVISION: &str = "pi-shared-jsonl-v8-optional-activity-admission";
+const PI_V9_PARSER_REVISION: &str = "pi-shared-jsonl-v9-omp-title-slot";
 
 fn pi_parser_revision(data_root: &Path) -> String {
     let index = ctx_history_index::VerifiedIndex::open(data_root.join("search/lexical")).unwrap();
@@ -23,7 +23,7 @@ fn publish_pi_v6_predecessor(data_root: &Path) -> String {
             .iter()
             .find(|certificate| certificate.observation().source().provider() == "pi")
             .expect("published generation must contain the Pi source");
-        assert_eq!(current.parser_revision(), PI_V8_PARSER_REVISION);
+        assert_eq!(current.parser_revision(), PI_V9_PARSER_REVISION);
         (
             current.observation().source().clone(),
             index.manifest().source_routes().to_vec(),
@@ -154,7 +154,7 @@ fn pi_cli_import_search_flow() {
         second["sources"][0]["published_generation"], legacy_generation,
         "an unchanged Pi source must not reuse a v6 projection: {second:#}"
     );
-    assert_eq!(pi_parser_revision(&data_root(&temp)), PI_V8_PARSER_REVISION);
+    assert_eq!(pi_parser_revision(&data_root(&temp)), PI_V9_PARSER_REVISION);
 
     let records = provider_core_records(&data_root(&temp), "pi");
     assert_eq!(provider_core_counts(&data_root(&temp), "pi"), (1, 6));
