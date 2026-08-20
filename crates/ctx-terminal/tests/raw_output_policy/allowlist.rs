@@ -340,7 +340,7 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
     ),
     allow!(
         CORE_CAPABILITY,
-        "run#1@1ef2a6ac56c71cd9",
+        "run#1@7bc10d6ee0b09708",
         StdoutConstructor,
         Infrastructure,
         "bounded Core-capability response stream",

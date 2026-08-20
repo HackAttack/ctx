@@ -92,6 +92,37 @@ fn capability_response_is_one_exact_flushed_json_frame() {
     assert_eq!(output, b"{\"ok\":true}\n");
 }
 
+#[test]
+fn setup_receipt_does_not_embed_unbounded_source_diagnostics() {
+    let generation = "ab".repeat(32);
+    let source_epoch = json!({
+        "daemon": {
+            "jobs": {
+                "core_refresh": {
+                    "receipt": {"route_results": "x".repeat(MAX_RESPONSE_BYTES)}
+                }
+            }
+        },
+        "lexical": {"generation_id": generation},
+    });
+    assert!(bounded_value(json!({"status": source_epoch.clone()})).is_err());
+
+    let facts = bounded_setup_facts(
+        json!({
+            "daemon_requested": true,
+            "refresh_request": {"status": "published"},
+            "wait": true,
+        }),
+        None,
+        &source_epoch,
+    )
+    .unwrap();
+
+    assert_eq!(facts["generation_id"], generation);
+    assert!(facts.get("status").is_none());
+    assert!(canonical(&facts).unwrap().len() < MAX_RESPONSE_BYTES);
+}
+
 fn terminal_failure_with_blocked_routes(
     route_count: usize,
 ) -> crate::semantic::SourceBackedRefreshTerminalError {

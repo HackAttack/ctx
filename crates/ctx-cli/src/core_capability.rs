@@ -469,22 +469,32 @@ fn core_setup_facts(
             }),
         )
     };
-    let status = status_facts(data_root)?;
-    let generation_id = setup_generation_id(published_generation, &status);
-    bounded_value(json!({
-        "deprecated_catalog_only_ignored": catalog_only,
-        "daemon_requested": daemon_requested,
-        "generation_id": generation_id,
-        "refresh_request": refresh_request,
-        "semantic_enabled": config.semantic_search_enabled(),
-        "status": status,
-        "wait": wait,
-    }))
+    let source_epoch = crate::semantic::source_epoch_status_report(data_root, &config)?;
+    bounded_setup_facts(
+        json!({
+            "deprecated_catalog_only_ignored": catalog_only,
+            "daemon_requested": daemon_requested,
+            "refresh_request": refresh_request,
+            "semantic_enabled": config.semantic_search_enabled(),
+            "wait": wait,
+        }),
+        published_generation,
+        &source_epoch.report,
+    )
 }
 
-fn setup_generation_id(published: Option<String>, status: &Value) -> Option<String> {
+fn bounded_setup_facts(
+    mut facts: Value,
+    published: Option<String>,
+    source_epoch: &Value,
+) -> Result<Value> {
+    facts["generation_id"] = json!(setup_generation_id(published, source_epoch));
+    bounded_value(facts)
+}
+
+fn setup_generation_id(published: Option<String>, source_epoch: &Value) -> Option<String> {
     published.or_else(|| {
-        status["lexical"]["generation_id"]
+        source_epoch["lexical"]["generation_id"]
             .as_str()
             .map(str::to_owned)
     })
@@ -520,8 +530,7 @@ fn refresh_and_facts(data_root: &Path, events: &mut dyn CapabilityEventSink) -> 
         events.refresh(&terminal)?;
     }
     let generation_id = observation.pin.generation_id().to_owned();
-    let status = status_facts(data_root)?;
-    bounded_value(json!({"generation_id": generation_id, "status": status}))
+    bounded_value(json!({"generation_id": generation_id}))
 }
 
 fn parse_options(operation: Operation, value: &Value) -> Result<Options> {
