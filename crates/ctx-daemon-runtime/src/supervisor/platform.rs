@@ -16,8 +16,12 @@ use crate::{
     pid_from_lock_json, read_pid_lock_json, SupervisorManagerOperability,
 };
 
+#[cfg(target_os = "macos")]
+use crate::write_atomic_supervisor_file;
+#[cfg(target_os = "linux")]
+use crate::write_atomic_supervisor_file_if_changed;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use crate::{write_atomic_supervisor_file, SupervisorIdentity, SupervisorSpec};
+use crate::{SupervisorIdentity, SupervisorSpec};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct SupervisorManagerEnvironment {
@@ -179,11 +183,14 @@ pub fn install_systemd_supervisor(
         .ok_or_else(|| anyhow!("systemd user unit has no parent directory"))?;
     fs::create_dir_all(parent)
         .with_context(|| format!("create systemd user unit directory {}", parent.display()))?;
-    write_atomic_supervisor_file(path, super::linux_systemd_unit(spec)?.as_bytes())?;
+    let unit = super::linux_systemd_unit(spec)?;
+    write_atomic_supervisor_file_if_changed(path, unit.as_bytes())?;
+    // Installation is a repair path: reload even when the on-disk bytes are
+    // already current because systemd may still hold an older loaded unit.
     systemctl_user(["daemon-reload"], manager_environment)?;
     systemctl_user(["enable", service_name], manager_environment)?;
     migrate_owner(data_root)?;
-    start_systemd_supervisor(identity, manager_environment)?;
+    restart_systemd_supervisor(identity, manager_environment)?;
     Ok(path.to_path_buf())
 }
 
@@ -274,6 +281,14 @@ pub fn start_systemd_supervisor(
     manager_environment: &SupervisorManagerEnvironment,
 ) -> Result<()> {
     systemctl_user(["start", identity.name()], manager_environment)
+}
+
+#[cfg(target_os = "linux")]
+fn restart_systemd_supervisor(
+    identity: &SupervisorIdentity,
+    manager_environment: &SupervisorManagerEnvironment,
+) -> Result<()> {
+    systemctl_user(["restart", identity.name()], manager_environment)
 }
 
 #[cfg(target_os = "linux")]
@@ -591,7 +606,8 @@ fn supervisor_process_executable(_pid: u32) -> Option<PathBuf> {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use std::os::unix::fs::{symlink, PermissionsExt as _};
+    use std::cell::Cell;
+    use std::os::unix::fs::{symlink, MetadataExt as _, PermissionsExt as _};
 
     use super::*;
 
@@ -685,6 +701,85 @@ mod tests {
             SupervisorManagerOperability::Unavailable { reason }
                 if reason.contains("timed out after 25 ms")
         ));
+    }
+
+    #[test]
+    fn systemd_install_repairs_metadata_and_completes_restart_after_handoff() {
+        let temp = tempfile::tempdir().expect("temporary systemd fixture");
+        let systemctl = temp.path().join("systemctl");
+        let log = temp.path().join("systemctl.log");
+        let restarted = temp.path().join("restart-complete");
+        fs::write(
+            &systemctl,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CTX_TEST_SYSTEMCTL_LOG\"\ncase \"$*\" in *restart*) sleep 0.05; : > \"$CTX_TEST_SYSTEMCTL_RESTARTED\" ;; esac\n",
+        )
+        .expect("write fake systemctl");
+        fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o700))
+            .expect("make fake systemctl executable");
+        let manager_environment = SupervisorManagerEnvironment::new(BTreeMap::from([
+            (
+                OsString::from("PATH"),
+                temp.path().as_os_str().to_os_string(),
+            ),
+            (
+                OsString::from("CTX_TEST_SYSTEMCTL_LOG"),
+                log.as_os_str().to_os_string(),
+            ),
+            (
+                OsString::from("CTX_TEST_SYSTEMCTL_RESTARTED"),
+                restarted.as_os_str().to_os_string(),
+            ),
+        ]));
+        let unit = temp.path().join("ctx.service");
+        let identity = SupervisorIdentity::new("ctx.service", unit.clone()).unwrap();
+        let spec = SupervisorSpec::new(
+            identity,
+            "ctx test daemon",
+            crate::NormalizedLaunch::new(
+                PathBuf::from("/opt/ctx/bin/ctx"),
+                vec![OsString::from("daemon"), OsString::from("run")],
+                BTreeMap::from([(OsString::from("HOME"), OsString::from("/home/tester"))]),
+            ),
+        )
+        .unwrap();
+        let migrations = Cell::new(0_u32);
+        let migrate = |_: &Path| {
+            migrations.set(migrations.get() + 1);
+            Ok(())
+        };
+
+        install_systemd_supervisor(temp.path(), &spec, &manager_environment, &migrate).unwrap();
+        let first_log = fs::read_to_string(&log).unwrap();
+        assert!(first_log.contains("--user daemon-reload"));
+        assert!(first_log.contains("--user enable ctx.service"));
+        assert!(first_log.contains("--user restart ctx.service"));
+        assert!(!first_log.contains("--user start ctx.service"));
+        assert!(
+            restarted.is_file(),
+            "blocking restart must complete before return"
+        );
+        let inode = fs::metadata(&unit).unwrap().ino();
+
+        fs::set_permissions(&unit, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(&log, "").unwrap();
+        install_systemd_supervisor(temp.path(), &spec, &manager_environment, &migrate).unwrap();
+        let second_log = fs::read_to_string(&log).unwrap();
+        assert!(second_log.contains("daemon-reload"));
+        assert!(second_log.contains("--user enable ctx.service"));
+        assert!(second_log.contains("--user restart ctx.service"));
+        let repaired = fs::metadata(&unit).unwrap();
+        assert_eq!(repaired.ino(), inode);
+        assert_eq!(repaired.permissions().mode() & 0o7777, 0o600);
+
+        let alias = temp.path().join("ctx.service.alias");
+        fs::hard_link(&unit, &alias).unwrap();
+        fs::write(&log, "").unwrap();
+        install_systemd_supervisor(temp.path(), &spec, &manager_environment, &migrate).unwrap();
+        let replaced = fs::metadata(&unit).unwrap();
+        assert_ne!(replaced.ino(), inode);
+        assert_eq!(replaced.nlink(), 1);
+        assert_eq!(fs::metadata(&alias).unwrap().ino(), inode);
+        assert_eq!(migrations.get(), 3);
     }
 }
 

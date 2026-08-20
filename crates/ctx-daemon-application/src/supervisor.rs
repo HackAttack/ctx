@@ -38,6 +38,7 @@ mod unsupported;
 #[cfg(test)]
 mod windows;
 
+pub(crate) use environment::supervisor_environment_allowlist_names;
 #[cfg(all(test, windows))]
 use environment::validated_supervisor_artifact_path;
 use environment::{

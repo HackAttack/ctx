@@ -18,7 +18,8 @@ use serde_json::{json, Value};
 
 const MCP_PROXY_MAX_BYTES: usize = 1024 * 1024;
 const PRO_PATH_OVERRIDE_ENVIRONMENT: &str = "CTX_PRO_PATH";
-const FORWARDED_ENVIRONMENT: [(EnvironmentKey, &str); 8] = [
+const SUPERVISOR_ENV_NAMES: &str = "CTX_CORE_SUPERVISOR_ENVIRONMENT_NAMES_V1";
+const FORWARDED_ENVIRONMENT: [(EnvironmentKey, &str); 9] = [
     (EnvironmentKey::Home, "HOME"),
     (EnvironmentKey::Path, "PATH"),
     (EnvironmentKey::Lang, "LANG"),
@@ -30,6 +31,10 @@ const FORWARDED_ENVIRONMENT: [(EnvironmentKey, &str); 8] = [
     ),
     (EnvironmentKey::XdgRuntimeDir, "XDG_RUNTIME_DIR"),
     (EnvironmentKey::LocalUsageEnabled, "CTX_LOCAL_USAGE_ENABLED"),
+    (
+        EnvironmentKey::HostedInstallerSetup,
+        "CTX_HOSTED_INSTALLER_SETUP",
+    ),
 ];
 const FORWARDED_TERMINAL_ENVIRONMENT: [(EnvironmentKey, &str); 6] = [
     (EnvironmentKey::Term, "TERM"),
@@ -195,8 +200,12 @@ pub(crate) fn wake_verified_private_maintenance(
 
 fn forward_paid_cli(arguments: Vec<OsString>) -> Result<ExitCode, CompanionLaunchError> {
     let companion = installed_companion()?;
+    let forwards_core_setup = forwarded_arguments_select_setup(&arguments);
     let mut request = CliRequest::new(arguments);
     forward_environment(request.environment_mut());
+    if forwards_core_setup {
+        forward_supervisor_environment(request.environment_mut());
+    }
     forward_terminal_environment(request.environment_mut());
     let exit = CompanionBridge::new(BridgeLimits::default())
         .launch_cli(&companion, request, companion_cancellation()?)
@@ -208,6 +217,17 @@ fn forward_environment(environment: &mut CompanionEnvironment) {
     forward_selected_environment(environment, FORWARDED_ENVIRONMENT);
 }
 
+fn forward_supervisor_environment(environment: &mut CompanionEnvironment) {
+    let names = ctx_daemon_cli::supervisor_environment_allowlist_names();
+    environment.set_named(SUPERVISOR_ENV_NAMES, names.join("\n"));
+    for name in names {
+        if let Some(value) = std::env::var_os(name) {
+            if name != "HOME" || !value.is_empty() {
+                environment.set_named(name, value);
+            }
+        }
+    }
+}
 fn forward_terminal_environment(environment: &mut CompanionEnvironment) {
     forward_selected_environment(environment, FORWARDED_TERMINAL_ENVIRONMENT);
 }
@@ -226,7 +246,11 @@ fn forward_selected_environment<const N: usize>(
 }
 
 fn environment_value_is_forwardable(key: EnvironmentKey, value: &OsStr) -> bool {
-    key != EnvironmentKey::Home || !value.is_empty()
+    match key {
+        EnvironmentKey::Home => !value.is_empty(),
+        EnvironmentKey::HostedInstallerSetup => value == "1",
+        _ => true,
+    }
 }
 
 fn companion_cancellation() -> Result<&'static CancellationToken, CompanionLaunchError> {
@@ -421,6 +445,31 @@ fn starts_with_dash(value: &OsStr) -> bool {
     value.as_encoded_bytes().starts_with(b"-")
 }
 
+fn forwarded_arguments_select_setup(arguments: &[OsString]) -> bool {
+    let mut index = 0;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--" {
+            return arguments
+                .get(index + 1)
+                .is_some_and(|value| value == "setup");
+        }
+        if argument == "--data-root" || argument == "--color" {
+            index = index.saturating_add(2);
+            continue;
+        }
+        if argument == "--quiet"
+            || argument == "--pro"
+            || has_attached_global_value(argument)
+            || starts_with_dash(argument)
+        {
+            index += 1;
+            continue;
+        }
+        return argument == "setup";
+    }
+    false
+}
+
 fn is_one_framed_line(bytes: &[u8]) -> bool {
     bytes.last() == Some(&b'\n') && !bytes[..bytes.len().saturating_sub(1)].contains(&b'\n')
 }
@@ -453,6 +502,7 @@ fn classify_bridge_error(error: BridgeError) -> CompanionLaunchError {
         },
         BridgeError::ExecutableMetadata { .. }
         | BridgeError::Limit(_)
+        | BridgeError::InvalidEnvironmentName
         | BridgeError::QueueTimeout
         | BridgeError::CancelledBeforeSpawn
         | BridgeError::Spawn(_)
@@ -581,13 +631,17 @@ mod tests {
     }
 
     #[test]
-    fn forwarded_environment_is_the_complete_typed_allowlist() {
-        assert_eq!(
-            FORWARDED_ENVIRONMENT.len() + FORWARDED_TERMINAL_ENVIRONMENT.len(),
-            MAX_ENVIRONMENT_ENTRIES
+    fn forwarded_environment_is_the_complete_fixed_allowlist() {
+        assert!(
+            FORWARDED_ENVIRONMENT.len() + FORWARDED_TERMINAL_ENVIRONMENT.len()
+                < MAX_ENVIRONMENT_ENTRIES
         );
         assert!(FORWARDED_ENVIRONMENT
             .contains(&(EnvironmentKey::LocalUsageEnabled, "CTX_LOCAL_USAGE_ENABLED")));
+        assert!(FORWARDED_ENVIRONMENT.contains(&(
+            EnvironmentKey::HostedInstallerSetup,
+            "CTX_HOSTED_INSTALLER_SETUP"
+        )));
         assert!(FORWARDED_ENVIRONMENT.contains(&(EnvironmentKey::Home, "HOME")));
         assert!(FORWARDED_ENVIRONMENT.contains(&(EnvironmentKey::Path, "PATH")));
         assert!(FORWARDED_TERMINAL_ENVIRONMENT.contains(&(EnvironmentKey::Term, "TERM")));
@@ -605,6 +659,95 @@ mod tests {
             EnvironmentKey::Home,
             OsStr::new("")
         ));
+        assert!(environment_value_is_forwardable(
+            EnvironmentKey::HostedInstallerSetup,
+            OsStr::new("1")
+        ));
+        assert!(!environment_value_is_forwardable(
+            EnvironmentKey::HostedInstallerSetup,
+            OsStr::new("0")
+        ));
+    }
+
+    #[test]
+    fn setup_pro_forwards_the_complete_named_supervisor_environment() {
+        static ENVIRONMENT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        struct Restore(Vec<(&'static str, Option<OsString>)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                for (name, value) in self.0.drain(..) {
+                    if let Some(value) = value {
+                        std::env::set_var(name, value);
+                    } else {
+                        std::env::remove_var(name);
+                    }
+                }
+            }
+        }
+
+        let _lock = ENVIRONMENT_LOCK.lock().unwrap();
+        let values = [
+            ("CODEX_HOME", "/tmp/codex-home"),
+            ("CTX_UPGRADE_AUTO", "false"),
+            ("HTTP_PROXY", "http://proxy.example.test:8080"),
+            ("SSL_CERT_FILE", "/tmp/private-ca.pem"),
+        ];
+        let _restore = Restore(
+            values
+                .iter()
+                .map(|(name, _)| (*name, std::env::var_os(name)))
+                .chain(std::iter::once(("HOME", std::env::var_os("HOME"))))
+                .collect(),
+        );
+        for (name, value) in values {
+            std::env::set_var(name, value);
+        }
+        std::env::set_var("HOME", "");
+
+        let mut environment = CompanionEnvironment::new();
+        forward_supervisor_environment(&mut environment);
+        let names = environment
+            .get(SUPERVISOR_ENV_NAMES)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split('\n')
+            .collect::<Vec<_>>();
+        assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
+        for (name, value) in values {
+            assert!(names.contains(&name));
+            assert_eq!(environment.get(name), Some(OsStr::new(value)));
+        }
+        assert!(names.contains(&"CTX_SEARCH_SEMANTIC"));
+        assert!(names.contains(&"CTX_UPGRADE_CHANNEL"));
+        assert!(names.contains(&"HOME"));
+        assert_eq!(environment.get("HOME"), None);
+    }
+
+    #[test]
+    fn only_forwarded_setup_arguments_request_the_supervisor_environment() {
+        for arguments in [
+            vec!["--pro", "setup"],
+            vec!["--data-root", "/tmp/setup", "setup", "--pro"],
+            vec!["--", "setup", "--pro"],
+        ] {
+            let arguments = arguments
+                .into_iter()
+                .map(OsString::from)
+                .collect::<Vec<_>>();
+            assert!(forwarded_arguments_select_setup(&arguments));
+        }
+        for arguments in [
+            vec!["--pro", "status"],
+            vec!["--data-root", "setup", "status", "--pro"],
+            vec!["help", "setup", "--pro"],
+        ] {
+            let arguments = arguments
+                .into_iter()
+                .map(OsString::from)
+                .collect::<Vec<_>>();
+            assert!(!forwarded_arguments_select_setup(&arguments));
+        }
     }
 
     #[test]

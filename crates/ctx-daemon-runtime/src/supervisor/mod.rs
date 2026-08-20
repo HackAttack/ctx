@@ -15,7 +15,7 @@ mod windows;
 pub use artifact::*;
 pub use lock::SupervisorInstallationLock;
 pub use platform::*;
-pub use state::write_atomic_supervisor_file;
+pub use state::{write_atomic_supervisor_file, write_atomic_supervisor_file_if_changed};
 pub use windows::*;
 
 const SUPERVISOR_HANDOFF_TIMEOUT: Duration = Duration::from_secs(5);

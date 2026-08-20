@@ -14,6 +14,10 @@ pub use composition::{install_host, AppConfig, DaemonCliHost, DaemonConfig, Daem
 pub use ctx_daemon_application::DaemonHostRunRequest;
 pub use ctx_daemon_service::{CoreGenerationPublished, DaemonConfigSnapshot, DaemonUpgradePorts};
 
+pub fn supervisor_environment_allowlist_names() -> Vec<&'static str> {
+    ctx_daemon_application::supervisor_environment_allowlist_names()
+}
+
 mod config {
     #[cfg(test)]
     pub use crate::composition::DAEMON_MODE_ENV;

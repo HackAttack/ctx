@@ -370,6 +370,20 @@ fn control_input_and_output_bounds_fail_closed() {
         Err(BridgeError::Limit("control bytes"))
     ));
 
+    let mut invalid_environment_name = McpRequest::new(Vec::new());
+    invalid_environment_name
+        .environment_mut()
+        .set_named("INVALID=NAME", "value");
+    assert!(matches!(
+        launch_mcp_with(
+            &fixture,
+            invalid_environment_name,
+            LimitConfiguration::default(),
+            &CancellationToken::new(),
+        ),
+        Err(BridgeError::InvalidEnvironmentName)
+    ));
+
     let output = launch_mcp_with(
         &fixture,
         McpRequest::new(Vec::new()),

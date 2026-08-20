@@ -10,6 +10,7 @@ pub enum EnvironmentKey {
     DbusSessionBusAddress,
     XdgRuntimeDir,
     LocalUsageEnabled,
+    HostedInstallerSetup,
     Term,
     ColorTerm,
     NoColor,
@@ -29,6 +30,7 @@ impl EnvironmentKey {
             Self::DbusSessionBusAddress => "DBUS_SESSION_BUS_ADDRESS",
             Self::XdgRuntimeDir => "XDG_RUNTIME_DIR",
             Self::LocalUsageEnabled => "CTX_LOCAL_USAGE_ENABLED",
+            Self::HostedInstallerSetup => "CTX_HOSTED_INSTALLER_SETUP",
             Self::Term => "TERM",
             Self::ColorTerm => "COLORTERM",
             Self::NoColor => "NO_COLOR",
@@ -41,7 +43,7 @@ impl EnvironmentKey {
 
 #[derive(Clone, Debug, Default)]
 pub struct CompanionEnvironment {
-    values: BTreeMap<EnvironmentKey, OsString>,
+    values: BTreeMap<OsString, OsString>,
 }
 
 impl CompanionEnvironment {
@@ -50,14 +52,30 @@ impl CompanionEnvironment {
     }
 
     pub fn set(&mut self, key: EnvironmentKey, value: impl Into<OsString>) -> &mut Self {
-        self.values.insert(key, value.into());
+        self.set_named(key.as_str(), value)
+    }
+
+    /// Adds a name selected by another closed public contract, such as the
+    /// daemon supervisor environment allowlist.
+    pub fn set_named(
+        &mut self,
+        name: impl Into<OsString>,
+        value: impl Into<OsString>,
+    ) -> &mut Self {
+        self.values.insert(name.into(), value.into());
         self
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (EnvironmentKey, &std::ffi::OsStr)> {
+    pub fn get(&self, name: &str) -> Option<&std::ffi::OsStr> {
+        self.values
+            .get(std::ffi::OsStr::new(name))
+            .map(OsString::as_os_str)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&std::ffi::OsStr, &std::ffi::OsStr)> {
         self.values
             .iter()
-            .map(|(key, value)| (*key, value.as_os_str()))
+            .map(|(key, value)| (key.as_os_str(), value.as_os_str()))
     }
 
     pub(crate) fn len(&self) -> usize {

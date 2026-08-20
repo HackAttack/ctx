@@ -187,10 +187,11 @@ impl ProcessRequest {
         }
         for (key, value) in self.environment.iter() {
             control_bytes = control_bytes
-                .checked_add(key.as_str().len())
+                .checked_add(native_size(key))
                 .and_then(|total| total.checked_add(native_size(value)))
                 .and_then(|total| total.checked_add(2))
                 .ok_or(BridgeError::Limit("control bytes"))?;
+            validate_environment_name(key)?;
             reject_nul(value)?;
         }
         if control_bytes > limits.control_bytes {
@@ -198,6 +199,21 @@ impl ProcessRequest {
         }
         Ok(())
     }
+}
+
+fn validate_environment_name(value: &OsStr) -> Result<(), BridgeError> {
+    let Some(value) = value.to_str() else {
+        return Err(BridgeError::InvalidEnvironmentName);
+    };
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err(BridgeError::InvalidEnvironmentName);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]

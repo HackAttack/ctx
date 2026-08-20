@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Read as _, Write as _},
+    io::{Read, Write as _},
     path::{Component, Path, PathBuf},
 };
 
@@ -88,9 +88,11 @@ pub(super) fn run(arguments: &[std::ffi::OsString]) -> Result<()> {
     let identity = engine_identity(&signed_identity)?;
     let receipt = hosted_pair_receipt(&identity, &envelope_bytes)?;
 
-    let staged_companion = stage_hosted_file(
+    let staged_companion = stage_hosted_file_if_changed(
         &candidate_companion,
         &installed_companion,
+        signed_identity.companion().size_bytes(),
+        &signed_identity.companion().sha256().to_hex(),
         0o755,
         "companion artifact",
     )?;
@@ -116,7 +118,7 @@ pub(super) fn run(arguments: &[std::ffi::OsString]) -> Result<()> {
     HostedPairPublication {
         staged_envelope: &staged_envelope,
         installed_envelope: &installed_envelope,
-        staged_companion: &staged_companion,
+        staged_companion: staged_companion.as_deref(),
         installed_companion: &installed_companion,
         staged_core: staged_core.as_deref(),
         installed_core: &core,
@@ -238,11 +240,15 @@ fn verify_hosted_component(
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    sha256_reader(file)
+}
+
+fn sha256_reader(mut reader: impl Read) -> Result<String> {
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
-        let read = file.read(&mut buffer)?;
+        let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
         }
@@ -304,22 +310,183 @@ pub(super) fn stage_hosted_file_if_changed(
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             return Err(anyhow!("installed hosted {label} path is unsafe"));
         }
-        Ok(metadata)
-            if metadata.len() == expected_size && sha256_file(target)? == expected_sha256 =>
-        {
-            return Ok(None);
-        }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error).with_context(|| format!("inspect installed {label}")),
     }
+    if installed_hosted_file_is_current(target, expected_size, expected_sha256, mode, label)? {
+        return Ok(None);
+    }
     stage_hosted_file(source, target, mode, label).map(Some)
+}
+
+#[cfg(unix)]
+fn installed_hosted_file_is_current(
+    target: &Path,
+    expected_size: u64,
+    expected_sha256: &str,
+    mode: u32,
+    label: &str,
+) -> Result<bool> {
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    let mut file = match options.open(target) {
+        Ok(file) => file,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || error.raw_os_error() == Some(libc::ELOOP) =>
+        {
+            return Ok(false)
+        }
+        Err(error) => return Err(error).with_context(|| format!("open installed {label}")),
+    };
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspect opened installed {label}"))?;
+    if !metadata.is_file()
+        || metadata.len() != expected_size
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.nlink() != 1
+        || sha256_reader(&mut file)? != expected_sha256
+    {
+        return Ok(false);
+    }
+    if metadata.permissions().mode() & 0o7777 != mode {
+        file.set_permissions(fs::Permissions::from_mode(mode))
+            .context("repair installed hosted artifact permissions")?;
+        file.sync_all()
+            .context("sync repaired hosted artifact permissions")?;
+    }
+    let repaired = file
+        .metadata()
+        .with_context(|| format!("reinspect opened installed {label}"))?;
+    let path_metadata = match fs::symlink_metadata(target) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).with_context(|| format!("reinspect installed {label}")),
+    };
+    Ok(path_metadata.is_file()
+        && !path_metadata.file_type().is_symlink()
+        && repaired.dev() == path_metadata.dev()
+        && repaired.ino() == path_metadata.ino()
+        && repaired.uid() == unsafe { libc::geteuid() }
+        && repaired.nlink() == 1
+        && repaired.permissions().mode() & 0o7777 == mode
+        && path_metadata.uid() == unsafe { libc::geteuid() }
+        && path_metadata.nlink() == 1
+        && path_metadata.permissions().mode() & 0o7777 == mode)
+}
+
+#[cfg(windows)]
+fn installed_hosted_file_is_current(
+    target: &Path,
+    expected_size: u64,
+    expected_sha256: &str,
+    _mode: u32,
+    label: &str,
+) -> Result<bool> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let open = || {
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        options.open(target)
+    };
+    let mut file = match open() {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).with_context(|| format!("open installed {label}")),
+    };
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspect opened installed {label}"))?;
+    let identity = windows_hosted_file_identity(&file)
+        .with_context(|| format!("identify opened installed {label}"))?;
+    if !metadata.is_file()
+        || identity.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || metadata.len() != expected_size
+        || identity.number_of_links != 1
+        || ctx_history_platform::platform_security::verify_private_file_handle(&file).is_err()
+        || sha256_reader(&mut file)? != expected_sha256
+    {
+        return Ok(false);
+    }
+
+    let path_file = match open() {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).with_context(|| format!("reopen installed {label}")),
+    };
+    let path_metadata = path_file
+        .metadata()
+        .with_context(|| format!("reinspect installed {label}"))?;
+    let path_identity = windows_hosted_file_identity(&path_file)
+        .with_context(|| format!("reidentify installed {label}"))?;
+    Ok(path_metadata.is_file()
+        && path_identity.attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
+        && path_identity.number_of_links == 1
+        && identity.volume_serial_number == path_identity.volume_serial_number
+        && identity.file_index == path_identity.file_index
+        && ctx_history_platform::platform_security::verify_private_file_handle(&path_file).is_ok())
+}
+
+#[cfg(windows)]
+struct WindowsHostedFileIdentity {
+    attributes: u32,
+    number_of_links: u32,
+    volume_serial_number: u32,
+    file_index: u64,
+}
+
+#[cfg(windows)]
+fn windows_hosted_file_identity(file: &File) -> std::io::Result<WindowsHostedFileIdentity> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the file owns a live handle and the output structure is writable
+    // for the duration of this synchronous identity query.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &raw mut information) } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(WindowsHostedFileIdentity {
+        attributes: information.dwFileAttributes,
+        number_of_links: information.nNumberOfLinks,
+        volume_serial_number: information.dwVolumeSerialNumber,
+        file_index: (u64::from(information.nFileIndexHigh) << 32)
+            | u64::from(information.nFileIndexLow),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn installed_hosted_file_is_current(
+    _target: &Path,
+    _expected_size: u64,
+    _expected_sha256: &str,
+    _mode: u32,
+    _label: &str,
+) -> Result<bool> {
+    Ok(false)
 }
 
 pub(super) struct HostedPairPublication<'a> {
     pub(super) staged_envelope: &'a Path,
     pub(super) installed_envelope: &'a Path,
-    pub(super) staged_companion: &'a Path,
+    pub(super) staged_companion: Option<&'a Path>,
     pub(super) installed_companion: &'a Path,
     pub(super) staged_core: Option<&'a Path>,
     pub(super) installed_core: &'a Path,
@@ -339,11 +506,13 @@ impl HostedPairPublication<'_> {
             self.installed_envelope,
             "signed envelope",
         )?;
-        replace_hosted_file(
-            self.staged_companion,
-            self.installed_companion,
-            "companion artifact",
-        )?;
+        if let Some(staged_companion) = self.staged_companion {
+            replace_hosted_file(
+                staged_companion,
+                self.installed_companion,
+                "companion artifact",
+            )?;
+        }
         if let Some(staged_core) = self.staged_core {
             replace_hosted_file(staged_core, self.installed_core, "Core artifact")?;
         }

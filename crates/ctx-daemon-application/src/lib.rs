@@ -153,6 +153,12 @@ enum DaemonStartMode {
     Auto,
 }
 
+/// Names the complete nonsecret environment contract that may cross the
+/// Core/companion boundary for setup and persist in daemon supervision.
+pub fn supervisor_environment_allowlist_names() -> Vec<&'static str> {
+    supervisor::supervisor_environment_allowlist_names()
+}
+
 impl DaemonStartMode {
     const fn as_str(self) -> &'static str {
         "auto"

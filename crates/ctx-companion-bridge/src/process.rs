@@ -354,7 +354,7 @@ fn configure_command(
 ) -> Result<(), BridgeError> {
     command.args(request.arguments()).env_clear();
     for (key, value) in request.environment.iter() {
-        command.env(key.as_str(), value);
+        command.env(key, value);
     }
     platform::configure_required_environment(command)
 }

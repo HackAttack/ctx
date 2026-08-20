@@ -111,7 +111,7 @@ fn hosted_pair_exact_core_reinstall_preserves_the_running_inode() {
     HostedPairPublication {
         staged_envelope: &staged_envelope,
         installed_envelope: &installed_envelope,
-        staged_companion: &staged_companion,
+        staged_companion: Some(&staged_companion),
         installed_companion: &installed_companion,
         staged_core: staged_core.as_deref(),
         installed_core: &installed,
@@ -131,9 +131,45 @@ fn hosted_pair_exact_core_reinstall_preserves_the_running_inode() {
     assert_eq!(std::fs::read(installed_receipt).unwrap(), b"new-receipt");
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt as _;
-        assert_eq!(std::fs::metadata(&installed).unwrap().ino(), inode_before);
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let metadata = std::fs::metadata(&installed).unwrap();
+        assert_eq!(metadata.ino(), inode_before);
+        assert_eq!(metadata.permissions().mode() & 0o7777, 0o755);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn hosted_pair_exact_hardlinked_companion_is_replaced_not_reused() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let root = tempfile::tempdir().unwrap();
+    let candidate = root.path().join("candidate-ctx-pro");
+    let installed = root.path().join("libexec/ctx-pro");
+    let alias = root.path().join("hardlink-alias");
+    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    std::fs::write(&candidate, b"exact-signed-companion").unwrap();
+    std::fs::write(&installed, b"exact-signed-companion").unwrap();
+    std::fs::hard_link(&installed, &alias).unwrap();
+    let old_inode = std::fs::metadata(&installed).unwrap().ino();
+    let digest = format!("{:x}", Sha256::digest(b"exact-signed-companion"));
+
+    let staged = stage_hosted_file_if_changed(
+        &candidate,
+        &installed,
+        b"exact-signed-companion".len() as u64,
+        &digest,
+        0o755,
+        "companion artifact",
+    )
+    .unwrap()
+    .expect("hardlinked artifact must be staged for replacement");
+    replace_hosted_file(&staged, &installed, "companion artifact").unwrap();
+
+    let installed_metadata = std::fs::metadata(&installed).unwrap();
+    assert_ne!(installed_metadata.ino(), old_inode);
+    assert_eq!(installed_metadata.nlink(), 1);
+    assert_eq!(std::fs::metadata(&alias).unwrap().ino(), old_inode);
 }
 
 #[test]
@@ -159,6 +195,39 @@ fn hosted_pair_changed_core_is_staged_for_atomic_publication() {
 
     assert_eq!(std::fs::read(&installed).unwrap(), b"same-size-core-A");
     assert_eq!(std::fs::read(staged).unwrap(), b"same-size-core-B");
+}
+
+#[test]
+fn hosted_pair_exact_companion_reinstall_preserves_the_running_inode() {
+    let root = tempfile::tempdir().unwrap();
+    let candidate = root.path().join("candidate-ctx-pro");
+    let installed = root.path().join("libexec/ctx-pro");
+    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    std::fs::write(&candidate, b"exact-signed-companion").unwrap();
+    std::fs::write(&installed, b"exact-signed-companion").unwrap();
+    let digest = format!("{:x}", Sha256::digest(b"exact-signed-companion"));
+    #[cfg(unix)]
+    let inode_before = {
+        use std::os::unix::fs::MetadataExt as _;
+        std::fs::metadata(&installed).unwrap().ino()
+    };
+
+    let staged = stage_hosted_file_if_changed(
+        &candidate,
+        &installed,
+        b"exact-signed-companion".len() as u64,
+        &digest,
+        0o755,
+        "companion artifact",
+    )
+    .unwrap();
+
+    assert!(staged.is_none());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        assert_eq!(std::fs::metadata(&installed).unwrap().ino(), inode_before);
+    }
 }
 
 #[test]
@@ -217,7 +286,7 @@ fn hosted_pair_exact_reinstall_failure_preserves_publication_prefix_and_receipt_
     assert!(HostedPairPublication {
         staged_envelope: &staged_envelope,
         installed_envelope: &installed_envelope,
-        staged_companion: &staged_companion,
+        staged_companion: Some(&staged_companion),
         installed_companion: &installed_companion,
         staged_core: staged_core.as_deref(),
         installed_core: &installed,
@@ -285,7 +354,7 @@ fn hosted_pair_exact_reinstall_publishes_rollback_watermark_before_companion() {
     assert!(HostedPairPublication {
         staged_envelope: &staged_envelope,
         installed_envelope: &installed_envelope,
-        staged_companion: &staged_companion,
+        staged_companion: Some(&staged_companion),
         installed_companion: &installed_companion,
         staged_core: None,
         installed_core: &installed,

@@ -5,6 +5,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[cfg(unix)]
+use std::io::Read as _;
+
 use anyhow::{anyhow, Context, Result};
 
 use crate::replace_private_file;
@@ -50,6 +53,87 @@ pub fn write_atomic_supervisor_file(path: &Path, body: &[u8]) -> Result<()> {
         let _ = fs::remove_file(&temp);
     }
     result
+}
+
+pub fn write_atomic_supervisor_file_if_changed(path: &Path, body: &[u8]) -> Result<bool> {
+    if existing_supervisor_file_is_current(path, body)? {
+        return Ok(false);
+    }
+    write_atomic_supervisor_file(path, body)?;
+    Ok(true)
+}
+
+#[cfg(unix)]
+fn existing_supervisor_file_is_current(path: &Path, body: &[u8]) -> Result<bool> {
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+
+    let mut options = fs::OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || error.raw_os_error() == Some(libc::ELOOP) =>
+        {
+            return Ok(false)
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("open supervisor artifact {}", path.display()))
+        }
+    };
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspect opened supervisor artifact {}", path.display()))?;
+    if !metadata.is_file()
+        || metadata.len() != u64::try_from(body.len()).unwrap_or(u64::MAX)
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.nlink() != 1
+    {
+        return Ok(false);
+    }
+    let mut installed = Vec::with_capacity(body.len());
+    file.read_to_end(&mut installed)
+        .with_context(|| format!("read opened supervisor artifact {}", path.display()))?;
+    if installed != body {
+        return Ok(false);
+    }
+    if metadata.permissions().mode() & 0o7777 != 0o600 {
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .with_context(|| {
+                format!("repair supervisor artifact {} permissions", path.display())
+            })?;
+        file.sync_all()
+            .with_context(|| format!("sync repaired supervisor artifact {}", path.display()))?;
+    }
+    let repaired = file
+        .metadata()
+        .with_context(|| format!("reinspect opened supervisor artifact {}", path.display()))?;
+    let path_metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("reinspect supervisor artifact {}", path.display()))
+        }
+    };
+    Ok(path_metadata.is_file()
+        && !path_metadata.file_type().is_symlink()
+        && repaired.dev() == path_metadata.dev()
+        && repaired.ino() == path_metadata.ino()
+        && repaired.uid() == unsafe { libc::geteuid() }
+        && repaired.nlink() == 1
+        && repaired.permissions().mode() & 0o7777 == 0o600
+        && path_metadata.uid() == unsafe { libc::geteuid() }
+        && path_metadata.nlink() == 1
+        && path_metadata.permissions().mode() & 0o7777 == 0o600)
+}
+
+#[cfg(not(unix))]
+fn existing_supervisor_file_is_current(_path: &Path, _body: &[u8]) -> Result<bool> {
+    Ok(false)
 }
 
 #[cfg(unix)]

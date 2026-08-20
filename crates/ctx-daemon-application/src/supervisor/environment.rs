@@ -352,7 +352,7 @@ pub(super) fn validated_supervisor_artifact_text<'a>(
     ctx_daemon_runtime::validated_supervisor_artifact_text(label, value)
 }
 
-fn supervisor_environment_allowlist_names() -> Vec<&'static str> {
+pub(crate) fn supervisor_environment_allowlist_names() -> Vec<&'static str> {
     let mut names = DISCOVERY_ENV_ALLOWLIST.to_vec();
     names.extend_from_slice(SUPERVISOR_DAEMON_POLICY_ENV_ALLOWLIST);
     names.push("PATH");
@@ -461,11 +461,14 @@ mod tests {
     }
 
     #[test]
-    fn transient_invocation_controls_do_not_change_the_maintained_definition() -> Result<()> {
+    fn hosted_installer_keeps_named_environment_and_excludes_only_transient_policy() -> Result<()> {
         const NAMES: &[&str] = &[
             HOSTED_INSTALLER_SETUP_ENV,
+            "CODEX_HOME",
             "CTX_SEARCH_SEMANTIC",
             "CTX_UPGRADE_CHANNEL",
+            "CTX_UPGRADE_AUTO",
+            "HTTP_PROXY",
             "SSL_CERT_FILE",
         ];
         let _env_lock = crate::test_environment_lock()
@@ -473,8 +476,11 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner());
         let _restore = RestoreEnvironment::capture(NAMES);
 
+        env::set_var("CODEX_HOME", "/tmp/ctx-hosted-codex-home");
         env::set_var("CTX_SEARCH_SEMANTIC", "true");
         env::set_var("CTX_UPGRADE_CHANNEL", "staging");
+        env::set_var("CTX_UPGRADE_AUTO", "false");
+        env::set_var("HTTP_PROXY", "http://proxy.example.test:8080");
         env::set_var("SSL_CERT_FILE", "/tmp/ctx-supervisor-ca-before.pem");
         env::set_var(HOSTED_INSTALLER_SETUP_ENV, "1");
         let installer_snapshot = supervisor_environment_snapshot(&TestHost)?;
@@ -497,19 +503,34 @@ mod tests {
         assert_eq!(installer_snapshot.sha256, ordinary_shell_snapshot.sha256);
         assert_eq!(installer_snapshot.values, ordinary_shell_snapshot.values);
         assert_eq!(installer_unit, ordinary_shell_unit);
-        assert!(!installer_unit.contains("CTX_SEARCH_SEMANTIC"));
-        assert!(!installer_unit.contains("CTX_UPGRADE_CHANNEL"));
+        for excluded in [
+            HOSTED_INSTALLER_SETUP_ENV,
+            "CTX_SEARCH_SEMANTIC",
+            "CTX_UPGRADE_CHANNEL",
+        ] {
+            assert!(!installer_unit.contains(excluded));
+        }
+        for retained in [
+            "CODEX_HOME",
+            "CTX_UPGRADE_AUTO",
+            "HTTP_PROXY",
+            "SSL_CERT_FILE",
+        ] {
+            assert!(installer_unit.contains(retained), "missing {retained}");
+        }
 
         env::set_var("SSL_CERT_FILE", "/tmp/ctx-supervisor-ca-after.pem");
-        let persistent_environment_change = supervisor_environment_snapshot(&TestHost)?;
+        let ordinary_operator_snapshot = supervisor_environment_snapshot(&TestHost)?;
         assert_ne!(
-            ordinary_shell_snapshot.sha256, persistent_environment_change.sha256,
-            "persistent daemon environment changes must remain verified"
+            installer_snapshot.sha256, ordinary_operator_snapshot.sha256,
+            "ordinary setup must retain operator-owned daemon environment overrides"
         );
-        assert_ne!(
-            ordinary_shell_snapshot.values,
-            persistent_environment_change.values
-        );
+        assert!(ordinary_operator_snapshot
+            .values
+            .iter()
+            .any(|(name, value)| {
+                name == "SSL_CERT_FILE" && value == "/tmp/ctx-supervisor-ca-after.pem"
+            }));
         Ok(())
     }
 

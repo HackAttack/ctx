@@ -35,6 +35,8 @@ pub enum BridgeError {
     InvalidProtocolResponse(&'static str),
     #[error("managed companion request exceeds the {0} limit")]
     Limit(&'static str),
+    #[error("managed companion request contains an invalid environment name")]
+    InvalidEnvironmentName,
     #[error("managed companion request deadline expired before spawn")]
     QueueTimeout,
     #[error("managed companion launch was cancelled before spawn")]
