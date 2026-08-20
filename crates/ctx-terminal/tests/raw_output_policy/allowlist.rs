@@ -64,6 +64,14 @@ const PLAIN_REFRESH_PROGRESS: TestOwner = TestOwner::behavioral(
     &["crates/ctx-terminal/src/progress.rs"],
     &["ProgressMode", "Plain", "refresh_progress", "assert_eq"],
 );
+const CALLOUT_PLAIN_MESSAGE: TestOwner = TestOwner::behavioral(
+    "crates/ctx-terminal/src/progress/tests/notice_tests.rs::structured_callout_is_ordered_after_plain_progress_and_stays_structured_in_json",
+    &[
+        "crates/ctx-terminal/src/progress.rs",
+        "crates/ctx-terminal/src/ui/components/callout.rs",
+    ],
+    &["CalloutPresentation", "plain_message", "assert_eq"],
+);
 const APPEND_OUTPUT: TestOwner = TestOwner::behavioral(
     "crates/ctx-terminal/src/ui/writer/tests.rs::append_controller_writes_documents_and_lines_exactly",
     &["crates/ctx-terminal/src/ui/writer.rs"],
@@ -200,6 +208,7 @@ const MCP_MODULE: &str = "src/mcp.rs";
 const OUTPUT: &str = "crates/ctx-terminal/src/output.rs";
 const RELEASE_IDENTITY: &str = "src/release_build_identity.rs";
 const UI_DOCUMENT: &str = "crates/ctx-terminal/src/ui/document.rs";
+const UI_CALLOUT: &str = "crates/ctx-terminal/src/ui/components/callout.rs";
 const UI_MODULE: &str = "crates/ctx-terminal/src/ui/mod.rs";
 const UI_WRITER: &str = "crates/ctx-terminal/src/ui/writer.rs";
 const TERMINAL_PROGRESS: &str = "crates/ctx-terminal/src/progress.rs";
@@ -841,6 +850,14 @@ pub(super) const ALLOWLIST: &[AllowEntry] = &[
         Infrastructure,
         UI_INFRASTRUCTURE,
         UNIT
+    ),
+    allow!(
+        UI_CALLOUT,
+        "plain_message#1@4adb1d63e3d6f7e3",
+        DocumentRender,
+        Infrastructure,
+        "callout plain-message composition uses the shared terminal document renderer",
+        CALLOUT_PLAIN_MESSAGE
     ),
     allow!(
         UI_MODULE,

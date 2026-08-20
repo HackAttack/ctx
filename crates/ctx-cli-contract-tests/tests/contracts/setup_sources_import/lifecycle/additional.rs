@@ -132,7 +132,10 @@ fn hosted_setup_recovers_when_the_new_systemd_service_first_exits_cleanly() {
     assert_eq!(setup["mode"], "ready", "{setup:#}");
     assert_eq!(setup["daemon_autostart"]["status"], "verified", "{setup:#}");
     assert_eq!(setup["daemon_autostart"]["persistent"], true, "{setup:#}");
-    assert_eq!(setup["daemon"]["supervisor"]["status"], "installed", "{setup:#}");
+    assert_eq!(
+        setup["daemon"]["supervisor"]["status"], "installed",
+        "{setup:#}"
+    );
     assert_empty_catalog_default_background_setup(&setup);
 }
 
