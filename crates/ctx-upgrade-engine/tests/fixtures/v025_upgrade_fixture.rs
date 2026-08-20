@@ -168,10 +168,14 @@ mod unix {
         permissions.set_mode(0o755);
         fs::set_permissions(&staged, permissions)?;
         let output = Command::new(&staged).arg("--version").output()?;
-        if !output.status.success() || !String::from_utf8_lossy(&output.stdout).contains("1.0.0") {
+        let candidate_version = env!("CARGO_PKG_VERSION");
+        if !output.status.success()
+            || !String::from_utf8_lossy(&output.stdout).contains(candidate_version)
+        {
             return Err(format!(
-                "staged v1 version probe failed (status {}): {}",
+                "staged v1 version probe failed (expected {candidate_version}, status {}): stdout={} stderr={}",
                 output.status,
+                String::from_utf8_lossy(&output.stdout).trim(),
                 String::from_utf8_lossy(&output.stderr).trim()
             )
             .into());
@@ -191,7 +195,7 @@ mod unix {
                 "install_path": target,
                 "platform": platform_key(),
                 "channel": "stable",
-                "version": "1.0.0",
+                "version": candidate_version,
                 "sha256": sha256_file(&staged)?,
                 "installed_at": "2026-07-30T00:00:00Z",
             }),
