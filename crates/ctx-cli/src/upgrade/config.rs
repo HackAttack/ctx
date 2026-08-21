@@ -6,8 +6,8 @@ use std::{
 
 use anyhow::{Context, Result};
 use ctx_history_platform::platform_security::{
-    establish_private_data_root, restrict_private_file_handle, verify_private_directory,
-    verify_private_file_handle,
+    ensure_private_file_handle, establish_private_data_root, restrict_private_file_handle,
+    verify_private_directory, verify_private_file_handle,
 };
 use uuid::Uuid;
 
@@ -30,16 +30,20 @@ fn read_upgrade_config(path: &Path) -> Result<String> {
     {
         use std::os::unix::fs::OpenOptionsExt as _;
 
-        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt as _;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        use windows_sys::Win32::{
+            Foundation::GENERIC_READ,
+            Storage::FileSystem::{
+                FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, READ_CONTROL, WRITE_DAC,
+            },
         };
 
         options
+            .access_mode(GENERIC_READ | READ_CONTROL | WRITE_DAC)
             .share_mode(FILE_SHARE_READ)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
@@ -48,8 +52,8 @@ fn read_upgrade_config(path: &Path) -> Result<String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
         Err(error) => return Err(error).with_context(|| format!("open {}", path.display())),
     };
-    verify_private_file_handle(&file)
-        .with_context(|| format!("verify private upgrade config {}", path.display()))?;
+    ensure_private_file_handle(&file)
+        .with_context(|| format!("protect private upgrade config {}", path.display()))?;
     let mut existing = String::new();
     file.read_to_string(&mut existing)
         .with_context(|| format!("read {}", path.display()))?;

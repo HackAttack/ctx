@@ -217,5 +217,11 @@ fn atomic_json_write_replaces_without_partial_content() -> Result<()> {
         Some("applied")
     );
     assert_eq!(fs::read_dir(temp.path())?.count(), 1);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
+    }
     Ok(())
 }

@@ -271,32 +271,68 @@ fn upgrade_enable_and_disable_persist_private_config_with_analytics_disabled() {
 
 #[cfg(unix)]
 #[test]
-fn upgrade_enable_and_disable_reject_insecure_config_without_repair() {
+fn upgrade_enable_and_disable_repair_legacy_config_permissions() {
     use std::os::unix::fs::PermissionsExt as _;
+
+    for (command_name, expected_mode) in [("enable", "apply"), ("disable", "off")] {
+        for legacy_permissions in [0o400, 0o444, 0o644, 0o664] {
+            let temp = tempdir();
+            let data_root = temp
+                .path()
+                .join(format!("{command_name}-{legacy_permissions:o}-state"));
+            let config = data_root.join("config.toml");
+            fs::create_dir(&data_root).unwrap();
+            fs::set_permissions(&data_root, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::write(&config, "[search]\nsemantic = true\n").unwrap();
+            fs::set_permissions(&config, fs::Permissions::from_mode(legacy_permissions)).unwrap();
+
+            ctx(&temp)
+                .args(["upgrade", command_name])
+                .env("CTX_DATA_ROOT", &data_root)
+                .env("CTX_ANALYTICS_ENABLED", "false")
+                .assert()
+                .success();
+
+            assert_eq!(
+                fs::read_to_string(&config).unwrap(),
+                format!("[search]\nsemantic = true\n\n[upgrade]\nauto = \"{expected_mode}\"\n"),
+                "{command_name} legacy mode {legacy_permissions:o}"
+            );
+            assert_mode(&config, 0o600);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn upgrade_enable_and_disable_reject_symlinked_config_without_changing_target() {
+    use std::os::unix::fs::{symlink, PermissionsExt as _};
 
     for command_name in ["enable", "disable"] {
         let temp = tempdir();
         let data_root = temp.path().join(format!("{command_name}-state"));
+        let target = temp.path().join(format!("{command_name}-outside.toml"));
         let config = data_root.join("config.toml");
         let original = b"[search]\nsemantic = true\n";
         fs::create_dir(&data_root).unwrap();
         fs::set_permissions(&data_root, fs::Permissions::from_mode(0o700)).unwrap();
-        fs::write(&config, original).unwrap();
-        fs::set_permissions(&config, fs::Permissions::from_mode(0o666)).unwrap();
+        fs::write(&target, original).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+        symlink(&target, &config).unwrap();
 
-        let stderr = failure_stderr(
-            ctx(&temp)
-                .args(["upgrade", command_name])
-                .env("CTX_DATA_ROOT", &data_root)
-                .env("CTX_ANALYTICS_ENABLED", "false"),
-        );
+        ctx(&temp)
+            .args(["upgrade", command_name])
+            .env("CTX_DATA_ROOT", &data_root)
+            .env("CTX_ANALYTICS_ENABLED", "false")
+            .assert()
+            .failure();
 
-        assert!(
-            stderr.contains("private state path is not owner-only"),
-            "{command_name}: {stderr}"
-        );
-        assert_eq!(fs::read(&config).unwrap(), original, "{command_name}");
-        assert_mode(&config, 0o666);
+        assert_eq!(fs::read(&target).unwrap(), original, "{command_name}");
+        assert_mode(&target, 0o644);
+        assert!(fs::symlink_metadata(&config)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 }
 
