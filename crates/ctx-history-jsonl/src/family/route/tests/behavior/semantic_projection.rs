@@ -18,8 +18,7 @@ fn rejected_leaf_exact_proof_rejects_change_since_discovery() {
         leaf.authority_path.clone(),
         leaf.observation(),
     )
-    .err()
-    .expect("changed rejected member must not receive an exact terminal proof");
+    .expect_err("changed rejected member must not receive an exact terminal proof");
     assert!(matches!(error, SourceIoError::SourceChangedDuringCapture));
 }
 

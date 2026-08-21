@@ -133,7 +133,7 @@ fn codex_quarantined_rollout_source_key(observation: &CodexFileObservation) -> R
     // identity. It cannot connect a quarantined file to another rollout.
     let observation = serde_json::to_vec(observation)?;
     let digest = Sha256::digest(observation);
-    Ok(SourceKey::derive_provider_native(
+    SourceKey::derive_provider_native(
         CaptureProvider::Codex.as_str(),
         CODEX_SESSION_SOURCE_FORMAT,
         CODEX_SOURCE_SCHEMA_VARIANT,
@@ -142,7 +142,7 @@ fn codex_quarantined_rollout_source_key(observation: &CodexFileObservation) -> R
         TypedKey::bytes(digest.to_vec())
             .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?,
     )
-    .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?)
+    .map_err(|error| CaptureError::InvalidPayload(error.to_string()))
 }
 
 #[derive(Default)]

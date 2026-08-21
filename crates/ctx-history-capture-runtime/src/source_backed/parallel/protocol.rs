@@ -407,7 +407,7 @@ where
         source_id: String,
         operation: ParallelLeafSinkOperation,
         #[source]
-        source: SourceBackedCoordinatorError<LE>,
+        source: Box<SourceBackedCoordinatorError<LE>>,
     },
     #[error("parallel leaf activity reporting failed: {source}")]
     Activity {

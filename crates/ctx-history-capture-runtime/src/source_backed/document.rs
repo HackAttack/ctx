@@ -802,7 +802,7 @@ fn document_parallel_error<E: std::error::Error + 'static>(
 ) -> SourceBackedRouteError {
     match error {
         ParallelLeafScanError::Worker { source, .. } => source,
-        ParallelLeafScanError::Sink { source, .. } => route_coordinator_error(source),
+        ParallelLeafScanError::Sink { source, .. } => route_coordinator_error(*source),
         error => document_internal(format!("independent document leaf runner failed: {error}")),
     }
 }

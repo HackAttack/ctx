@@ -1,0 +1,30 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_edition")
+load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "BUILD.bazel",
+    "Cargo.toml",
+])
+
+filegroup(
+    name = "cargo_package_data",
+    srcs = glob(["**"], exclude = ["BUILD.bazel"]),
+)
+
+ctx_rust_test(
+    name = "mistral_vibe_publication_tests",
+    testonly = True,
+    srcs = ["tests/mistral_vibe_publication.rs"],
+    crate_name = "ctx_history_capture_composition_qualification",
+    crate_root = "tests/mistral_vibe_publication.rs",
+    edition = crate_edition(),
+    aliases = aliases(normal_dev = True, proc_macro_dev = True),
+    deps = all_crate_deps(normal_dev = True) + [
+        "//crates/ctx-history-capture-composition:lib",
+        "//crates/ctx-history-core:lib",
+        "//crates/ctx-history-index:lib",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro_dev = True),
+)

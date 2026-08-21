@@ -15,6 +15,7 @@ members = [
     "crates/ctx-upgrade-engine",
     "crates/ctx-history-capture",
     "crates/ctx-history-capture-composition",
+    "crates/ctx-history-capture-composition-qualification",
     "crates/ctx-history-provider-hermes",
     "crates/ctx-history-provider-gemini",
     "crates/ctx-history-provider-native-jsonl",
@@ -60,7 +61,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/ctxrs/ctx"

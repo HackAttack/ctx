@@ -533,6 +533,6 @@ where
         job_index,
         source_id: source.identity().to_string(),
         operation,
-        source: error,
+        source: Box::new(error),
     }
 }

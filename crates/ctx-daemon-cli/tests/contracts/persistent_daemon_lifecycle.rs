@@ -385,12 +385,15 @@ mod native {
                 .and_then(|routes| {
                     routes.values().find_map(|route| {
                         let fields = route.as_array()?;
-                        let details_index = match fields.first()?.as_str()? {
-                            "s" => 3,
-                            "f" => 4,
+                        let details = match fields.first()?.as_str()? {
+                            "s" => fields
+                                .get(4)
+                                .and_then(Value::as_array)
+                                .or_else(|| fields.get(3).and_then(Value::as_array))?,
+                            "f" => fields.get(4)?.as_array()?,
                             _ => return None,
                         };
-                        fields.get(details_index)?.as_array()?.first()
+                        details.first()
                     })
                 })
                 .and_then(Value::as_array)
@@ -400,13 +403,14 @@ mod native {
                 Some(&json!("codex")),
                 "{failed_job:#}"
             );
-            assert_eq!(source_failure.get(3), Some(&json!(true)), "{failed_job:#}");
+            assert_eq!(source_failure.get(2), Some(&json!("r")), "{failed_job:#}");
+            assert_eq!(source_failure.get(3), Some(&json!(false)), "{failed_job:#}");
             assert!(
                 source_failure
                     .get(5)
                     .and_then(Value::as_str)
                     .is_some_and(|error| error.contains(
-                        "Codex normalized catalog owner changed before NativePath admission"
+                        "Codex session ownership is ambiguous or conflicting; quarantined rollout file"
                     )),
                 "{failed_job:#}"
             );
