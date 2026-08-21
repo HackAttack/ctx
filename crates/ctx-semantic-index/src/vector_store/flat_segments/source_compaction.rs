@@ -108,10 +108,11 @@ fn build_streamed_receipt(
             )));
         }
     }
+    let accounted_events = owned_event_count.checked_add(input.filtered_event_count);
     if input.source_identity_digest != source.source_identity_digest
         || input.source_reconciliation_id != source.source_reconciliation_id
         || input.source_reconciliation_id.is_empty()
-        || owned_event_count > input.semantic_eligible_documents
+        || accounted_events != Some(input.semantic_eligible_documents)
     {
         return Err(FlatStoreError::InvalidInput(
             "source receipt does not match its staged Core aggregate".to_owned(),
@@ -126,6 +127,7 @@ fn build_streamed_receipt(
         contract_fingerprint: input.contract_fingerprint.clone(),
         semantic_policy_fingerprint: input.semantic_policy_fingerprint.clone(),
         owned_event_count,
+        filtered_event_count: input.filtered_event_count,
         owned_event_ids_hash: encode_hex(&digest.finalize()),
     })
 }

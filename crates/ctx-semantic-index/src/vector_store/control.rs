@@ -17,7 +17,7 @@ use crate::{
 pub(super) const CONTROL_FILE: &str = "state.sqlite";
 const SEMANTIC_VECTOR_BUSY_TIMEOUT_MS: u64 = 30_000;
 const CONTROL_APPLICATION_ID: i64 = 0x4354_584D; // "CTXM"
-const CONTROL_SCHEMA_VERSION: i64 = 5;
+const CONTROL_SCHEMA_VERSION: i64 = 6;
 pub(super) const FULL_REBUILD_STATE: &str = "projection_full_rebuild_v1";
 
 pub(crate) fn open_writable(root: &Path) -> Result<Connection> {
@@ -249,7 +249,7 @@ fn user_table_count(connection: &Connection) -> Result<usize> {
 mod tests {
     use super::*;
 
-    const V5_TABLES: [&str; 3] = [
+    const V6_TABLES: [&str; 3] = [
         "semantic_dirty_events",
         "semantic_index_stats",
         "semantic_maintenance_state",
@@ -315,7 +315,7 @@ mod tests {
     fn fresh_control_database_has_no_obsolete_source_receipts_table() -> Result<()> {
         let temporary = tempfile::tempdir()?;
         let connection = open_writable(temporary.path())?;
-        assert_eq!(user_tables(&connection)?, V5_TABLES);
+        assert_eq!(user_tables(&connection)?, V6_TABLES);
         assert_eq!(
             connection.query_row(
                 "SELECT COUNT(*) FROM semantic_maintenance_state
@@ -335,9 +335,62 @@ mod tests {
         create_v4_fixture(temporary.path())?;
 
         let connection = open_writable(temporary.path())?;
-        assert_eq!(pragma_i64(&connection, "user_version")?, 5);
-        assert_eq!(user_tables(&connection)?, V5_TABLES);
-        assert_eq!(user_table_count(&connection)?, V5_TABLES.len());
+        assert_eq!(pragma_i64(&connection, "user_version")?, 6);
+        assert_eq!(user_tables(&connection)?, V6_TABLES);
+        assert_eq!(user_table_count(&connection)?, V6_TABLES.len());
+        assert_eq!(
+            connection.query_row(
+                "SELECT value FROM semantic_maintenance_state WHERE key = ?1",
+                [FULL_REBUILD_STATE],
+                |row| row.get::<_, String>(0),
+            )?,
+            "true"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn v5_filter_unaware_acknowledgement_is_discarded_for_rebuild() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let connection = Connection::open(control_path(temporary.path()))?;
+        connection.execute_batch(
+            r#"
+            CREATE TABLE semantic_index_stats (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                dirty_items INTEGER NOT NULL CHECK(dirty_items >= 0)
+            );
+            INSERT INTO semantic_index_stats(id, dirty_items) VALUES (1, 0);
+            CREATE TABLE semantic_dirty_events (
+                event_id TEXT PRIMARY KEY,
+                queued_at_ms INTEGER NOT NULL,
+                priority_seq INTEGER,
+                reason TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE semantic_maintenance_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO semantic_maintenance_state(key, value)
+                VALUES ('core_semantic_acknowledgement_v1',
+                        '{"semantic_documents":2,"projected_documents":1}');
+            "#,
+        )?;
+        connection.pragma_update(None, "application_id", CONTROL_APPLICATION_ID)?;
+        connection.pragma_update(None, "user_version", 5)?;
+        drop(connection);
+
+        let connection = open_writable(temporary.path())?;
+        assert_eq!(pragma_i64(&connection, "user_version")?, 6);
+        assert_eq!(user_tables(&connection)?, V6_TABLES);
+        assert_eq!(
+            connection.query_row(
+                "SELECT COUNT(*) FROM semantic_maintenance_state WHERE key = ?1",
+                ["core_semantic_acknowledgement_v1"],
+                |row| row.get::<_, u64>(0),
+            )?,
+            0
+        );
         assert_eq!(
             connection.query_row(
                 "SELECT value FROM semantic_maintenance_state WHERE key = ?1",

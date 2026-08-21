@@ -757,6 +757,9 @@ fn run_daemon_semantic_job_with_retry(
 }
 
 fn bind_semantic_generation(mut job: Value, core_generation_id: Option<&str>) -> Value {
+    if let Ok(fingerprint) = ctx_semantic_index::source_backed_semantic_contract_fingerprint() {
+        job["source_contract_fingerprint"] = Value::String(fingerprint);
+    }
     if let Some(core_generation_id) = core_generation_id {
         job["core_generation_id"] = Value::String(core_generation_id.to_owned());
     }
@@ -764,11 +767,20 @@ fn bind_semantic_generation(mut job: Value, core_generation_id: Option<&str>) ->
 }
 
 fn semantic_generation_needs_catch_up(data_root: &Path, core_generation_id: &str) -> bool {
+    let Ok(contract_fingerprint) =
+        ctx_semantic_index::source_backed_semantic_contract_fingerprint()
+    else {
+        return true;
+    };
     let Some(job) = read_daemon_job_status(&daemon_semantic_job_path(data_root)) else {
         return true;
     };
     job.get("core_generation_id").and_then(Value::as_str) != Some(core_generation_id)
         || job.get("status").and_then(Value::as_str) != Some("ready")
+        || job
+            .get("source_contract_fingerprint")
+            .and_then(Value::as_str)
+            != Some(contract_fingerprint.as_str())
 }
 
 fn semantic_page_continuation_pending(data_root: &Path, core_generation_id: &str) -> bool {

@@ -148,11 +148,7 @@ fn index_readiness_snapshot(data_root: &Path) -> Result<Value> {
             "status": source_semantic.get("status"),
             "reason": source_semantic.get("reason"),
             "enabled": source_semantic.get("enabled"),
-            "coverage": {
-                "searchable_items": semantic_flat.get("semantic_documents"),
-                "embedded_items": semantic_flat.get("active_events"),
-                "embedded_chunks": semantic_flat.get("active_chunks"),
-            },
+            "coverage": semantic_coverage(semantic_flat),
         },
         "daemon": {
             "status": source_daemon.get("status"),
@@ -166,6 +162,16 @@ fn index_readiness_snapshot(data_root: &Path) -> Result<Value> {
     })))
 }
 
+fn semantic_coverage(flat: &Value) -> Value {
+    compact_json(json!({
+        "candidate_items": flat.get("semantic_documents"),
+        "searchable_items": flat.get("projected_documents"),
+        "embedded_items": flat.get("projected_documents"),
+        "filtered_items": flat.get("filtered_documents"),
+        "embedded_chunks": flat.get("active_chunks"),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -173,6 +179,22 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn semantic_coverage_distinguishes_candidates_from_intentional_filters() {
+        let coverage = semantic_coverage(&json!({
+            "semantic_documents": 4,
+            "projected_documents": 1,
+            "filtered_documents": 3,
+            "active_chunks": 2,
+        }));
+
+        assert_eq!(coverage["candidate_items"], 4);
+        assert_eq!(coverage["searchable_items"], 1);
+        assert_eq!(coverage["embedded_items"], 1);
+        assert_eq!(coverage["filtered_items"], 3);
+        assert_eq!(coverage["embedded_chunks"], 2);
+    }
 
     #[test]
     fn readiness_port_preserves_exact_engine_logical_and_physical_status() {

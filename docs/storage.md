@@ -340,6 +340,17 @@ drained, and otherwise falls back to lexical. Explicit semantic searches may ask
 the daemon query service to embed the query from an already-cached local model
 and read partial existing semantic generation coverage, but they do not
 download a model or write semantic catch-up work during search.
+Semantic coverage is exact across the content-filter boundary. Persisted
+flat-F32 source receipts account for every pre-filter Core candidate as either
+an active projected event or an intentionally filtered event. Query metadata
+filters score only the intersection with active projected events. Derived
+semantic state from an older filter-unaware receipt contract is discarded and
+rebuilt from the current committed Core generation; provider history is not
+needed for that rebuild. In automatic indexing mode, the persistent scheduler
+binds ready semantic jobs to the current source-projection contract fingerprint.
+A missing or stale fingerprint forces writable maintenance even when the Core
+generation is unchanged, so opening the derived store performs the reset and
+rebuild. Manual indexing remains passive and performs no scheduled migration.
 Explicit imports may best-effort mark recent semantic-eligible items dirty in
 the semantic generation when it already exists; this does not create semantic
 storage, initialize the model, or embed text.

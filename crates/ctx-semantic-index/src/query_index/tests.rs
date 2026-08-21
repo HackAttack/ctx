@@ -214,6 +214,147 @@ fn semantic_filter_is_applied_before_top_k_across_more_than_4096_candidates() ->
     Ok(())
 }
 
+#[test]
+fn semantic_query_scores_only_active_flat_events_that_match_core_metadata() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source = SourceKey::derive(
+        "codex",
+        "codex_session_jsonl",
+        "session",
+        1,
+        SourceAnchor::provider_native(
+            "session-file",
+            TypedKey::utf8("semantic-active-intersection.jsonl")?,
+        )?,
+    )?;
+    let native_session_key =
+        NativeSessionKey::native_id("session", TypedKey::utf8("active-intersection")?)?;
+    let session_id = derive_session_id(SessionIdentityInput {
+        source: &source,
+        logical_session_kind: "thread",
+        native_session_key: &native_session_key,
+    })?;
+    let index_root = temp.path().join("index");
+    let mut writer = GenerationWriter::open(&index_root, WriterOptions::default())?
+        .into_writer()
+        .map_err(crate::committed_generation_recovery_error)?;
+    writer.begin_source(source.clone())?;
+    let mut active_event_id = None;
+    let mut vector_items = Vec::new();
+    for (sequence, workspace, has_vector) in [
+        (1_u64, "shared", true),
+        (2, "shared", false),
+        (3, "filtered-only", false),
+    ] {
+        let native_item_key = NativeItemKey::native_id("message", TypedKey::U64(sequence))?;
+        let event_id = derive_event_id(EventIdentityInput {
+            source: &source,
+            session_id,
+            logical_item_kind: "message",
+            native_item_key: &native_item_key,
+            subrecord_selector: None,
+        })?;
+        let mut record = CoreRecord::new_selected(
+            event_id,
+            session_id,
+            source.clone(),
+            sequence,
+            "message",
+            "semantic-active-intersection-v1",
+            format!("event {sequence}"),
+        )?;
+        record.provider_session_id = Some("active-intersection".to_owned());
+        record.native_event_id = Some(TypedKey::U64(sequence));
+        record.role = Some("user".to_owned());
+        record.content.activity = Some(CoreActivity {
+            revision: CORE_ACTIVITY_REVISION,
+            provider_call_id: None,
+            invocation: None,
+            result: None,
+            facts: vec![ProviderDeclaredFact {
+                kind: LiteralFactKind::Workspace,
+                value: workspace.to_owned(),
+            }],
+        });
+        record.validate_contract()?;
+        writer.add_core_record(record)?;
+        if has_vector {
+            active_event_id = Some(event_id.as_uuid());
+            vector_items.push((
+                super::super::vector_store::SemanticChunkDocument {
+                    event_id: event_id.as_uuid(),
+                    seq: sequence,
+                    chunk_index: 0,
+                    source_text_hash: format!("{sequence:064x}"),
+                    text: String::new(),
+                    start_char: 0,
+                    end_char: 1,
+                },
+                normalized_test_embedding(1.0, 0.0),
+            ));
+        }
+    }
+    let observation = SourceObservation::new(source.clone(), "regular-file-v1", vec![1_u8])?;
+    writer.certify_source(CertifiedSource::certify(
+        observation.clone(),
+        observation,
+        "active-intersection-parser-v1",
+        [1; 32],
+        ScannedSourceCounts {
+            complete_records: 3,
+            retained_records: 3,
+            indexed_documents: 3,
+            certified_bytes: 3,
+            ..ScannedSourceCounts::default()
+        },
+    )?)?;
+    writer.commit(|_| true)?;
+    let index = VerifiedIndex::open_pinned(&index_root)?;
+
+    let mut store = SemanticVectorStore::open(&temp.path().join("vectors"))?;
+    store.publish_chunk_replacements(&vector_items, &[])?;
+    let pinned = store
+        .flat_pin_generation()?
+        .expect("the active intersection vector must publish");
+    let mut pin = semantic_query_pin_from_readiness(
+        index.generation_id(),
+        SourceBackedGenerationPin::Ready(pinned),
+    )?;
+
+    let shared = EventSearchFilters {
+        workspace: Some("shared".to_owned()),
+        ..EventSearchFilters::default()
+    };
+    let (candidates, diagnostics) = pin.search(
+        &index,
+        &shared,
+        &normalized_test_embedding(1.0, 0.0),
+        3,
+        None,
+    )?;
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].event.event_id.as_uuid(),
+        active_event_id.expect("active event ID")
+    );
+    assert_eq!(diagnostics["events_scored"], 1);
+
+    let filtered_only = EventSearchFilters {
+        workspace: Some("filtered-only".to_owned()),
+        ..EventSearchFilters::default()
+    };
+    let (candidates, diagnostics) = pin.search(
+        &index,
+        &filtered_only,
+        &normalized_test_embedding(1.0, 0.0),
+        3,
+        None,
+    )?;
+    assert!(candidates.is_empty());
+    assert_eq!(diagnostics["events_scored"], 0);
+    Ok(())
+}
+
 fn normalized_test_embedding(first: f32, second: f32) -> Vec<f32> {
     let mut embedding = vec![0.0; SEMANTIC_DIMENSIONS];
     let norm = first.mul_add(first, second * second).sqrt();

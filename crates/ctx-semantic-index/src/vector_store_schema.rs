@@ -12,7 +12,7 @@ use super::vector_store::{
     SemanticVectorStore,
 };
 
-pub(super) const SEMANTIC_VECTOR_SCHEMA_VERSION: i64 = 5;
+pub(super) const SEMANTIC_VECTOR_SCHEMA_VERSION: i64 = 6;
 pub(super) const SEMANTIC_VECTOR_BACKEND_FLAT_F32: &str = "flat-f32";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

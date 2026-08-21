@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) const STORE_FORMAT: &str = "ctx-flat-f32";
 pub(super) const MANIFEST_ENVELOPE_VERSION: u32 = 1;
-pub(super) const MANIFEST_SCHEMA_VERSION: u32 = 3;
+pub(super) const MANIFEST_SCHEMA_VERSION: u32 = 4;
 pub(super) const SEGMENT_FORMAT_VERSION: u32 = 2;
 pub(super) const HEADER_BYTES: usize = 4_096;
 pub(super) const HEADER_BYTES_U64: u64 = HEADER_BYTES as u64;

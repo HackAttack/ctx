@@ -337,7 +337,7 @@ fn adapter_preserves_daemon_query_service_unavailable_contract() -> Result<()> {
 }
 
 #[test]
-fn adapter_preserves_typed_not_ready_from_engine_search() -> Result<()> {
+fn adapter_scores_only_the_active_flat_core_intersection() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let (index, _) = semantic_index(temp.path())?;
     let mut adapter = ready_adapter(
@@ -347,20 +347,14 @@ fn adapter_preserves_typed_not_ready_from_engine_search() -> Result<()> {
         &temp.path().join("vectors"),
     )?;
 
-    let error = adapter
-        .search_with("query", &EventSearchFilters::default(), 1, |_, _| {
+    let (candidates, diagnostics) =
+        adapter.search_with("query", &EventSearchFilters::default(), 1, |_, _| {
             Ok(Some((embedding(), 1)))
-        })
-        .expect_err("a vector generation that does not map to Core must fail closed");
+        })?;
 
-    assert!(matches!(
-        error,
-        SemanticQueryError::NotReady {
-            code: "semantic_projection_event_mismatch",
-            detail,
-            retryable: true,
-        } if detail.contains("metadata-eligible events")
-    ));
+    assert!(candidates.is_empty());
+    assert_eq!(diagnostics["events_scored"], 0);
+    assert_eq!(diagnostics["filtered_candidates"], 1);
     Ok(())
 }
 

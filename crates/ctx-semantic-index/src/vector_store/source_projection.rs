@@ -33,8 +33,8 @@ mod state;
 #[cfg(test)]
 use manifest::SOURCE_CONTRACT_VERSION;
 use manifest::{
-    source_contract_fingerprint_with_authority, validate_generation, validate_page,
-    validate_resolved_document, SourceProjectionFrontier, SourceTraversalPhase,
+    source_contract_fingerprint, source_contract_fingerprint_with_authority, validate_generation,
+    validate_page, validate_resolved_document, SourceProjectionFrontier, SourceTraversalPhase,
     SOURCE_INPUT_LEXICAL_SCHEMA_VERSION,
 };
 use state::{
@@ -47,6 +47,10 @@ const SEMANTIC_DIRECTORY: &str = "semantic";
 
 pub fn source_backed_semantic_vector_path(data_root: &Path) -> PathBuf {
     data_root.join(SEARCH_DIRECTORY).join(SEMANTIC_DIRECTORY)
+}
+
+pub fn source_backed_semantic_contract_fingerprint() -> Result<String> {
+    source_contract_fingerprint()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -614,6 +618,7 @@ impl SemanticVectorStore {
         if resume == FlatSourceStageResume::Restarted {
             frontier.processed_source_documents = 0;
             frontier.processed_source_semantic_documents = 0;
+            frontier.processed_source_filtered_documents = 0;
             frontier.after_identity = None;
             frontier.source_scan_complete = false;
             frontier.flat_staging = None;
@@ -647,6 +652,7 @@ impl SemanticVectorStore {
             ..SourceBackedSemanticOutcome::default()
         };
         let mut semantic_records = 0_u64;
+        let mut filtered_records = 0_u64;
         let mut replacements = Vec::new();
         let mut resolved = Vec::new();
         let mut retire = Vec::new();
@@ -677,6 +683,11 @@ impl SemanticVectorStore {
 
             let Some(document) = builder.build_document(record)? else {
                 retire.push(record.event_id.as_uuid());
+                filtered_records = filtered_records.checked_add(1).ok_or_else(|| {
+                    SemanticVectorStoreError::reset_required(
+                        "source-backed semantic filtered count overflowed",
+                    )
+                })?;
                 outcome.records_filtered = outcome.records_filtered.saturating_add(1);
                 continue;
             };
@@ -684,6 +695,11 @@ impl SemanticVectorStore {
             let source_text = semantic_source_text(&document.text);
             if semantic_core_content_is_control(&source_text) {
                 retire.push(record.event_id.as_uuid());
+                filtered_records = filtered_records.checked_add(1).ok_or_else(|| {
+                    SemanticVectorStoreError::reset_required(
+                        "source-backed semantic filtered count overflowed",
+                    )
+                })?;
                 outcome.records_filtered = outcome.records_filtered.saturating_add(1);
                 continue;
             }
@@ -737,6 +753,14 @@ impl SemanticVectorStore {
                     "source-backed semantic source candidate count overflowed",
                 )
             })?;
+        let processed_filtered_documents = frontier
+            .processed_source_filtered_documents
+            .checked_add(filtered_records)
+            .ok_or_else(|| {
+                SemanticVectorStoreError::reset_required(
+                    "source-backed semantic filtered count overflowed",
+                )
+            })?;
         let metadata_updates = resolved
             .iter()
             .map(|document| {
@@ -769,6 +793,7 @@ impl SemanticVectorStore {
             self.publish_source_page(&replacements, &metadata_updates, &retire, &existing_lookup)?;
         frontier.processed_source_documents = processed_documents;
         frontier.processed_source_semantic_documents = processed_semantic_documents;
+        frontier.processed_source_filtered_documents = processed_filtered_documents;
         if let Some(last) = page.records.last() {
             frontier.after_identity = Some(last.event_id.encode_canonical()?.to_vec());
         }
@@ -816,6 +841,7 @@ impl SemanticVectorStore {
         if resume == FlatSourceStageResume::Restarted {
             frontier.processed_source_documents = 0;
             frontier.processed_source_semantic_documents = 0;
+            frontier.processed_source_filtered_documents = 0;
             frontier.after_identity = None;
             frontier.source_scan_complete = false;
             frontier.flat_staging = None;
@@ -836,6 +862,7 @@ impl SemanticVectorStore {
                 core_record_accumulator: source.aggregate.core_record_accumulator().to_owned(),
                 contract_fingerprint: frontier.contract_fingerprint.clone(),
                 semantic_policy_fingerprint: frontier.semantic_policy_fingerprint.clone(),
+                filtered_event_count: frontier.processed_source_filtered_documents,
             }))
             .map_err(anyhow::Error::new)?;
         #[cfg(test)]
