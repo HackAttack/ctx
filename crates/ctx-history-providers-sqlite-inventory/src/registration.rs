@@ -702,6 +702,8 @@ pub(crate) fn sqlite_source_route_error_kind(
 ) -> SourceBackedRouteErrorKind {
     if error.is_source_changed() {
         SourceBackedRouteErrorKind::SourceChanged
+    } else if error.is_snapshot_capacity_failure() {
+        SourceBackedRouteErrorKind::Unavailable
     } else if error.is_systemic_resource_failure() || error.is_busy_or_locked() {
         SourceBackedRouteErrorKind::ResourceUnavailable
     } else if error.is_ctx_owned_corruption() {

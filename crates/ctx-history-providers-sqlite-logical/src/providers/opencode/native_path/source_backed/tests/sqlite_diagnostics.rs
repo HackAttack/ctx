@@ -1,4 +1,56 @@
+use std::path::PathBuf;
+
 use super::*;
+
+#[test]
+fn snapshot_capacity_failure_is_isolated_to_the_opencode_route() {
+    let error = OpenCodeSourceBackedError::SqliteSource(
+        SqliteSourceAccessError::InsufficientScratchSpace {
+            path: PathBuf::from("ctx-data"),
+            required: 10 * 1024 * 1024 * 1024,
+            available: 5 * 1024 * 1024 * 1024,
+        },
+    );
+
+    let route = adapter::route_error(error);
+    assert_eq!(route.kind, SourceBackedRouteErrorKind::Unavailable);
+    assert_eq!(
+        route.kind.source_failure_class(),
+        Some(ctx_history_capture_runtime::SourceBackedSourceFailureClass::Unavailable)
+    );
+}
+
+#[test]
+#[ignore = "explicit multi-gibibyte copy/open resource proof"]
+fn opencode_source_above_two_gibibytes_copies_opens_observes_and_cleans_up() {
+    const ABOVE_TWO_GIB: u64 = 2 * 1024 * 1024 * 1024 + 4096;
+
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("ctx-data");
+    let provider = temp.path().join("provider");
+    fs::create_dir_all(&provider).unwrap();
+    let database = provider.join("opencode.db");
+    drop(write_current_schema(
+        &database,
+        &provider,
+        &json!({"type": "text", "text": "large OpenCode proof"}),
+    ));
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&database)
+        .unwrap()
+        .set_len(ABOVE_TWO_GIB)
+        .unwrap();
+
+    adapter::discover_document_tree_for_test(
+        &data_root,
+        &database,
+        &crate::provider::providers::opencode::OPENCODE_SQLITE_DIALECT,
+    )
+    .unwrap();
+
+    assert_no_opencode_snapshot_leaks(&data_root);
+}
 
 #[test]
 fn schema_and_projection_sqlite_failures_have_distinct_stable_diagnostics() {

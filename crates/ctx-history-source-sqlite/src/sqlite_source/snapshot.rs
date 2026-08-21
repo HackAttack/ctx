@@ -38,15 +38,20 @@ fn take_private_directory_cleanup_failure_for_test() -> bool {
 /// file and any SQLite-created transient private artifact for this route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SqliteSourceSnapshotLimits {
-    maximum_source_bytes: u64,
-    maximum_scratch_bytes: u64,
+    policy: SqliteSnapshotCapacityPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SqliteSnapshotCapacityPolicy {
+    AvailableDisk,
+    FixedAggregate(u64),
+    SourceOnly(u64),
 }
 
 impl SqliteSourceSnapshotLimits {
     pub const fn new(maximum_scratch_bytes: u64) -> Self {
         Self {
-            maximum_source_bytes: maximum_scratch_bytes,
-            maximum_scratch_bytes,
+            policy: SqliteSnapshotCapacityPolicy::FixedAggregate(maximum_scratch_bytes),
         }
     }
 
@@ -54,19 +59,42 @@ impl SqliteSourceSnapshotLimits {
     /// immutable-handle VFS fail closed before creating scratch files.
     pub const fn without_scratch(maximum_source_bytes: u64) -> Self {
         Self {
-            maximum_source_bytes,
-            maximum_scratch_bytes: 0,
+            policy: SqliteSnapshotCapacityPolicy::SourceOnly(maximum_source_bytes),
         }
     }
 
+    /// Returns the explicit aggregate bound, or `u64::MAX` for production's
+    /// available-disk policy. Retained for API compatibility; acquisition uses
+    /// the typed policy rather than treating this value as a production cap.
     pub const fn maximum_scratch_bytes(self) -> u64 {
-        self.maximum_scratch_bytes
+        match self.maximum_scratch_limit() {
+            Some(maximum) => maximum,
+            None => u64::MAX,
+        }
+    }
+
+    const fn maximum_scratch_limit(self) -> Option<u64> {
+        match self.policy {
+            SqliteSnapshotCapacityPolicy::AvailableDisk => None,
+            SqliteSnapshotCapacityPolicy::FixedAggregate(maximum) => Some(maximum),
+            SqliteSnapshotCapacityPolicy::SourceOnly(_) => Some(0),
+        }
+    }
+
+    const fn maximum_source_bytes(self) -> Option<u64> {
+        match self.policy {
+            SqliteSnapshotCapacityPolicy::AvailableDisk => None,
+            SqliteSnapshotCapacityPolicy::FixedAggregate(maximum)
+            | SqliteSnapshotCapacityPolicy::SourceOnly(maximum) => Some(maximum),
+        }
     }
 }
 
 impl Default for SqliteSourceSnapshotLimits {
     fn default() -> Self {
-        Self::new(SQLITE_SNAPSHOT_MAX_TOTAL_BYTES)
+        Self {
+            policy: SqliteSnapshotCapacityPolicy::AvailableDisk,
+        }
     }
 }
 
@@ -277,4 +305,5 @@ pub(super) use test_api::{
     open_root_handle_sqlite_source_snapshot_with_limit_for_test,
     open_root_handle_sqlite_source_stable_snapshot_after_database_copy_for_test,
     open_root_handle_sqlite_source_stable_snapshot_before_revalidation_for_test,
+    planned_snapshot_copy_bytes_for_test,
 };

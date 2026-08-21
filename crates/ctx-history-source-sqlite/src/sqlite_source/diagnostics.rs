@@ -328,6 +328,20 @@ impl SqliteSourceAccessError {
             || matches!(self, Self::Finalization { primary, cleanup } if primary.is_systemic_resource_failure() || cleanup.is_systemic_resource_failure())
     }
 
+    /// A deterministic admission failure for one SQLite route. Provider
+    /// coordinators can isolate this route and continue publishing healthy
+    /// peers, unlike an I/O failure encountered after scratch writes begin.
+    pub fn is_snapshot_capacity_failure(&self) -> bool {
+        match self {
+            Self::SnapshotTooLarge { .. } | Self::InsufficientScratchSpace { .. } => true,
+            Self::Diagnosed { source, .. } => source.is_snapshot_capacity_failure(),
+            Self::Finalization { primary, cleanup } => {
+                primary.is_snapshot_capacity_failure() && !cleanup.is_systemic_resource_failure()
+            }
+            _ => false,
+        }
+    }
+
     pub fn is_ctx_owned_corruption(&self) -> bool {
         match self {
             Self::ProviderContentCorruption { .. } => false,

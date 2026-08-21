@@ -593,6 +593,9 @@ pub(super) fn hermes_route_error(error: HermesSourceBackedError) -> SourceBacked
         HermesSourceBackedError::SqliteSource(error) if error.is_source_changed() => {
             SourceBackedRouteErrorKind::SourceChanged
         }
+        HermesSourceBackedError::SqliteSource(error) if error.is_snapshot_capacity_failure() => {
+            SourceBackedRouteErrorKind::Unavailable
+        }
         HermesSourceBackedError::SqliteSource(error) if error.is_systemic_resource_failure() => {
             SourceBackedRouteErrorKind::ResourceUnavailable
         }

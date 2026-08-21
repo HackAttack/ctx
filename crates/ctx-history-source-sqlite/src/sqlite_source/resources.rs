@@ -230,12 +230,15 @@ struct SqliteRouteScratchState {
 #[derive(Debug)]
 pub(super) struct SqliteRouteScratch {
     context: Arc<SqliteSourceSnapshotContext>,
-    pub(super) maximum_bytes: u64,
+    pub(super) maximum_bytes: Option<u64>,
     state: Mutex<SqliteRouteScratchState>,
 }
 
 impl SqliteRouteScratch {
-    pub(super) fn new(context: &Arc<SqliteSourceSnapshotContext>, maximum_bytes: u64) -> Arc<Self> {
+    pub(super) fn new(
+        context: &Arc<SqliteSourceSnapshotContext>,
+        maximum_bytes: Option<u64>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             context: Arc::clone(context),
             maximum_bytes,
@@ -244,19 +247,19 @@ impl SqliteRouteScratch {
     }
 
     pub(super) fn admit_capacity(&self, capacity_bytes: u64) -> SqliteSourceAccessResult<()> {
-        if capacity_bytes > self.maximum_bytes {
-            return Err(SqliteSourceAccessError::SnapshotTooLarge {
-                path: self.context.data_root.clone(),
-                length: capacity_bytes,
-                maximum: self.maximum_bytes,
-            });
+        if let Some(maximum) = self.maximum_bytes {
+            if capacity_bytes > maximum {
+                return Err(SqliteSourceAccessError::SnapshotTooLarge {
+                    path: self.context.data_root.clone(),
+                    length: capacity_bytes,
+                    maximum,
+                });
+            }
         }
         let required = capacity_bytes
-            .checked_add(SQLITE_SNAPSHOT_FREE_HEADROOM_BYTES)
-            .ok_or_else(|| SqliteSourceAccessError::SnapshotTooLarge {
-                path: self.context.data_root.clone(),
-                length: u64::MAX,
-                maximum: self.maximum_bytes,
+            .checked_add(sqlite_snapshot_free_headroom_bytes(capacity_bytes))
+            .ok_or_else(|| SqliteSourceAccessError::SnapshotUnavailable {
+                reason: "SQLite snapshot capacity admission overflowed".to_owned(),
             })?;
         let available = scratch_available_space(&self.context.data_root)?;
         if available < required {
@@ -273,17 +276,17 @@ impl SqliteRouteScratch {
         let mut state = self.lock();
         let aggregate = retained_bytes
             .checked_add(state.reserved_transient_bytes)
-            .ok_or_else(|| SqliteSourceAccessError::SnapshotTooLarge {
-                path: self.context.data_root.clone(),
-                length: u64::MAX,
-                maximum: self.maximum_bytes,
+            .ok_or_else(|| SqliteSourceAccessError::SnapshotUnavailable {
+                reason: "SQLite retained scratch accounting overflowed".to_owned(),
             })?;
-        if aggregate > self.maximum_bytes {
-            return Err(SqliteSourceAccessError::SnapshotTooLarge {
-                path: self.context.data_root.clone(),
-                length: aggregate,
-                maximum: self.maximum_bytes,
-            });
+        if let Some(maximum) = self.maximum_bytes {
+            if aggregate > maximum {
+                return Err(SqliteSourceAccessError::SnapshotTooLarge {
+                    path: self.context.data_root.clone(),
+                    length: aggregate,
+                    maximum,
+                });
+            }
         }
         state.retained_bytes = retained_bytes;
         state.exact_peak_bytes = state.exact_peak_bytes.max(retained_bytes);
@@ -300,12 +303,12 @@ impl SqliteRouteScratch {
         let used = state
             .retained_bytes
             .checked_add(state.reserved_transient_bytes)
-            .ok_or_else(|| SqliteSourceAccessError::SnapshotTooLarge {
-                path: self.context.data_root.clone(),
-                length: u64::MAX,
-                maximum: self.maximum_bytes,
+            .ok_or_else(|| SqliteSourceAccessError::SnapshotUnavailable {
+                reason: "SQLite transient scratch accounting overflowed".to_owned(),
             })?;
-        let available_capacity = self.maximum_bytes.saturating_sub(used);
+        let available_capacity = self
+            .maximum_bytes
+            .map_or(requested_bytes, |maximum| maximum.saturating_sub(used));
         let reserved_bytes = requested_bytes.min(available_capacity);
         if reserved_bytes == 0 {
             return Err(SqliteSourceAccessError::SnapshotTooLarge {
@@ -321,25 +324,23 @@ impl SqliteRouteScratch {
             state
                 .reserved_transient_bytes
                 .checked_add(reserved_bytes)
-                .ok_or_else(|| SqliteSourceAccessError::SnapshotTooLarge {
-                    path: self.context.data_root.clone(),
-                    length: u64::MAX,
-                    maximum: self.maximum_bytes,
+                .ok_or_else(|| SqliteSourceAccessError::SnapshotUnavailable {
+                    reason: "SQLite transient scratch reservation overflowed".to_owned(),
                 })?;
         let aggregate = state
             .retained_bytes
             .checked_add(reserved_transient_bytes)
-            .ok_or_else(|| SqliteSourceAccessError::SnapshotTooLarge {
-                path: self.context.data_root.clone(),
-                length: u64::MAX,
-                maximum: self.maximum_bytes,
+            .ok_or_else(|| SqliteSourceAccessError::SnapshotUnavailable {
+                reason: "SQLite aggregate scratch reservation overflowed".to_owned(),
             })?;
-        if aggregate > self.maximum_bytes {
-            return Err(SqliteSourceAccessError::SnapshotTooLarge {
-                path: self.context.data_root.clone(),
-                length: aggregate,
-                maximum: self.maximum_bytes,
-            });
+        if let Some(maximum) = self.maximum_bytes {
+            if aggregate > maximum {
+                return Err(SqliteSourceAccessError::SnapshotTooLarge {
+                    path: self.context.data_root.clone(),
+                    length: aggregate,
+                    maximum,
+                });
+            }
         }
         state.reserved_transient_bytes = reserved_transient_bytes;
         Ok(SqliteRouteScratchReservation {
@@ -358,10 +359,8 @@ impl SqliteRouteScratch {
             });
         }
         let aggregate = state.retained_bytes.checked_add(bytes).ok_or_else(|| {
-            SqliteSourceAccessError::SnapshotTooLarge {
-                path: self.context.data_root.clone(),
-                length: u64::MAX,
-                maximum: self.maximum_bytes,
+            SqliteSourceAccessError::SnapshotUnavailable {
+                reason: "SQLite exact scratch accounting overflowed".to_owned(),
             }
         })?;
         state.exact_peak_bytes = state.exact_peak_bytes.max(aggregate);

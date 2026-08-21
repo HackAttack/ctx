@@ -539,6 +539,17 @@ fn shelley_registration_preserves_resource_unavailable_classification() {
 }
 
 #[test]
+fn sqlite_inventory_snapshot_capacity_failure_is_route_local() {
+    let error = shelley_registration_error(SqliteSourceAccessError::InsufficientScratchSpace {
+        path: PathBuf::from("ctx-data"),
+        required: 10 * 1024 * 1024 * 1024,
+        available: 5 * 1024 * 1024 * 1024,
+    });
+
+    assert_eq!(error.kind, SourceBackedRouteErrorKind::Unavailable);
+}
+
+#[test]
 fn sqlite_inventory_watch_targets_include_databases_and_authority_parents() {
     let first = PathBuf::from("/tmp/a/history.sqlite");
     let second = PathBuf::from("/tmp/b/state.db");
