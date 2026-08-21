@@ -9,6 +9,7 @@ for required in \
   scripts/release/build-public-candidate-on-linux.sh \
   scripts/validate-public-cli-factory-artifact.sh \
   scripts/stage-github-release-assets.sh \
+  scripts/assemble-github-release-assets.sh \
   scripts/stage-semantic-release-handoff.sh \
   scripts/build-onnxruntime-sidecar.sh \
   scripts/check-sdks.sh; do
@@ -68,6 +69,7 @@ required = {
     "public-cli-macos-x64-native-smoke",
     "public-cli-windows-x64-native-smoke",
     "github-release-candidate",
+    "github-release-assets",
     "semantic-model-archives",
     "semantic-coreml-archive",
     "semantic-runtime-linux-cuda12",
@@ -101,6 +103,12 @@ core_native_condition = (
     'build.branch == "main" && build.pull_request.id == null'
 )
 semantic_condition = (
+    'build.env("CTX_PUBLIC_SEMANTIC_ASSET_MATRIX") == "1" && '
+    'build.branch == "main" && build.pull_request.id == null'
+)
+github_release_condition = (
+    'build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && '
+    'build.env("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") == "1" && '
     'build.env("CTX_PUBLIC_SEMANTIC_ASSET_MATRIX") == "1" && '
     'build.branch == "main" && build.pull_request.id == null'
 )
@@ -160,6 +168,7 @@ linux_x64_keys = {
     "public-cli-linux-factory",
     "public-cli-linux-x64-native-smoke",
     "github-release-candidate",
+    "github-release-assets",
     "semantic-model-archives",
     "semantic-runtime-linux-cuda12",
     "semantic-runtime-portable",
@@ -319,6 +328,8 @@ if (
         "Core candidate staging must keep the sealed factory immutable, "
         "consume separate native proofs, and bind HEAD"
     )
+if "target/github-core-release-assets" not in candidate_command:
+    fail("Core candidate staging must publish a Core-only handoff")
 for marker in ("onnxruntime", "coreml", "semantic", "sdk-swift-required"):
     if marker in candidate_command.lower():
         fail(f"Core candidate staging must not consume {marker}")
@@ -362,6 +373,21 @@ if portable.get("artifact_paths") != [
 ]:
     fail("portable Semantic runtime construction must upload only Unix CPU runtimes")
 
+windows_runtime = keyed["semantic-runtime-windows-ml"]
+windows_runtime_command = windows_runtime.get("command", "")
+if (
+    windows_runtime_command.count("build-onnxruntime-sidecar.sh") != 2
+    or "build-onnxruntime-sidecar.sh windows-x64\n" not in windows_runtime_command
+    or "build-onnxruntime-sidecar.sh windows-x64-windowsml" not in windows_runtime_command
+):
+    fail("Windows Semantic producer must qualify both CPU ONNX Runtime and Windows ML")
+for expected_path in (
+    "target/public-cli-artifacts/ctx-onnxruntime-windows-x64.zip",
+    "target/public-cli-artifacts/ctx-onnxruntime-windows-x64.zip.sha256",
+):
+    if expected_path not in windows_runtime.get("artifact_paths", []):
+        fail(f"Windows Semantic producer does not upload {expected_path}")
+
 macos_x64_runtime = keyed["public-cli-macos-x64-runtime-producer"]
 if (
     "build-onnxruntime-sidecar.sh macos-x64" not in macos_x64_runtime.get("command", "")
@@ -372,6 +398,36 @@ if (
     fail("macos-x64 Semantic runtime producer must remain independent")
 if "download-linux-factory-artifacts.sh" in macos_x64_runtime.get("command", ""):
     fail("macos-x64 Semantic runtime producer must not consume Core artifacts")
+
+github_release = keyed["github-release-assets"]
+expected_github_dependencies = [
+    "github-release-candidate",
+    "semantic-runtime-portable",
+    "public-cli-macos-x64-runtime-producer",
+    "semantic-runtime-windows-ml",
+]
+if github_release.get("depends_on") != expected_github_dependencies:
+    fail("final GitHub assembly has the wrong independent producer set")
+if github_release.get("if") != github_release_condition:
+    fail("final GitHub assembly has the wrong release condition")
+if github_release.get("allow_dependency_failure") or github_release.get("soft_fail"):
+    fail("final GitHub assembly must fail closed")
+github_release_command = github_release.get("command", "")
+if (
+    github_release_command.count("assemble-github-release-assets.sh") != 1
+    or github_release_command.count("--step semantic-runtime-portable") != 3
+    or github_release_command.count("--step public-cli-macos-x64-runtime-producer") != 1
+    or github_release_command.count("--step semantic-runtime-windows-ml") != 1
+    or github_release_command.count("--step github-release-candidate") != 1
+    or "target/github-core-release-assets" not in github_release_command
+    or "target/github-release-assets" not in github_release_command
+):
+    fail("final GitHub assembly must join the exact Core and five-runtime handoffs")
+for forbidden in ("multilingual-e5", "cuda12", "windowsml"):
+    if forbidden in github_release_command.lower():
+        fail(f"final GitHub assembly unexpectedly consumes {forbidden}")
+if github_release.get("artifact_paths") != ["target/github-release-assets/*"]:
+    fail("final GitHub assembly must upload only the complete public asset set")
 
 handoff = keyed["semantic-release-handoff"]
 expected_semantic_dependencies = [
