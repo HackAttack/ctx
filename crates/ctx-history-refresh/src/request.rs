@@ -694,7 +694,7 @@ fn parse_terminal_outcome(value: &Value) -> Result<RefreshTerminalOutcome> {
     if !retryable_routes.is_disjoint(&blocked_routes)
         || !retryable_routes.is_subset(&affected_routes)
         || !blocked_routes.is_subset(&affected_routes)
-        || (!affected_routes.is_empty() && retryable != !retryable_routes.is_empty())
+        || (!affected_routes.is_empty() && retryable == retryable_routes.is_empty())
     {
         bail!("source refresh structured outcome has inconsistent route dispositions");
     }

@@ -101,6 +101,7 @@ fn mismatched_same_size_managed_bytes(path: &Path) -> Vec<u8> {
     bytes
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn mismatched_same_size_bytes(path: &Path) -> Vec<u8> {
     let mut bytes = fs::read(path).unwrap();
     bytes[0] ^= 0x5a;

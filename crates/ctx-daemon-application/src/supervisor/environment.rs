@@ -259,7 +259,10 @@ pub(super) fn linux_systemd_unit_with_environment(
     )?)
 }
 
+// Called from supervisor tests on every host and from the daemon only on
+// macOS; plain cargo test on this host sees no caller, so allow dead_code.
 #[cfg(any(test, target_os = "macos"))]
+#[allow(dead_code)]
 pub(super) fn launch_agent_plist_with_environment(
     executable: &Path,
     data_root: &Path,

@@ -204,10 +204,10 @@ fn validate_installation_registration(value: &Value, path: &Path) -> Result<()> 
         .map(Path::new)
         .is_some_and(Path::is_absolute);
     if value.get("schema_version").and_then(Value::as_u64) != Some(1)
-        || !value
+        || value
             .get("registration_id")
             .and_then(Value::as_str)
-            .is_some_and(|id| !id.is_empty())
+            .is_none_or(|id| id.is_empty())
         || !valid_status
         || !valid_root
     {

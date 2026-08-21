@@ -167,7 +167,7 @@ fn valid_terminal_failure(terminal: &crate::semantic::SourceBackedRefreshTermina
             &terminal.blocked_routes,
         )
         || (!terminal.affected_routes.is_empty()
-            && terminal.retryable != !terminal.retryable_routes.is_empty())
+            && terminal.retryable == terminal.retryable_routes.is_empty())
     {
         return false;
     }

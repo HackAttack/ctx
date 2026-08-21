@@ -6,7 +6,7 @@ use std::{
     fs,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
         Arc,
     },
 };
@@ -138,6 +138,9 @@ struct ProviderObservationFixture {
     catalog: SourceBackedWatchCatalog,
     route: ctx_history_index::SourceRouteIdentity,
     executor: Arc<dyn SourceBackedRefreshExecutor>,
+    // Read only by linux-gated watcher tests; the fixture builds it on every
+    // platform so the constructor stays platform-neutral.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     writer_launches: Arc<AtomicUsize>,
 }
 

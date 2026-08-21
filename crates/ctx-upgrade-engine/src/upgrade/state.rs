@@ -469,9 +469,9 @@ fn auto_check_due(state: &UpgradeState, interval: Duration, now: u64) -> bool {
     if interval.is_zero() {
         return true;
     }
-    !state
+    state
         .next_check_unix_s
-        .is_some_and(|deadline| now < deadline)
+        .is_none_or(|deadline| now >= deadline)
 }
 
 fn failure_backoff(consecutive_failures: u64) -> Duration {

@@ -6,7 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::process::Child;
 #[cfg(unix)]
-use std::{thread, time::Instant};
+use std::thread;
 
 #[cfg(unix)]
 fn spawn_json_shell(body: &str) -> Child {
