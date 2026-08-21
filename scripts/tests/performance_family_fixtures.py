@@ -580,7 +580,8 @@ def write_cline_document_tree_corpus(home: Path) -> FamilyCorpus:
         nonlocal previous_query
         query = family_query(DOCUMENT_TREE_FAMILY, 0, f"watch{iteration:02d}")
         body = fixed_family_text(query, CLINE_ITEM_TEXT_BYTES)
-        replace_bytes(first_api, cline_api_messages(0, body))
+        replacement = cline_api_messages(0, body)
+        replace_bytes(first_api, replacement)
         mutation = FamilyMutation(
             query=query,
             body=body,
@@ -589,7 +590,7 @@ def write_cline_document_tree_corpus(home: Path) -> FamilyCorpus:
             complete_records_delta=0,
             retained_records_delta=0,
             certified_source_bytes_delta=0,
-            storage_payload_bytes=len(body.encode("ascii")),
+            storage_payload_bytes=len(replacement),
         )
         previous_query = query
         return mutation

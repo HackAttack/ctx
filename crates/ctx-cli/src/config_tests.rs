@@ -700,6 +700,7 @@ fn config_rejects_upgrade_metadata_authority_substitution() {
 
 #[test]
 fn daemon_enablement_updates_write_canonical_indexing_mode_and_remove_legacy_key() {
+    let _env_guard = EnvGuard::new(DEFAULT_CONTROL_ENV_KEYS);
     let temp = tempfile::tempdir().unwrap();
     fs::write(
         temp.path().join(CONFIG_FILE),
