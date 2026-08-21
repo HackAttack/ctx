@@ -104,6 +104,10 @@ ctx_cli_contract_test(
 ctx_cli_contract_test(
     name = "test_targets_capabilities_fixture",
     src = "tests/build_support/capabilities.rs",
+    deps = [
+        "//crates/ctx-history-core:lib",
+        "//crates/ctx-history-index:lib",
+    ],
     tags = ["manual"],
     test_support = [
         "base",
@@ -115,6 +119,7 @@ ctx_cli_contract_test(
 ctx_cli_contract_test(
     name = "native_provider_real_shapes_tests",
     src = "tests/contracts/native_provider_real_shapes.rs",
+    deps = ["//crates/ctx-history-index:lib"],
     test_support = [
         "base",
         "fixtures",
@@ -124,6 +129,7 @@ ctx_cli_contract_test(
 ctx_cli_contract_test(
     name = "native_provider_rejections_tests",
     src = "tests/contracts/native_provider_rejections.rs",
+    deps = ["//crates/ctx-history-index:lib"],
     test_support = [
         "base",
         "fixtures",
@@ -133,6 +139,7 @@ ctx_cli_contract_test(
 ctx_cli_contract_test(
     name = "native_providers_tests",
     src = "tests/contracts/native_providers.rs",
+    deps = ["//crates/ctx-history-index:lib"],
     extra_srcs = [":native_providers_extra_srcs"],
     test_support = [
         "base",
@@ -143,6 +150,7 @@ ctx_cli_contract_test(
 ctx_cli_contract_test(
     name = "provider_support_conformance_tests",
     src = "tests/contracts/provider_support_conformance.rs",
+    deps = ["//crates/ctx-history-index:lib"],
     extra_data = ["//:provider_support_matrix"],
     extra_srcs = ["tests/contracts/support/native_providers/daemon.rs"],
     test_support = [
@@ -154,6 +162,7 @@ ctx_cli_contract_test(
 ctx_cli_contract_test(
     name = "setup_sources_import_tests",
     src = "tests/contracts/setup_sources_import.rs",
+    deps = ["//crates/ctx-history-index:lib"],
     extra_srcs = [":setup_sources_import_extra_srcs"],
     test_support = [
         "base",

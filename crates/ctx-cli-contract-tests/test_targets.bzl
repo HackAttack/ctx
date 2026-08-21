@@ -107,12 +107,18 @@ def ctx_cli_contract_test(
         extra_env = {},
         extra_compile_data = [],
         extra_data = [],
+        deps = [],
         extra_deps = [],
         extra_srcs = [],
         support_shim = None,
         tags = [],
         test_support = ["base"]):
     test_support = _ctx_cli_test_support(test_support)
+    support_deps = [
+        dep
+        for dep in test_support.deps
+        if dep not in deps and dep not in extra_deps
+    ]
     support_srcs = test_support.srcs
     if support_shim != None:
         support_srcs = [support_shim] + support_srcs
@@ -121,7 +127,7 @@ def ctx_cli_contract_test(
         src = src,
         binary = binary,
         cargo_manifest_dir = cargo_manifest_dir,
-        support_deps = test_support.deps,
+        support_deps = support_deps,
         support_srcs = support_srcs,
         support_rustc_flags = test_support.rustc_flags,
         crate_features = crate_features,
@@ -133,7 +139,7 @@ def ctx_cli_contract_test(
             "//crates/ctx-cli:integration_test_compile_data",
         ] + extra_compile_data,
         extra_data = ctx_cli_test_data() + extra_data,
-        extra_deps = extra_deps,
+        extra_deps = deps + extra_deps,
         extra_srcs = extra_srcs,
         rustc_env_files = [cargo_toml_env_vars],
         tags = tags,
