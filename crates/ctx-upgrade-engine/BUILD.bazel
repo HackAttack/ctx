@@ -148,6 +148,7 @@ ctx_binary_contract_test(
         "CTX_ORDINARY_RELEASE_BINARY": "$(rootpath //crates/ctx-cli:ctx)",
     },
     extra_compile_data = [
+        "src/upgrade/install/archive.rs",
         "src/upgrade/install.rs",
         "//:upgrade_extractor_contract",
     ],

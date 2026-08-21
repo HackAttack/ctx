@@ -188,28 +188,79 @@ fn assert_mode(path: &Path, expected: u32) {
 }
 
 #[test]
-fn windows_runtime_extractor_keeps_external_source_contract() {
+fn windows_zip_extractors_share_with_the_retained_parent_writer_but_not_deleters() {
+    fn embedded_script<'a>(source: &'a str, declaration: &str) -> &'a str {
+        assert_eq!(
+            source.matches(declaration).count(),
+            1,
+            "expected exactly one embedded extractor declared as {declaration:?}"
+        );
+        source
+            .split_once(declaration)
+            .unwrap()
+            .1
+            .split_once("\n\"#;")
+            .unwrap()
+            .0
+    }
+
+    fn assert_archive_open_contract(extractor: &str) {
+        assert!(extractor.contains("Add-Type -AssemblyName System.IO.Compression\n"));
+        assert!(extractor.contains("Add-Type -AssemblyName System.IO.Compression.FileSystem"));
+        let stream_open = extractor
+            .find("$archiveStream = [System.IO.FileStream]::new(")
+            .unwrap();
+        let file_mode = extractor.find("[System.IO.FileMode]::Open").unwrap();
+        let file_access = extractor.find("[System.IO.FileAccess]::Read").unwrap();
+        let file_share = extractor.find("[System.IO.FileShare]::ReadWrite").unwrap();
+        let zip_archive = extractor
+            .find("$archive = [System.IO.Compression.ZipArchive]::new(")
+            .unwrap();
+        let zip_mode = extractor
+            .find("[System.IO.Compression.ZipArchiveMode]::Read")
+            .unwrap();
+        let archive_dispose = extractor.rfind("$archive.Dispose()").unwrap();
+        let stream_dispose = extractor.rfind("$archiveStream.Dispose()").unwrap();
+        assert!(
+            stream_open < file_mode
+                && file_mode < file_access
+                && file_access < file_share
+                && file_share < zip_archive
+                && zip_archive < zip_mode
+                && zip_mode < archive_dispose
+                && archive_dispose < stream_dispose
+        );
+        assert!(!extractor.contains("[System.IO.Compression.ZipFile]::OpenRead"));
+        assert!(!extractor.contains("[System.IO.FileShare]::Delete"));
+    }
+
     let installer_source = include_str!("../../src/upgrade/install.rs");
     let declaration = "const EXTRACT_SCRIPT: &str = r#\"\n";
-    assert_eq!(
-        installer_source.matches(declaration).count(),
-        1,
-        "the external PowerShell test expects one embedded extractor at upgrade/install.rs"
-    );
-    let extractor = installer_source
-        .split_once(declaration)
-        .unwrap()
-        .1
-        .split_once("\n\"#;")
-        .unwrap()
-        .0;
-    assert!(extractor.contains("[System.IO.Compression.ZipFile]::OpenRead($ArchivePath)"));
-    assert!(extractor.contains("$targetStream.Flush($true)"));
+    let runtime_extractor = embedded_script(installer_source, declaration);
+    assert_archive_open_contract(runtime_extractor);
+    assert!(runtime_extractor.contains("$targetStream.Flush($true)"));
+
+    let archive_source = include_str!("../../src/upgrade/install/archive.rs");
+    let semantic_declaration = "const WINDOWS_SEMANTIC_ZIP_EXTRACT_SCRIPT: &str = r#\"\n";
+    let semantic_extractor = embedded_script(archive_source, semantic_declaration);
+    assert_archive_open_contract(semantic_extractor);
+    assert!(semantic_extractor.contains("$output.Flush($true)"));
 
     let external_contract =
         include_str!("../../../../scripts/test-windows-runtime-upgrade-extractor.ps1");
-    assert!(external_contract.contains(r#"..\crates\ctx-cli\src\upgrade\install.rs"#));
-    assert!(external_contract.contains("const EXTRACT_SCRIPT: &str = r#"));
+    assert!(external_contract.contains(r#"..\crates\ctx-upgrade-engine\src\upgrade\install.rs"#));
+    assert!(external_contract
+        .contains(r#"..\crates\ctx-upgrade-engine\src\upgrade\install\archive.rs"#));
+    assert!(external_contract
+        .contains("$runtimeScript = Get-EmbeddedScript $installerSource \"EXTRACT_SCRIPT\""));
+    assert!(external_contract.contains(
+        "$semanticScript = Get-EmbeddedScript $archiveSource \"WINDOWS_SEMANTIC_ZIP_EXTRACT_SCRIPT\""
+    ));
+    assert!(external_contract.contains("$PSVersionTable.PSVersion.Major -ne 5"));
+    assert!(external_contract.contains("Semantic zip file verification failed"));
+    assert!(external_contract.contains("unexpected or non-regular Semantic zip file"));
+    assert!(external_contract.contains("[System.IO.FileAccess]::ReadWrite"));
+    assert!(external_contract.contains("[System.IO.FileShare]::Read"));
 }
 
 #[test]

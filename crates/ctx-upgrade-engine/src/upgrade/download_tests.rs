@@ -1,8 +1,42 @@
 use super::*;
 
+#[cfg(windows)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 struct FileReleaseTransport;
 
 static FILE_RELEASE_TRANSPORT: FileReleaseTransport = FileReleaseTransport;
+
+#[cfg(windows)]
+struct CountingReleaseTransport<'a> {
+    inner: &'a dyn ReleaseTransport,
+    download_calls: AtomicUsize,
+}
+
+#[cfg(windows)]
+impl ReleaseTransport for CountingReleaseTransport<'_> {
+    fn get_bytes_limited(&self, endpoint: &str, max_bytes: usize) -> Result<Vec<u8>> {
+        self.inner.get_bytes_limited(endpoint, max_bytes)
+    }
+
+    fn download_artifact_verified(
+        &self,
+        endpoint: &str,
+        destination: &mut fs::File,
+        max_bytes: u64,
+        expected_sha256: &str,
+        timeout: Duration,
+    ) -> Result<u64> {
+        self.download_calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.download_artifact_verified(
+            endpoint,
+            destination,
+            max_bytes,
+            expected_sha256,
+            timeout,
+        )
+    }
+}
 
 impl ReleaseTransport for FileReleaseTransport {
     fn get_bytes_limited(&self, endpoint: &str, max_bytes: usize) -> Result<Vec<u8>> {
@@ -123,6 +157,137 @@ fn runtime_download_cache_is_rehashed_and_reused_across_releases() {
     let mut copied = Vec::new();
     reused.copy_verified_to(&mut copied).unwrap();
     assert_eq!(copied, bytes);
+}
+
+#[cfg(windows)]
+#[test]
+fn retained_runtime_cache_allows_extractor_readers_but_denies_writers_and_delete() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::{
+        Foundation::ERROR_SHARING_VIOLATION,
+        Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE},
+    };
+
+    let root = private_tempdir();
+    let source = root.path().join("runtime.zip");
+    let bytes = b"same signed runtime artifact";
+    fs::write(&source, bytes).unwrap();
+    let endpoint = format!("file://{}", source.display());
+    let expected = digest(bytes);
+
+    let first = DownloadedArtifact::download_or_reuse_verified(
+        &FILE_RELEASE_TRANSPORT,
+        root.path(),
+        &endpoint,
+        &expected,
+        1024,
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    drop(first);
+
+    let retained = DownloadedArtifact::download_or_reuse_verified(
+        &FILE_RELEASE_TRANSPORT,
+        root.path(),
+        &endpoint,
+        &expected,
+        1024,
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    let cache_path = retained.temporary_path().to_path_buf();
+
+    let extractor_reader = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(&cache_path)
+        .unwrap();
+    let writer_error = fs::OpenOptions::new()
+        .write(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(&cache_path)
+        .unwrap_err();
+    assert_eq!(
+        writer_error.raw_os_error(),
+        Some(ERROR_SHARING_VIOLATION as i32)
+    );
+    let delete_error = fs::remove_file(&cache_path).unwrap_err();
+    assert_eq!(
+        delete_error.raw_os_error(),
+        Some(ERROR_SHARING_VIOLATION as i32)
+    );
+
+    drop(extractor_reader);
+    drop(retained);
+    fs::remove_file(cache_path).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn publisher_held_runtime_cache_falls_back_to_a_separately_verified_download() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
+
+    let root = private_tempdir();
+    let source = root.path().join("runtime.zip");
+    let bytes = b"same signed runtime artifact";
+    fs::write(&source, bytes).unwrap();
+    let endpoint = format!("file://{}", source.display());
+    let expected = digest(bytes);
+
+    let first = DownloadedArtifact::download_or_reuse_verified(
+        &FILE_RELEASE_TRANSPORT,
+        root.path(),
+        &endpoint,
+        &expected,
+        1024,
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    drop(first);
+
+    let cache_path = root
+        .path()
+        .join(DOWNLOAD_DIRECTORY)
+        .join(format!("runtime-{expected}.artifact"));
+    let mut publisher = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&cache_path)
+        .unwrap();
+    let transport = CountingReleaseTransport {
+        inner: &FILE_RELEASE_TRANSPORT,
+        download_calls: AtomicUsize::new(0),
+    };
+
+    let mut downloaded = DownloadedArtifact::download_or_reuse_verified(
+        &transport,
+        root.path(),
+        &endpoint,
+        &expected,
+        1024,
+        Duration::from_secs(1),
+    )
+    .unwrap();
+    assert_eq!(transport.download_calls.load(Ordering::SeqCst), 1);
+    assert_ne!(downloaded.temporary_path(), cache_path);
+    let downloaded_path = downloaded.temporary_path().to_path_buf();
+    let mut copied = Vec::new();
+    downloaded.copy_verified_to(&mut copied).unwrap();
+    assert_eq!(copied, bytes);
+
+    publisher.seek(SeekFrom::Start(0)).unwrap();
+    let mut cached = Vec::new();
+    publisher.read_to_end(&mut cached).unwrap();
+    assert_eq!(cached, bytes);
+    drop(downloaded);
+    assert!(!downloaded_path.exists());
+    assert!(cache_path.is_file());
+
+    drop(publisher);
+    fs::remove_file(cache_path).unwrap();
 }
 
 #[test]

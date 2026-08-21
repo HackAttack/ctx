@@ -539,6 +539,7 @@ param(
   [string]$ContractPath
 )
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $contract = Get-Content -LiteralPath $ContractPath -Raw | ConvertFrom-Json
 $expectedArchive = @{}
@@ -559,8 +560,19 @@ foreach ($file in $contract.files) {
 $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 $seenFiles = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 [long]$total = 0
-$archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+$archiveStream = [System.IO.FileStream]::new(
+  $ArchivePath,
+  [System.IO.FileMode]::Open,
+  [System.IO.FileAccess]::Read,
+  [System.IO.FileShare]::ReadWrite
+)
+$archive = $null
 try {
+  $archive = [System.IO.Compression.ZipArchive]::new(
+    $archiveStream,
+    [System.IO.Compression.ZipArchiveMode]::Read,
+    $true
+  )
   foreach ($entry in $archive.Entries) {
     $raw = $entry.FullName
     if (
@@ -629,7 +641,13 @@ try {
     throw 'Semantic zip file set does not exactly match signed metadata'
   }
 } finally {
-  $archive.Dispose()
+  try {
+    if ($null -ne $archive) {
+      $archive.Dispose()
+    }
+  } finally {
+    $archiveStream.Dispose()
+  }
 }
 "#;
 
