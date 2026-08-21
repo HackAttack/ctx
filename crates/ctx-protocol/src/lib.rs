@@ -673,7 +673,7 @@ impl AgentHistoryEvent {
             .as_ref()
             .and_then(|exchange| exchange.response.as_ref())
             .is_some_and(|response| response.text == McpTextCapture::NormalizedBody);
-        if has_normalized_body && !self.text.as_deref().is_some_and(|text| !text.is_empty()) {
+        if has_normalized_body && self.text.as_deref().is_none_or(|text| text.is_empty()) {
             return Err("normalized MCP response body requires nonempty event text".to_owned());
         }
         Ok(())

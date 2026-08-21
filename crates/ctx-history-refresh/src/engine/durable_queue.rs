@@ -414,8 +414,8 @@ fn recover_pending_attempt(
     is_root: bool,
 ) -> Result<SourceBackedRefreshAttempt> {
     let request_state = job.get("request_state").and_then(Value::as_str);
-    if !matches!(request_state, Some("admission_pending" | "queued"))
-        && !(is_root && request_state == Some("running"))
+    if !(matches!(request_state, Some("admission_pending" | "queued"))
+        || is_root && request_state == Some("running"))
     {
         bail!("durable source refresh {role} is not queued");
     }

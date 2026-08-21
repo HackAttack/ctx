@@ -9,13 +9,7 @@ use ctx_history_capture_model::{
     ProviderSourceStatus,
 };
 use ctx_history_core::CaptureProvider;
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Barrier,
-    },
-    thread,
-};
+use std::{sync::Barrier, thread};
 
 fn catalog_route(
     provider: CaptureProvider,

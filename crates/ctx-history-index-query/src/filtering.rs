@@ -202,10 +202,10 @@ pub(super) fn source_identity_values_match(
     {
         return false;
     }
-    !filters
+    filters
         .source_id
         .as_deref()
-        .is_some_and(|expected| expected.trim() != source_id)
+        .is_none_or(|expected| expected.trim() == source_id)
 }
 
 pub(super) fn add_optional_text_filter(

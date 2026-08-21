@@ -629,10 +629,10 @@ fn is_encrypted_reasoning_without_plaintext(payload: &Value) -> bool {
         return false;
     };
     if object.get("type").and_then(Value::as_str) != Some("reasoning")
-        || !object
+        || object
             .get("encrypted_content")
             .and_then(Value::as_str)
-            .is_some_and(|content| !content.is_empty())
+            .is_none_or(|content| content.is_empty())
     {
         return false;
     }

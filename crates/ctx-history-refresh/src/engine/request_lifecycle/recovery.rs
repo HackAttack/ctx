@@ -609,7 +609,7 @@ fn recover_failure_outcome(
                 || retryable_routes
                     .union(&blocked_routes)
                     .ne(affected_routes.iter())
-                || (!affected_routes.is_empty() && retryable != !retryable_routes.is_empty())
+                || (!affected_routes.is_empty() && retryable == retryable_routes.is_empty())
             {
                 bail!("durable terminal source refresh outcome has inconsistent route disposition");
             }
