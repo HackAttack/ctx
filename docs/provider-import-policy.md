@@ -259,10 +259,12 @@ contract for that source family:
   Concurrent committed rows belong to a subsequent certified snapshot unless
   they are visible inside the admitted transaction. On platforms and routes
   that cannot retain a no-write snapshot directly, ctx first preallocates and
-  streams one private DB/WAL copy below its data root. Admission depends on
-  available temporary disk capacity plus safety headroom, not a fixed source
-  size ceiling; copy memory remains bounded and the private family is removed
-  when the route finishes.
+  streams one private DB/WAL copy below its data root. The stream reuses the
+  retained authority handle instead of allocating duplicate provider handles;
+  Unix reads are positional and leave that handle's mutable offset unchanged.
+  Admission depends on available temporary disk capacity plus safety headroom,
+  not a fixed source size ceiling; copy memory remains bounded and the private
+  family is removed when the route finishes.
 - JSON documents and document trees use unchanged-or-replace semantics. A
   mutation during a scan invalidates that candidate; the retry reads one
   complete replacement.
