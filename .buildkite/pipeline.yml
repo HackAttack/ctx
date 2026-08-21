@@ -217,7 +217,7 @@ steps:
       - "target/public-cli-native-smoke/windows-x64/candidate-smoke.json"
       - "target/public-cli-native-smoke/windows-x64/ctx-windows-x64.native-execution.json"
 
-  - label: ":package: stage native-qualified GitHub release candidate"
+  - label: ":package: stage native-qualified Core release candidate"
     key: "github-release-candidate"
     depends_on:
       - "public-release"
@@ -240,7 +240,7 @@ steps:
       CTX_PUBLIC_RELEASE_SOURCE_COMMIT="$${source_commit}" \
         scripts/stage-github-release-assets.sh \
           target/public-cli-artifacts \
-          target/github-release-assets \
+          target/github-core-release-assets \
           target/github-release-authority \
           target/public-cli-native-smoke
     agents:
@@ -252,7 +252,7 @@ steps:
       arch: "x86_64"
     timeout_in_minutes: 30
     artifact_paths:
-      - "target/github-release-assets/*"
+      - "target/github-core-release-assets/*"
       - "target/github-release-authority/*"
 
   - label: ":package: Semantic ONNX models"
@@ -342,6 +342,7 @@ steps:
     key: "semantic-runtime-windows-ml"
     if: build.env("CTX_PUBLIC_SEMANTIC_ASSET_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
     command: |
+      bash scripts/build-onnxruntime-sidecar.sh windows-x64
       bash scripts/build-onnxruntime-sidecar.sh windows-x64-windowsml
       powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows-semantic-smoke-contract.ps1
     agents:
@@ -352,6 +353,8 @@ steps:
     concurrency_group: "ctx-public-semantic-windows-native"
     timeout_in_minutes: 90
     artifact_paths:
+      - "target/public-cli-artifacts/ctx-onnxruntime-windows-x64.zip"
+      - "target/public-cli-artifacts/ctx-onnxruntime-windows-x64.zip.sha256"
       - "target/public-cli-artifacts/ctx-windowsml-windows-x64.zip"
       - "target/public-cli-artifacts/ctx-windowsml-windows-x64.zip.sha256"
       - "target/public-cli-artifacts/ctx-windowsml-windows-x64.zip.asset.json"
@@ -382,6 +385,49 @@ steps:
       - "target/public-cli-artifacts/ctx-onnxruntime-linux-x64*"
       - "target/public-cli-artifacts/ctx-onnxruntime-linux-aarch64*"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64*"
+
+  - label: ":package: assemble complete GitHub release assets"
+    key: "github-release-assets"
+    depends_on:
+      - "github-release-candidate"
+      - "semantic-runtime-portable"
+      - "public-cli-macos-x64-runtime-producer"
+      - "semantic-runtime-windows-ml"
+    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.env("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") == "1" && build.env("CTX_PUBLIC_SEMANTIC_ASSET_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
+    command: |
+      mkdir -p target/public-cli-artifacts
+      buildkite-agent artifact download \
+        "target/github-core-release-assets/*" . \
+        --step github-release-candidate
+      buildkite-agent artifact download \
+        "target/public-cli-artifacts/ctx-onnxruntime-linux-x64.tar.gz*" . \
+        --step semantic-runtime-portable
+      buildkite-agent artifact download \
+        "target/public-cli-artifacts/ctx-onnxruntime-linux-aarch64.tar.gz*" . \
+        --step semantic-runtime-portable
+      buildkite-agent artifact download \
+        "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.tar.gz*" . \
+        --step semantic-runtime-portable
+      buildkite-agent artifact download \
+        "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.tar.gz*" . \
+        --step public-cli-macos-x64-runtime-producer
+      buildkite-agent artifact download \
+        "*ctx-onnxruntime-windows-x64.zip*" . \
+        --step semantic-runtime-windows-ml
+      scripts/assemble-github-release-assets.sh \
+        target/github-core-release-assets \
+        target/public-cli-artifacts \
+        target/github-release-assets
+    agents:
+      queue: "release-linux-managed"
+      ctx-runner-class: "release-linux-control"
+      ctx-release-os: "ubuntu-24.04"
+      ctx-release-nested-docker: "true"
+      os: "linux"
+      arch: "x86_64"
+    timeout_in_minutes: 30
+    artifact_paths:
+      - "target/github-release-assets/*"
 
   - label: ":package: gather unsigned Semantic release handoff"
     key: "semantic-release-handoff"

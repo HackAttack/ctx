@@ -453,6 +453,17 @@ grep -Fq -- "--sbom ${tmp_dir}/.github-release-assets." \
 ! grep -Fq -- "--artifact ${matrix}/" "${default_build_info_log}"
 ! grep -Fq -- "--artifact ${matrix}/" "${default_sbom_log}"
 
+named_default_output="${repo_root}/target/github-core-release-assets"
+CTX_FAKE_SBOM_LOG="${tmp_dir}/named-default-sbom.log" \
+  CTX_FAKE_BUILD_INFO_LOG="${tmp_dir}/named-default-build-info.log" \
+  CTX_PUBLIC_RELEASE_SOURCE_COMMIT="${source_commit}" \
+  CTX_REAL_PYTHON3="${real_python3}" \
+  PATH="${fake_bin}:${PATH}" \
+  /bin/bash "${stage}" "${matrix}"
+assert_exact_assets "${named_default_output}" 15 "${default_assets[@]}"
+test -d "${named_default_output}.authority"
+test ! -e "${repo_root}/target/github-release-assets"
+
 runtime_claim_candidate="${tmp_dir}/runtime-claim-candidate"
 cp -a "${matrix}" "${runtime_claim_candidate}"
 rm "${runtime_claim_candidate}/ctx-core.release-complete.json"

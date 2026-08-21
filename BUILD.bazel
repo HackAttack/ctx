@@ -609,6 +609,16 @@ sh_test(
     tags = ["release-gate"],
 )
 
+sh_test(
+    name = "assemble_github_release_assets_tests",
+    srcs = ["scripts/tests/assemble-github-release-assets-test.sh"],
+    data = [
+        "scripts/assemble-github-release-assets.sh",
+        "scripts/release/release_bundle.py",
+    ],
+    tags = ["release-gate"],
+)
+
 py_test(
     name = "native_execution_proof_tests",
     srcs = [

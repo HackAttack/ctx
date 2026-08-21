@@ -259,9 +259,22 @@ to the five fan-out jobs.
 With no mode flag, the staging helper validates and stages the five CLI
 binaries plus their SBOMs and notices. Semantic models and runtime transports
 are constructed and handed off by the separate Semantic release graph; they
-are not accepted by the Core factory or GitHub staging command. Core staging
-requires its aggregate Core completion marker, not per-platform Linux runtime
+are not accepted by the Core factory or Core staging command. Core staging
+requires its aggregate Core completion marker, not per-platform runtime
 completion identities.
+
+The final GitHub assembly step is the only convergence point. It consumes the
+independently staged 15-asset Core set and the five qualified ONNX Runtime
+transports, verifies both checksum sets, and atomically publishes the complete
+20-asset set plus `SHA256SUMS`. It does not rebuild, modify, or make either
+input graph authoritative for the other:
+
+```bash
+scripts/assemble-github-release-assets.sh \
+  target/github-core-release-assets \
+  target/public-cli-artifacts \
+  target/github-release-assets
+```
 
 Aggregate staging also writes a separate release-authority handoff directory;
 it does not add those files to the GitHub Release asset set or `SHA256SUMS`.
@@ -304,7 +317,7 @@ Pass an explicit third directory when staging for a release build:
 ```bash
 scripts/stage-github-release-assets.sh \
   target/public-cli-artifacts \
-  target/github-release-assets \
+  target/github-core-release-assets \
   target/github-release-authority
 ```
 

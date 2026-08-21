@@ -10,7 +10,7 @@ Stages the five public Core GitHub Release assets and their existing
 SBOM/notices evidence from one sealed factory candidate.
 
 Inputs default to target/public-cli-artifacts.
-Outputs default to target/github-release-assets.
+Core outputs default to target/github-core-release-assets.
 
 The transcode mode converts a validated builder-owned Unix .tar.zst sidecar
 to the deterministic .tar.gz transport consumed by release installers. It is
@@ -47,7 +47,7 @@ case "${1:-}" in
       exit 2
     }
     artifact_dir="${1:-target/public-cli-artifacts}"
-    out_dir="${2:-target/github-release-assets}"
+    out_dir="${2:-target/github-core-release-assets}"
     authority_dir="${3:-${out_dir}.authority}"
     native_proof_dir="${4:-${CTX_PUBLIC_NATIVE_PROOF_DIR:-target/public-cli-native-smoke}}"
     ;;
