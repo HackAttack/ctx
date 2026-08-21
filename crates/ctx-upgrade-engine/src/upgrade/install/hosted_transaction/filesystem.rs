@@ -8,6 +8,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use uuid::Uuid;
 
 use super::{Journal, JOURNAL_SUFFIX, MAX_BINARY_BYTES};
+#[cfg(windows)]
+use crate::upgrade::install::lock::{validate_windows_path_leaf, windows_disk_path_identity};
 use crate::upgrade::sha256_hex;
 
 pub(super) fn validate_install_path(path: &Path) -> Result<PathBuf> {
@@ -22,13 +24,30 @@ pub(super) fn validate_install_path(path: &Path) -> Result<PathBuf> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("hosted transaction install path has no parent"))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("hosted transaction install path has no file name"))?;
+    #[cfg(windows)]
+    validate_windows_path_leaf(file_name, "hosted transaction install path")?;
+    #[cfg(windows)]
+    let parent_identity = windows_disk_path_identity(parent).ok_or_else(|| {
+        anyhow!("hosted transaction install path uses an unsupported Windows path form")
+    })?;
     let canonical_parent = fs::canonicalize(parent)
         .with_context(|| format!("canonicalize hosted install directory {}", parent.display()))?;
+    #[cfg(windows)]
+    {
+        let canonical_parent_identity =
+            windows_disk_path_identity(&canonical_parent).ok_or_else(|| {
+                anyhow!("canonical hosted install directory uses an unsupported Windows path form")
+            })?;
+        if canonical_parent_identity != parent_identity {
+            bail!("hosted transaction install path is not canonical");
+        }
+    }
     validate_private_directory(&canonical_parent)?;
-    let canonical = canonical_parent.join(
-        path.file_name()
-            .ok_or_else(|| anyhow!("hosted transaction install path has no file name"))?,
-    );
+    let canonical = canonical_parent.join(file_name);
+    #[cfg(not(windows))]
     if canonical != path {
         bail!("hosted transaction install path is not canonical");
     }
@@ -303,6 +322,96 @@ pub(super) fn is_normalized_sha256(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt as _, process::Command};
+
+    use super::*;
+    use ctx_history_platform::platform_security::{
+        create_private_directory_all, restrict_private_directory,
+    };
+
+    fn private_install_parent() -> Result<(tempfile::TempDir, PathBuf, PathBuf)> {
+        let fixture = tempfile::tempdir()?;
+        restrict_private_directory(fixture.path())?;
+        let parent = fixture.path().join("bin");
+        create_private_directory_all(&parent)?;
+        let canonical = fs::canonicalize(&parent)?;
+        let ordinary_identity = windows_disk_path_identity(&canonical)
+            .ok_or_else(|| anyhow!("Windows test directory is not a supported disk path"))?;
+        let ordinary = PathBuf::from(OsString::from_wide(&ordinary_identity));
+        Ok((fixture, ordinary, canonical))
+    }
+
+    #[test]
+    fn ordinary_windows_hosted_install_path_returns_stable_canonical_identity() -> Result<()> {
+        let (_fixture, ordinary_parent, canonical_parent) = private_install_parent()?;
+        let ordinary = ordinary_parent.join("ctx.exe");
+        let canonical = canonical_parent.join("ctx.exe");
+
+        assert_eq!(validate_install_path(&ordinary)?, canonical);
+        assert_eq!(validate_install_path(&canonical)?, canonical);
+        Ok(())
+    }
+
+    #[test]
+    fn windows_hosted_install_path_rejects_unsafe_leafs() -> Result<()> {
+        let (_fixture, ordinary_parent, _canonical_parent) = private_install_parent()?;
+        for leaf in [
+            "ctx.",
+            "ctx ",
+            "ctx:stream",
+            "CON",
+            "con.exe",
+            "PRN.txt",
+            "NUL.exe",
+            "COM1.exe",
+            "lpt9.log",
+            "CON .exe",
+            "COM¹.txt",
+        ] {
+            assert!(
+                validate_install_path(&ordinary_parent.join(leaf)).is_err(),
+                "accepted unsafe Windows hosted-install leaf {leaf:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn windows_hosted_install_path_rejects_aliases_and_unsupported_namespaces() -> Result<()> {
+        let (_fixture, ordinary_parent, _canonical_parent) = private_install_parent()?;
+        let target = ordinary_parent.join("Target");
+        create_private_directory_all(&target)?;
+        let junction = ordinary_parent.join("junction");
+        let output = Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "failed to create hosted-install junction fixture: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        assert!(validate_install_path(&junction.join("ctx.exe")).is_err());
+        assert!(validate_install_path(&ordinary_parent.join("target").join("ctx.exe")).is_err());
+        for unsupported in [
+            r"\\server\share\ctx.exe",
+            r"\\?\UNC\server\share\ctx.exe",
+            r"\\.\C:\ctx.exe",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\ctx.exe",
+        ] {
+            assert!(
+                validate_install_path(Path::new(unsupported)).is_err(),
+                "accepted unsupported Windows hosted-install path {unsupported}"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[cfg(unix)]

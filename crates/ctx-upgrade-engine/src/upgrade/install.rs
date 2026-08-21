@@ -28,7 +28,10 @@ pub use hosted_transaction::{
 pub(in crate::upgrade) use marker::classify_install_marker_at;
 pub use marker::is_valid_install_attempt_id;
 pub(super) use marker::InstallFingerprint;
-pub use marker::{current_install_path, InstallMarker};
+pub use marker::{
+    current_install_path, invalid_install_marker_recovery_guidance,
+    unmanaged_install_conversion_guidance, InstallMarker,
+};
 pub use marker::{managed_install_marker_for_current_exe, ManagedInstallMarker};
 pub(super) use runtime::semantic_install_required;
 pub(super) use transaction::ApplyResult;

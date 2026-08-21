@@ -2,7 +2,8 @@ use std::path::Path;
 
 use anyhow::Result;
 use ctx_upgrade_engine::{
-    managed_install_marker_for_current_exe, read_state_json, ManagedInstallMarker,
+    invalid_install_marker_recovery_guidance, managed_install_marker_for_current_exe,
+    read_state_json, unmanaged_install_conversion_guidance, ManagedInstallMarker,
     STATE_SCHEMA_VERSION,
 };
 use serde_json::json;
@@ -41,13 +42,14 @@ pub(super) fn render_status(
         Ok(ManagedInstallMarker::Absent) => json!({
             "managed": false,
             "marker": "absent",
-            "reason": "ctx was not installed by the hosted installer"
+            "reason": "ctx was not installed by the hosted installer",
+            "action": unmanaged_install_conversion_guidance(),
         }),
         Ok(ManagedInstallMarker::Invalid { reason }) => json!({
             "managed": false,
             "marker": "corrupt",
             "reason": reason,
-            "action": "reinstall ctx from https://ctx.rs/install",
+            "action": invalid_install_marker_recovery_guidance(),
         }),
         Err(error) => json!({
             "managed": false,

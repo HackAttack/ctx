@@ -1,4 +1,7 @@
-use ctx_upgrade_engine::{ManagedInstallDiagnostic, UpgradeDiagnostics as EngineDiagnostics};
+use ctx_upgrade_engine::{
+    invalid_install_marker_recovery_guidance, unmanaged_install_conversion_guidance,
+    ManagedInstallDiagnostic, UpgradeDiagnostics as EngineDiagnostics,
+};
 use serde_json::{json, Value};
 
 pub struct UpgradeDiagnostics {
@@ -15,11 +18,14 @@ pub fn present_upgrade_diagnostics(
         ManagedInstallDiagnostic::Absent => json!({
             "managed": false,
             "marker": "absent",
+            "reason": "ctx was not installed by the hosted installer",
+            "action": unmanaged_install_conversion_guidance(),
         }),
         ManagedInstallDiagnostic::Invalid { reason } => json!({
             "managed": false,
             "marker": "corrupt",
             "error": reason,
+            "action": invalid_install_marker_recovery_guidance(),
         }),
         ManagedInstallDiagnostic::Valid { install_path } => json!({
             "managed": true,

@@ -5,6 +5,9 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+#[cfg(windows)]
+use std::ffi::OsStr;
+
 use anyhow::{anyhow, bail, Context, Result};
 
 /// A process-owned lock for mutations of one installed executable.
@@ -146,13 +149,31 @@ pub(super) fn canonical_recovery_executable(path: &Path) -> Result<PathBuf> {
                 path.display()
             )
         })?;
+    validate_windows_path_leaf(file_name, "ctx recovery executable")?;
+    let parent_identity = windows_disk_path_identity(parent).ok_or_else(|| {
+        anyhow!(
+            "ctx recovery executable uses an unsupported Windows path form: {}",
+            path.display()
+        )
+    })?;
     let canonical_parent = fs::canonicalize(parent).with_context(|| {
         format!(
             "canonicalize ctx recovery executable directory {}",
             parent.display()
         )
     })?;
-    if canonical_parent != parent {
+    validate_absolute_path(
+        &canonical_parent,
+        "canonical ctx recovery executable directory",
+    )?;
+    let canonical_parent_identity =
+        windows_disk_path_identity(&canonical_parent).ok_or_else(|| {
+            anyhow!(
+                "canonical ctx recovery executable uses an unsupported Windows path form: {}",
+                canonical_parent.display()
+            )
+        })?;
+    if canonical_parent_identity != parent_identity {
         bail!(
             "ctx recovery executable directory is not canonical: {}",
             parent.display()
@@ -178,6 +199,97 @@ pub(super) fn canonical_recovery_executable(path: &Path) -> Result<PathBuf> {
         }
     }
     Ok(candidate)
+}
+
+/// Returns an exact disk-path identity with only the Windows verbatim namespace
+/// removed. This intentionally does not fold case, separators, short names, or
+/// any other path spelling, and it rejects UNC and device namespaces.
+#[cfg(windows)]
+pub(super) fn windows_disk_path_identity(path: &Path) -> Option<Vec<u16>> {
+    use std::{os::windows::ffi::OsStrExt as _, path::Prefix};
+
+    let Component::Prefix(prefix) = path.components().next()? else {
+        return None;
+    };
+    let verbatim = match prefix.kind() {
+        Prefix::Disk(_) => false,
+        Prefix::VerbatimDisk(_) => true,
+        Prefix::UNC(_, _)
+        | Prefix::VerbatimUNC(_, _)
+        | Prefix::DeviceNS(_)
+        | Prefix::Verbatim(_) => return None,
+    };
+    let identity: Vec<_> = path.as_os_str().encode_wide().collect();
+    if !verbatim {
+        return Some(identity);
+    }
+    const VERBATIM_NAMESPACE: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    identity
+        .strip_prefix(VERBATIM_NAMESPACE)
+        .map(<[u16]>::to_vec)
+}
+
+/// Rejects Windows leaf spellings that Win32 can normalize to another name or
+/// interpret as a DOS device rather than the requested regular file.
+#[cfg(windows)]
+pub(super) fn validate_windows_path_leaf(leaf: &OsStr, label: &str) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    let units: Vec<_> = leaf.encode_wide().collect();
+    let has_forbidden_unit = units.iter().any(|unit| {
+        *unit <= 0x1f
+            || matches!(
+                *unit,
+                0x22 | 0x2a | 0x2f | 0x3a | 0x3c | 0x3e | 0x3f | 0x5c | 0x7c
+            )
+    });
+    if units.is_empty()
+        || matches!(units.last(), Some(0x20 | 0x2e))
+        || has_forbidden_unit
+        || windows_leaf_has_reserved_device_stem(&units)
+    {
+        bail!(
+            "{label} has an unsafe Windows file name: {}",
+            Path::new(leaf).display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_leaf_has_reserved_device_stem(units: &[u16]) -> bool {
+    const RESERVED: &[&[u8]] = &[
+        b"CON", b"PRN", b"AUX", b"NUL", b"CONIN$", b"CONOUT$", b"CLOCK$",
+    ];
+
+    let stem_end = units
+        .iter()
+        .position(|unit| *unit == u16::from(b'.'))
+        .unwrap_or(units.len());
+    let mut stem = &units[..stem_end];
+    while matches!(stem.last(), Some(0x20 | 0x2e)) {
+        stem = &stem[..stem.len() - 1];
+    }
+    if RESERVED
+        .iter()
+        .any(|reserved| windows_wide_eq_ascii(stem, reserved))
+    {
+        return true;
+    }
+    if stem.len() != 4
+        || !(windows_wide_eq_ascii(&stem[..3], b"COM") || windows_wide_eq_ascii(&stem[..3], b"LPT"))
+    {
+        return false;
+    }
+    matches!(stem[3], 0x31..=0x39 | 0x00b2 | 0x00b3 | 0x00b9)
+}
+
+#[cfg(windows)]
+fn windows_wide_eq_ascii(units: &[u16], expected: &[u8]) -> bool {
+    units.len() == expected.len()
+        && units.iter().zip(expected).all(|(unit, expected)| {
+            *unit <= 0x7f && (*unit as u8).to_ascii_uppercase() == *expected
+        })
 }
 
 fn revalidate_locked_executable(expected: &Path, allow_recovery_hardlink: bool) -> Result<()> {

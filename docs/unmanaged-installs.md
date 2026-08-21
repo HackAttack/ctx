@@ -68,6 +68,45 @@ ctx setup
 For an uninstall, omit those post-install commands. History data remains until
 you deliberately remove the selected data roots.
 
+## Convert An Unmanaged Install To A Managed Install
+
+The hosted installer will not silently adopt a binary installed by a package
+manager, copied from a release, or built from source. A ctx executable without
+the hosted-install marker remains owned by the tool or process that installed
+it, and the hosted installer stops if that executable occupies its selected
+binary directory.
+
+To convert safely:
+
+1. Run the [binary lifecycle handoff](#binary-lifecycle-handoff) with the
+   currently installed unmanaged executable and verify its successful JSON
+   receipt.
+2. Use the current package manager or manual process to move or remove that
+   executable. Do not remove it before the handoff succeeds.
+3. Rerun the hosted installer so it can create a new managed installation and
+   marker. On Linux or macOS:
+
+   ```bash
+   curl -fsSL https://ctx.rs/install | sh
+   ```
+
+   On Windows:
+
+   ```powershell
+   irm https://ctx.rs/install.ps1 | iex
+   ```
+
+Instead of removing the unmanaged executable, you may select a different empty
+`BinDir` for the hosted installer. Make sure `Path` resolves `ctx` to the
+installation you intend to use; the two binaries remain separate installs, and
+the hosted installer does not assume ownership of the unmanaged one.
+
+If ctx reports that an existing hosted-install marker is malformed or does not
+match its executable, use the same lifecycle handoff before moving or removing
+both the executable and invalid marker. Then rerun the hosted installer, or
+choose a different empty binary directory. Do not overwrite an inconsistent
+pair in place.
+
 ## Release Assets
 
 Stable releases publish prebuilt binaries on GitHub Releases:

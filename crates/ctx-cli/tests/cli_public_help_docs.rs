@@ -922,6 +922,73 @@ fn status_and_doctor_report_effective_upgrade_auto_mode() {
     assert_eq!(persistent_opt_out["upgrade"]["auto_enabled"], false);
 }
 
+fn assert_safe_platform_install_action(action: &str) {
+    assert!(
+        action.contains("ctx daemon disable --prepare-uninstall --format=json"),
+        "{action}"
+    );
+    assert!(action.contains("after a successful receipt"), "{action}");
+    assert!(
+        action.contains("ctx docs show unmanaged-installs"),
+        "{action}"
+    );
+    assert!(!action.contains("reinstall ctx from https://ctx.rs/install"));
+    #[cfg(windows)]
+    {
+        assert!(
+            action.contains("irm https://ctx.rs/install.ps1 | iex"),
+            "{action}"
+        );
+        assert!(!action.contains("curl -fsSL"), "{action}");
+    }
+    #[cfg(not(windows))]
+    {
+        assert!(
+            action.contains("curl -fsSL https://ctx.rs/install | sh"),
+            "{action}"
+        );
+        assert!(!action.contains("install.ps1"), "{action}");
+    }
+}
+
+#[test]
+fn status_and_doctor_require_safe_handoff_for_absent_and_invalid_markers() {
+    let temp = tempdir();
+    let binary = bind_test_ctx_binary(&temp);
+
+    for command in ["status", "doctor"] {
+        let absent = json_output(ctx(&temp).args([command, "--format=json"]));
+        assert_eq!(absent["upgrade"]["install"]["marker"], "absent");
+        assert_safe_platform_install_action(
+            absent["upgrade"]["install"]["action"].as_str().unwrap(),
+        );
+    }
+
+    fs::write(hosted_install_marker_path(&binary), b"{not-json").unwrap();
+    for command in ["status", "doctor"] {
+        let invalid = json_output(ctx(&temp).args([command, "--format=json"]));
+        assert_eq!(invalid["upgrade"]["install"]["marker"], "corrupt");
+        let error = invalid["upgrade"]["install"]["error"].as_str().unwrap();
+        assert!(error.contains("parse ctx install marker"), "{error}");
+        assert_safe_platform_install_action(error);
+        assert_safe_platform_install_action(
+            invalid["upgrade"]["install"]["action"].as_str().unwrap(),
+        );
+
+        if command == "doctor" {
+            let finding = invalid["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .find(|finding| finding.contains("managed ctx install marker is corrupt"))
+                .expect("doctor invalid-marker finding");
+            assert!(finding.contains("parse ctx install marker"), "{finding}");
+            assert_safe_platform_install_action(finding);
+        }
+    }
+}
+
 #[test]
 fn upgrade_auto_mode_has_one_human_or_machine_receipt() {
     let temp = tempdir();

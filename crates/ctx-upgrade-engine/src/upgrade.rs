@@ -25,9 +25,11 @@ pub use diagnostics::{
 };
 pub use install::{
     current_install_path, installation_hosted_uninstall_is_active,
-    installation_hosted_uninstall_is_active_for_executable, is_valid_install_attempt_id,
-    managed_install_marker_for_current_exe, run_hosted_transaction, HostedTransactionAction,
-    HostedTransactionArgs, InstallMarker, ManagedInstallMarker,
+    installation_hosted_uninstall_is_active_for_executable,
+    invalid_install_marker_recovery_guidance, is_valid_install_attempt_id,
+    managed_install_marker_for_current_exe, run_hosted_transaction,
+    unmanaged_install_conversion_guidance, HostedTransactionAction, HostedTransactionArgs,
+    InstallMarker, ManagedInstallMarker,
 };
 pub use state::{
     active_installation_upgrade_attempt_id, installation_daemon_coordination_paths,

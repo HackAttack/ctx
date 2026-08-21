@@ -28,9 +28,7 @@ pub fn upgrade_diagnostics() -> UpgradeDiagnostics {
     let install = match managed_install_marker_for_current_exe() {
         Ok(ManagedInstallMarker::Absent) => ManagedInstallDiagnostic::Absent,
         Ok(ManagedInstallMarker::Invalid { reason }) => {
-            findings.push(format!(
-                "managed ctx install marker is corrupt: {reason}; reinstall ctx from https://ctx.rs/install"
-            ));
+            findings.push(format!("managed ctx install marker is corrupt: {reason}"));
             ManagedInstallDiagnostic::Invalid { reason }
         }
         Ok(ManagedInstallMarker::Valid(marker)) => ManagedInstallDiagnostic::Valid {

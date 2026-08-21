@@ -50,17 +50,38 @@ restart the shell. On POSIX shells, `command -v -a ctx` shows the resolution
 order; in PowerShell, use `Get-Command ctx -All`.
 
 An absent install marker is normal for a source build or package-manager
-install and leaves ctx unmanaged. If a marker exists but is malformed,
-unsupported, path-mismatched, or does not match the binary hash, reinstall with
-the official installer instead of editing the sidecar:
+install and leaves ctx unmanaged. The hosted installer will not silently adopt
+that executable. A marker that is malformed, unsupported, path-mismatched, or
+does not match the binary hash leaves the executable and marker as an
+inconsistent pair; do not edit or overwrite the sidecar in place.
+
+Before moving or removing either an unmanaged executable or an inconsistent
+executable/marker pair, run the lifecycle handoff with the currently installed
+executable:
+
+```bash
+ctx daemon disable --prepare-uninstall --format=json
+```
+
+Continue only after the command succeeds and its JSON receipt reports a
+quiescent installation. Then move or remove the unmanaged executable, or both
+members of the inconsistent pair, and rerun the platform-correct hosted
+installer. On Linux or macOS:
 
 ```bash
 curl -fsSL https://ctx.rs/install | sh
 ```
 
+On Windows:
+
 ```powershell
 irm https://ctx.rs/install.ps1 | iex
 ```
+
+Alternatively, after the successful handoff, choose a different empty binary
+directory (`BinDir` on Windows) and make sure `PATH` resolves `ctx` to the
+intended installation. See `ctx docs show unmanaged-installs` for the complete
+conversion procedure and required receipt fields.
 
 Manual `ctx upgrade` verifies signed release metadata, explicit self-upgrade
 policy, artifact SHA-256, the current managed install marker, and the staged

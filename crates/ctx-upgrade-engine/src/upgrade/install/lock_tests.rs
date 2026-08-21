@@ -7,6 +7,8 @@ use std::{
 use anyhow::Result;
 use tempfile::tempdir;
 
+#[cfg(windows)]
+use super::lock::canonical_recovery_executable;
 use super::lock::{canonical_executable, installation_lock_path, InstallationLock};
 
 const CHILD_TARGET_ENV: &str = "CTX_INSTALL_LOCK_CHILD_TARGET";
@@ -92,6 +94,145 @@ fn installation_lock_child_probe() -> Result<()> {
         return Ok(());
     };
     assert!(InstallationLock::try_acquire(Path::new(&executable))?.is_none());
+    Ok(())
+}
+
+#[cfg(windows)]
+fn ordinary_windows_disk_path(path: &Path) -> Result<PathBuf> {
+    use std::{
+        ffi::OsString,
+        os::windows::ffi::{OsStrExt as _, OsStringExt as _},
+        path::{Component, Prefix},
+    };
+
+    let Component::Prefix(prefix) = path
+        .components()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Windows test path has no prefix: {}", path.display()))?
+    else {
+        anyhow::bail!("Windows test path is not a disk path: {}", path.display());
+    };
+    let wide: Vec<_> = path.as_os_str().encode_wide().collect();
+    let ordinary = match prefix.kind() {
+        Prefix::Disk(_) => wide.as_slice(),
+        Prefix::VerbatimDisk(_) => wide.get(4..).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Windows verbatim test path is truncated: {}",
+                path.display()
+            )
+        })?,
+        _ => anyhow::bail!("Windows test path is not a disk path: {}", path.display()),
+    };
+    Ok(PathBuf::from(OsString::from_wide(ordinary)))
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_recovery_uses_one_identity_for_ordinary_missing_executable() -> Result<()> {
+    let fixture = tempdir()?;
+    let parent = fixture.path().join("bin");
+    fs::create_dir(&parent)?;
+    let canonical_parent = fs::canonicalize(&parent)?;
+    let ordinary_parent = ordinary_windows_disk_path(&canonical_parent)?;
+    let ordinary_executable = ordinary_parent.join("ctx-missing.exe");
+    let canonical_executable = canonical_parent.join("ctx-missing.exe");
+    assert!(!ordinary_executable.try_exists()?);
+
+    assert_eq!(
+        canonical_recovery_executable(&ordinary_executable)?,
+        canonical_executable
+    );
+    assert_eq!(
+        canonical_recovery_executable(&canonical_executable)?,
+        canonical_executable
+    );
+
+    let first = InstallationLock::try_acquire_for_recovery(&ordinary_executable)?
+        .expect("ordinary recovery lock");
+    assert!(
+        InstallationLock::try_acquire_for_recovery(&canonical_executable)?.is_none(),
+        "ordinary and verbatim recovery paths must contend on one lock"
+    );
+    drop(first);
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_recovery_rejects_junction_parent_alias() -> Result<()> {
+    let fixture = tempdir()?;
+    let target = fixture.path().join("target");
+    let junction = fixture.path().join("junction");
+    fs::create_dir(&target)?;
+    let output = Command::new("cmd.exe")
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&target)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "failed to create junction fixture: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(canonical_recovery_executable(&junction.join("ctx.exe")).is_err());
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_recovery_rejects_parent_casing_alias() -> Result<()> {
+    let fixture = tempdir()?;
+    let parent = fixture.path().join("MixedCase");
+    fs::create_dir(&parent)?;
+    let wrong_case = fixture.path().join("mixedcase").join("ctx.exe");
+
+    assert!(canonical_recovery_executable(&wrong_case).is_err());
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_recovery_rejects_unc_and_device_namespaces() {
+    for unsupported in [
+        r"\\server\share\ctx.exe",
+        r"\\?\UNC\server\share\ctx.exe",
+        r"\\.\C:\ctx.exe",
+        r"\\?\GLOBALROOT\Device\HarddiskVolume1\ctx.exe",
+    ] {
+        assert!(
+            canonical_recovery_executable(Path::new(unsupported)).is_err(),
+            "accepted unsupported Windows recovery path {unsupported}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_recovery_rejects_unsafe_missing_executable_leafs() -> Result<()> {
+    let fixture = tempdir()?;
+    let parent = fixture.path().join("bin");
+    fs::create_dir(&parent)?;
+    let ordinary_parent = ordinary_windows_disk_path(&fs::canonicalize(&parent)?)?;
+
+    for leaf in [
+        "ctx.",
+        "ctx ",
+        "ctx:stream",
+        "CON",
+        "con.exe",
+        "PRN.txt",
+        "NUL.exe",
+        "COM1.exe",
+        "lpt9.log",
+        "CON .exe",
+        "COM¹.txt",
+    ] {
+        assert!(
+            canonical_recovery_executable(&ordinary_parent.join(leaf)).is_err(),
+            "accepted unsafe Windows recovery leaf {leaf:?}"
+        );
+    }
     Ok(())
 }
 

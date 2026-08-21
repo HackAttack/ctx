@@ -9,6 +9,35 @@ mod runtime_publication;
 #[path = "upgrade/release_validation.rs"]
 mod release_validation;
 
+fn assert_safe_platform_install_action(action: &str) {
+    assert!(
+        action.contains("ctx daemon disable --prepare-uninstall --format=json"),
+        "{action}"
+    );
+    assert!(action.contains("after a successful receipt"), "{action}");
+    assert!(
+        action.contains("ctx docs show unmanaged-installs"),
+        "{action}"
+    );
+    assert!(!action.contains("reinstall ctx from https://ctx.rs/install"));
+    #[cfg(windows)]
+    {
+        assert!(
+            action.contains("irm https://ctx.rs/install.ps1 | iex"),
+            "{action}"
+        );
+        assert!(!action.contains("curl -fsSL"), "{action}");
+    }
+    #[cfg(not(windows))]
+    {
+        assert!(
+            action.contains("curl -fsSL https://ctx.rs/install | sh"),
+            "{action}"
+        );
+        assert!(!action.contains("install.ps1"), "{action}");
+    }
+}
+
 #[cfg(unix)]
 use std::{
     net::TcpListener,
@@ -181,6 +210,35 @@ fn windows_runtime_extractor_keeps_external_source_contract() {
         include_str!("../../../../scripts/test-windows-runtime-upgrade-extractor.ps1");
     assert!(external_contract.contains(r#"..\crates\ctx-cli\src\upgrade\install.rs"#));
     assert!(external_contract.contains("const EXTRACT_SCRIPT: &str = r#"));
+}
+
+#[test]
+fn upgrade_status_requires_safe_handoff_for_absent_and_invalid_markers() {
+    let temp = tempdir();
+    let binary = bind_test_ctx_binary(&temp);
+
+    let absent = json_output(ctx(&temp).args(["upgrade", "status", "--format=json"]));
+    assert_eq!(absent["install"]["marker"], "absent");
+    assert_safe_platform_install_action(absent["install"]["action"].as_str().unwrap());
+
+    fs::write(hosted_install_marker_path(&binary), b"{not-json").unwrap();
+    let invalid = json_output(ctx(&temp).args(["upgrade", "status", "--format=json"]));
+    assert_eq!(invalid["install"]["marker"], "corrupt");
+    let reason = invalid["install"]["reason"].as_str().unwrap();
+    assert!(reason.contains("parse ctx install marker"), "{reason}");
+    assert_safe_platform_install_action(reason);
+    assert_safe_platform_install_action(invalid["install"]["action"].as_str().unwrap());
+
+    let human = ctx(&temp)
+        .args(["upgrade", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let human = String::from_utf8(human).unwrap();
+    assert!(human.contains("parse ctx install marker"), "{human}");
+    assert_safe_platform_install_action(&human);
 }
 
 #[cfg(unix)]

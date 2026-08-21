@@ -80,14 +80,14 @@ pub(in crate::upgrade) fn classify_install_marker_at(
         Ok(None) => return ManagedInstallMarker::Absent,
         Err(error) => {
             return ManagedInstallMarker::Invalid {
-                reason: format!("{error:#}"),
+                reason: invalid_install_marker_reason(&error),
             }
         }
     };
     match verify_install_marker(&marker, platform) {
         Ok(()) => ManagedInstallMarker::Valid(marker),
         Err(error) => ManagedInstallMarker::Invalid {
-            reason: format!("{error:#}"),
+            reason: invalid_install_marker_reason(&error),
         },
     }
 }
@@ -155,7 +155,34 @@ pub(in crate::upgrade) fn install_marker_for_plan(
 }
 
 fn absent_install_marker_error() -> anyhow::Error {
-    anyhow!("ctx is not installed by the hosted installer; reinstall with curl -fsSL https://ctx.rs/install | sh to enable managed upgrades")
+    anyhow!(
+        "ctx is not installed by the hosted installer; {}",
+        unmanaged_install_conversion_guidance()
+    )
+}
+
+#[cfg(windows)]
+pub fn unmanaged_install_conversion_guidance() -> &'static str {
+    "to enable managed upgrades, run ctx daemon disable --prepare-uninstall --format=json, then after a successful receipt move or remove this unmanaged executable and rerun irm https://ctx.rs/install.ps1 | iex (or choose a different empty BinDir); see ctx docs show unmanaged-installs"
+}
+
+#[cfg(not(windows))]
+pub fn unmanaged_install_conversion_guidance() -> &'static str {
+    "to enable managed upgrades, run ctx daemon disable --prepare-uninstall --format=json, then after a successful receipt move or remove this unmanaged executable and rerun curl -fsSL https://ctx.rs/install | sh (or choose a different empty binary directory); see ctx docs show unmanaged-installs"
+}
+
+#[cfg(windows)]
+pub fn invalid_install_marker_recovery_guidance() -> &'static str {
+    "run ctx daemon disable --prepare-uninstall --format=json, then after a successful receipt move or remove the executable and invalid marker and rerun irm https://ctx.rs/install.ps1 | iex (or choose a different empty BinDir); see ctx docs show unmanaged-installs"
+}
+
+#[cfg(not(windows))]
+pub fn invalid_install_marker_recovery_guidance() -> &'static str {
+    "run ctx daemon disable --prepare-uninstall --format=json, then after a successful receipt move or remove the executable and invalid marker and rerun curl -fsSL https://ctx.rs/install | sh (or choose a different empty binary directory); see ctx docs show unmanaged-installs"
+}
+
+fn invalid_install_marker_reason(error: &anyhow::Error) -> String {
+    format!("{error:#}; {}", invalid_install_marker_recovery_guidance())
 }
 
 fn fallback_install_marker(
@@ -183,9 +210,7 @@ fn verify_install_marker(marker: &InstallMarker, platform: &str) -> Result<()> {
     }
     let actual = current_binary_sha_at(&marker.install_path)?;
     if !marker.sha256.eq_ignore_ascii_case(&actual) {
-        return Err(anyhow!(
-            "ctx install marker hash mismatch; reinstall with curl -fsSL https://ctx.rs/install | sh"
-        ));
+        return Err(anyhow!("ctx install marker hash mismatch"));
     }
     Ok(())
 }
