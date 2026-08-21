@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::Args;
+use clap::{Args, Subcommand};
 
 use crate::{
     analytics::{count_bucket, SourcesTelemetry},
@@ -10,7 +10,10 @@ use crate::{
 };
 
 #[derive(Debug, Args, Clone)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct SourcesArgs {
+    #[command(subcommand)]
+    pub command: Option<SourcesCommand>,
     #[arg(long, value_enum, default_value_t = JsonOutputFormat::Text)]
     pub format: JsonOutputFormat,
     #[arg(
@@ -26,6 +29,26 @@ pub struct SourcesArgs {
     pub show_missing: bool,
 }
 
+#[derive(Debug, Subcommand, Clone)]
+pub enum SourcesCommand {
+    #[command(about = "Register a named Claude or Codex home")]
+    Add {
+        #[arg(help = "Stable local name, for example personal or work")]
+        name: String,
+        #[arg(long, value_parser = crate::parse_provider_arg, hide_possible_values = true)]
+        provider: crate::ProviderArg,
+        #[arg(long, value_name = "DIRECTORY", help = "Provider home directory")]
+        root: PathBuf,
+        #[arg(long, help = "Optional search scope, for example personal or work")]
+        scope: Option<String>,
+    },
+    #[command(about = "Remove a named provider home")]
+    Remove {
+        #[arg(help = "Configured provider-root name")]
+        name: String,
+    },
+}
+
 /// Final-host shell for the sources command. Clap conversion and result delivery
 /// remain here; application execution and presentation live in `ctx-history-cli`.
 pub fn run_sources(
@@ -34,8 +57,11 @@ pub fn run_sources(
     telemetry: &mut SourcesTelemetry,
     local_usage: &mut CliUsage,
     home_dir: Option<PathBuf>,
+    automatic_provider_discovery: bool,
+    provider_roots: Vec<ctx_history_cli::ProviderRootDefinition>,
     ui: &mut ctx_terminal::Ui,
 ) -> Result<()> {
+    debug_assert!(args.command.is_none());
     let request = ctx_history_cli::SourcesRequest {
         provider: args
             .provider
@@ -51,6 +77,8 @@ pub fn run_sources(
         request,
         &data_root,
         home_dir,
+        automatic_provider_discovery,
+        provider_roots,
         |observation| {
             telemetry.providers_detected = Some(count_bucket(observation.providers_detected));
             telemetry.providers_existing = Some(count_bucket(observation.providers_existing));

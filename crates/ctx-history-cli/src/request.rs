@@ -119,6 +119,8 @@ pub struct SearchRequest {
     pub provider_key: Option<String>,
     pub source_id: Option<String>,
     pub source_format: Option<String>,
+    pub source_roots: Vec<String>,
+    pub scopes: Vec<String>,
     pub workspace: Option<String>,
     pub since: Option<String>,
     pub primary_only: bool,
@@ -309,6 +311,8 @@ mod tests {
                     provider_key: Some("key".to_owned()),
                     source_id: Some("source".to_owned()),
                     source_format: Some("jsonl".to_owned()),
+                    source_roots: vec!["personal".to_owned()],
+                    scopes: vec!["work".to_owned()],
                     workspace: Some("workspace".to_owned()),
                     since: Some("2026-01-01".to_owned()),
                     primary_only: true,
@@ -328,6 +332,8 @@ mod tests {
                 let execution = ctx_history_read_application::SearchRequest::from(request);
                 assert_eq!(execution.content_scope, expected_scope);
                 assert_eq!(execution.backend, Some(expected_backend));
+                assert_eq!(execution.source_roots, ["personal"]);
+                assert_eq!(execution.scopes, ["work"]);
                 assert!(
                     execution.events,
                     "a session selector must retain event-result semantics"

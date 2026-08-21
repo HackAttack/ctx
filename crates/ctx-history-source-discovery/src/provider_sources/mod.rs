@@ -54,6 +54,7 @@ impl StaticProviderProbeCatalog {
 pub use context::{
     DiscoveryContext, DiscoveryPlatform, DiscoveryPlatformDirs, DISCOVERY_ENV_ALLOWLIST,
 };
+pub use ctx_history_capture_model::ProviderRootDefinition;
 pub(crate) use ctx_history_source_io::open_ordinary_file_without_following;
 pub use ctx_history_source_io::OrdinaryFileObservation;
 #[cfg(test)]

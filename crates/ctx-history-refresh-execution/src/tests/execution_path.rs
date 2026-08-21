@@ -525,3 +525,284 @@ fn warm_exact_carries_unselected_routes_while_receipt_stays_selected() {
     assert!(published.manifest().source_route(&codex_route).is_some());
     assert!(published.manifest().source_route(&claude_route).is_some());
 }
+
+#[test]
+fn configured_claude_home_is_additive_and_naming_the_automatic_home_deduplicates() {
+    for same_home in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let index_root = source_backed_index_root(&data_root);
+        ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
+        let (_, _, automatic_discovery) = discovery_fixture(temp.path());
+        let automatic_home = temp.path().join("claude-automatic");
+        let automatic_projects = automatic_home.join("projects");
+        let automatic_session = automatic_projects.join("project/session.jsonl");
+        fs::create_dir_all(automatic_session.parent().unwrap()).unwrap();
+        fs::write(
+            &automatic_session,
+            format!(
+                "{}\n",
+                json!({
+                    "type": "user",
+                    "uuid": "automatic-message",
+                    "sessionId": "019fb700-0000-7000-8000-000000000711",
+                    "message": {"role": "user", "content": "automatic claude"}
+                })
+            ),
+        )
+        .unwrap();
+        let automatic_source =
+            provider_source_for_path(CaptureProvider::Claude, automatic_projects.clone());
+        let automatic_route = automatic_source_backed_route_identity(&automatic_source).unwrap();
+        let mut progress = |_: CaptureSourceBackedDetailedRefreshProgress| Ok(());
+        refresh_all_provider_sources(
+            &automatic_discovery,
+            DiscoveryReport {
+                sources: vec![automatic_source.clone()],
+                issues: Vec::new(),
+            },
+            StdDuration::ZERO,
+            &data_root,
+            &index_root,
+            None,
+            SourceBackedRefreshScope::All,
+            &mut progress,
+        )
+        .unwrap();
+
+        let configured_home = if same_home {
+            automatic_home.clone()
+        } else {
+            temp.path().join("claude-configured")
+        };
+        let configured_projects = configured_home.join("projects");
+        let configured_session = configured_projects.join("project/session.jsonl");
+        fs::create_dir_all(configured_session.parent().unwrap()).unwrap();
+        fs::write(
+            &configured_session,
+            format!(
+                "{}\n",
+                json!({
+                    "type": "user",
+                    "uuid": "configured-message",
+                    "sessionId": "019fb700-0000-7000-8000-000000000712",
+                    "message": {"role": "user", "content": "configured claude"}
+                })
+            ),
+        )
+        .unwrap();
+        let definition = ctx_history_capture::ProviderRootDefinition {
+            id: "work".to_owned(),
+            provider: CaptureProvider::Claude,
+            path: configured_home,
+            scope: Some("work".to_owned()),
+        };
+        let configured_discovery = automatic_discovery
+            .clone()
+            .with_configured_provider_roots(vec![definition]);
+        let configured_source =
+            provider_source_for_path(CaptureProvider::Claude, configured_projects);
+        let sources = if same_home {
+            vec![configured_source]
+        } else {
+            vec![automatic_source, configured_source]
+        };
+        let mut progress = |_: CaptureSourceBackedDetailedRefreshProgress| Ok(());
+        refresh_all_provider_sources(
+            &configured_discovery,
+            DiscoveryReport {
+                sources,
+                issues: Vec::new(),
+            },
+            StdDuration::ZERO,
+            &data_root,
+            &index_root,
+            None,
+            SourceBackedRefreshScope::All,
+            &mut progress,
+        )
+        .unwrap();
+
+        let published = VerifiedIndex::open(&index_root).unwrap();
+        assert_eq!(
+            published
+                .manifest()
+                .source_route(&automatic_route)
+                .is_some(),
+            !same_home
+        );
+        assert_eq!(
+            published.manifest().source_routes().len(),
+            if same_home { 1 } else { 2 }
+        );
+        assert_eq!(
+            published.manifest().sources.len(),
+            if same_home { 1 } else { 2 }
+        );
+        assert_eq!(published.manifest().provider_roots().len(), 1);
+        assert_eq!(
+            published.manifest().provider_roots()[0].definition().id,
+            "work"
+        );
+    }
+}
+
+#[test]
+fn removing_last_configured_claude_home_returns_to_one_automatic_route() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    let index_root = source_backed_index_root(&data_root);
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
+    let (_, _, automatic_discovery) = discovery_fixture(temp.path());
+    let home = temp.path().join("claude-home");
+    let projects = home.join("projects");
+    let session = projects.join("project/session.jsonl");
+    fs::create_dir_all(session.parent().unwrap()).unwrap();
+    fs::write(
+        &session,
+        format!(
+            "{}\n",
+            json!({
+                "type": "user",
+                "uuid": "fallback-message",
+                "sessionId": "019fb700-0000-7000-8000-000000000713",
+                "message": {"role": "user", "content": "fallback claude"}
+            })
+        ),
+    )
+    .unwrap();
+    let source = provider_source_for_path(CaptureProvider::Claude, projects);
+    let automatic_route = automatic_source_backed_route_identity(&source).unwrap();
+    let configured_discovery = automatic_discovery
+        .clone()
+        .with_configured_provider_roots(vec![ctx_history_capture::ProviderRootDefinition {
+            id: "personal".to_owned(),
+            provider: CaptureProvider::Claude,
+            path: home,
+            scope: Some("personal".to_owned()),
+        }]);
+    let mut progress = |_: CaptureSourceBackedDetailedRefreshProgress| Ok(());
+    refresh_all_provider_sources(
+        &configured_discovery,
+        DiscoveryReport {
+            sources: vec![source.clone()],
+            issues: Vec::new(),
+        },
+        StdDuration::ZERO,
+        &data_root,
+        &index_root,
+        None,
+        SourceBackedRefreshScope::All,
+        &mut progress,
+    )
+    .unwrap();
+
+    let mut progress = |_: CaptureSourceBackedDetailedRefreshProgress| Ok(());
+    refresh_all_provider_sources(
+        &automatic_discovery,
+        DiscoveryReport {
+            sources: vec![source],
+            issues: Vec::new(),
+        },
+        StdDuration::ZERO,
+        &data_root,
+        &index_root,
+        None,
+        SourceBackedRefreshScope::All,
+        &mut progress,
+    )
+    .unwrap();
+
+    let published = VerifiedIndex::open(&index_root).unwrap();
+    assert_eq!(published.manifest().source_routes().len(), 1);
+    assert!(published
+        .manifest()
+        .source_route(&automatic_route)
+        .is_some());
+    assert!(published.manifest().provider_roots().is_empty());
+}
+
+#[test]
+fn disabling_automatic_discovery_stops_selection_without_deleting_retained_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    let index_root = source_backed_index_root(&data_root);
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
+    let (_, _, automatic_discovery) = discovery_fixture(temp.path());
+    let sessions = temp.path().join("codex-automatic/sessions");
+    let session = sessions.join("rollout.jsonl");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(
+        &session,
+        format!(
+            "{}\n{}\n",
+            json!({
+                "timestamp": "2026-08-17T00:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "019fb700-0000-7000-8000-000000000714",
+                    "timestamp": "2026-08-17T00:00:00Z",
+                    "cwd": "/repo/automatic-disable",
+                    "originator": "codex_cli_rs",
+                    "cli_version": "1.0.0",
+                    "source": "cli",
+                    "model_provider": "openai"
+                }
+            }),
+            json!({
+                "timestamp": "2026-08-17T00:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "retained automatic history"}]
+                }
+            })
+        ),
+    )
+    .unwrap();
+    let source = provider_source_for_path(CaptureProvider::Codex, sessions);
+    let route = automatic_source_backed_route_identity(&source).unwrap();
+    let mut progress = |_: CaptureSourceBackedDetailedRefreshProgress| Ok(());
+    refresh_all_provider_sources(
+        &automatic_discovery,
+        DiscoveryReport {
+            sources: vec![source],
+            issues: Vec::new(),
+        },
+        StdDuration::ZERO,
+        &data_root,
+        &index_root,
+        None,
+        SourceBackedRefreshScope::All,
+        &mut progress,
+    )
+    .unwrap();
+    assert_eq!(
+        VerifiedIndex::open(&index_root)
+            .unwrap()
+            .manifest()
+            .indexed_documents,
+        1
+    );
+
+    let disabled = automatic_discovery.with_automatic_provider_discovery(false);
+    let mut progress = |_: CaptureSourceBackedDetailedRefreshProgress| Ok(());
+    refresh_all_provider_sources(
+        &disabled,
+        DiscoveryReport::default(),
+        StdDuration::ZERO,
+        &data_root,
+        &index_root,
+        None,
+        SourceBackedRefreshScope::All,
+        &mut progress,
+    )
+    .unwrap();
+
+    let published = VerifiedIndex::open(&index_root).unwrap();
+    assert!(!published.manifest().automatic_provider_discovery());
+    assert!(published.manifest().source_route(&route).is_some());
+    assert_eq!(published.manifest().sources.len(), 1);
+    assert_eq!(published.manifest().indexed_documents, 1);
+}

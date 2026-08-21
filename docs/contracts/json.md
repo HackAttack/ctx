@@ -692,6 +692,14 @@ index generation. `content_scope` and the exact `event_type` filter cannot
 appear in the same successful request because those inputs conflict
 unconditionally.
 
+When supplied, repeatable CLI root selectors are echoed as `source_root` and
+scope selectors as `scope`, each an array of normalized names. MCP accepts the
+equivalent request arrays `source_roots` and `scopes`. Both selector families
+resolve against the pinned Core generation and form one union before
+intersecting with the other filters. Unknown selectors are typed request
+errors; they are never ignored or resolved from live config against an older
+generation.
+
 `result_window` has exactly `limit`, `returned`, and `more_available`.
 `returned` is at most `limit`. `more_available` is `true` only when the same
 bounded search pass finds one additional fully shaped result: an event for
@@ -910,6 +918,9 @@ error, and zero semantic weight performs no vector work. MCP search does not
 itself import provider history and does not automatically exclude the caller's
 session. Direct CLI current-session detection and
 `--include-current-session` do not apply to MCP calls.
+Its optional `source_roots` and `scopes` arrays use the same generation-pinned
+source-key filter as CLI search. If both arrays are absent, all indexed roots
+are searched.
 
 MCP `show_event`, `show_session`, and full-content `query_events` structured
 event rows reuse the same snake_case `activity` value. Text fallback is

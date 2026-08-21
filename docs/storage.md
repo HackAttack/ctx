@@ -222,6 +222,18 @@ part of lexical generation identity, so an older active generation is rebuilt
 or passes the narrow same-epoch preservation migration before newly projected
 invocation terms become searchable.
 
+The generation manifest commits the global automatic-discovery policy and, for
+configured Claude/Codex homes, the normalized named-home definitions, their
+configuration digest, optional scope, and exact source-route membership. Search
+resolves `--source-root` and `--scope` only through this pinned manifest and
+translates the result to exact indexed source keys. Live config is never mixed
+with an older generation, and all roots remain in one Core/Tantivy index.
+Claude and Codex session-tree source identity includes canonical physical-home
+lineage as well as native session lineage, so matching session names in work
+and personal homes remain independent sources. Codex `sessions` and
+`archived_sessions` under one home deliberately share that home lineage and
+coalesce duplicate representations of the same native session.
+
 Lexical publication keeps the active generation and one previous generation
 for recovery and pinned readers; their manifests and integrity receipts use the
 same two-generation bound. Append-only segments merge after sixteen comparable
@@ -308,7 +320,8 @@ local upsert as described above.
 | `ctx index` / `ctx index watch` / `ctx index wait` | indexing mode, lexical/semantic generation metadata, and daemon state | none |
 | `ctx index mode` | `config.toml` when present | none when reading; `auto` or `manual` writes `config.toml` and establishes or removes persistent supervision |
 | `ctx stats` | owner-private aggregate `usage.sqlite` when present | none; does not create pristine usage state or count itself |
-| `ctx sources` | bounded provider path metadata, allowlisted persistent selector files, and local history-source plugin manifests | none |
+| `ctx sources` | bounded provider path metadata, allowlisted persistent selector files, local history-source plugin manifests, and configured named homes | none |
+| `ctx sources add/remove` | `config.toml` and named provider-home path metadata used for validation | atomically updates `config.toml`; provider history is never modified |
 | `ctx import` | provider transcript files and path metadata, the explicit custom history JSONL file passed with `--input-format ctx-history-jsonl-v1 --path`, or a durable provider-owned custom history JSONL file declared by an explicit history-source plugin manifest | immutable candidate Core/Tantivy generation and atomic publication, catalog/epoch metadata, and optional persistent or finite-worker daemon files; finite workers do not run semantic work |
 | `ctx show session` / `ctx show event` | complete policy-selected records in the active verified Core/Tantivy generation | selected `--out` path for `show session` when provided |
 | `ctx list events` | complete policy-selected records and existing index terms in one pinned verified Core/Tantivy generation | none; event enumeration is read-only |
@@ -403,6 +416,37 @@ enabled, the same daemon-owned query service can embed the query;
 `ctx setup`, `ctx import`, and `ctx search` do not create `config.toml` for
 implicit defaults. The config file is for user-managed overrides. Existing
 config files are read and left in place.
+
+Named Claude/Codex homes are an optional override for machines with more than
+one history home:
+
+```toml
+[sources.roots.personal]
+provider = "claude"
+path = "/absolute/path/to/claude-personal"
+scope = "personal"
+
+[sources.roots.work]
+provider = "codex"
+path = "/absolute/path/to/codex-work"
+scope = "work"
+```
+
+The equivalent safe editor is `ctx sources add <name> --provider
+claude|codex --root <existing-home> [--scope <scope>]`; remove an entry with
+`ctx sources remove <name>`. Configured entries are additive to the provider's
+ordinary inferred root. If both select the same physical home, the configured
+name and scope annotate that one route instead of creating a duplicate. A
+malformed edit is rejected as one config and does not publish a partial source
+change; the previous verified generation remains the query authority. Removing
+a valid entry retires history owned only by that entry at the next full refresh.
+Exact-path imports and plugin manifests remain one-shot authorities and are not
+promoted into named homes.
+
+Set `[sources] automatic = false` to stop all future automatic provider-root
+selection while retaining named Claude/Codex homes. This policy change does not
+erase already indexed automatic history. Searches remain unscoped by default;
+`--source-root` and `--scope` are explicit per-query filters.
 
 Local usage aggregation is enabled by default and is independent of analytics:
 
@@ -563,17 +607,18 @@ refresh or reimport can populate current activity when the qualifying source is
 available. This does not read or migrate the legacy Store/SQL epoch described
 above.
 
-Remove a source from future imports:
+Remove a configured named home from future refreshes:
 
 ```bash
-$EDITOR ~/.ctx/config.toml
+ctx sources remove work
 ```
 
-The current CLI does not add provider source entries to `config.toml`; default
-provider locations are discovered each time and explicit `--path` imports are
-not remembered as future defaults. Custom history JSONL paths are also
-one-shot explicit imports. To remove already imported data, rebuild the Core
-generation with only the sources you still want.
+You can make the same change in `config.toml`. If the home is the last member
+of a scope, that scope simply stops matching it. Default provider locations are
+still discovered alongside any remaining named homes, and explicit `--path`,
+custom JSONL, and plugin imports are not remembered as future defaults. The next
+full refresh atomically removes history owned only by a removed named home; a
+failed or malformed refresh leaves the previous verified generation active.
 
 ## Reset And Inspect Local Search Storage
 

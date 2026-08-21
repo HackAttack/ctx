@@ -48,6 +48,8 @@ fn adapt_tool_search_request(
         provider_key: request.provider_key,
         source_id: request.source_id,
         source_format: request.source_format,
+        source_roots: request.source_roots,
+        scopes: request.scopes,
         workspace: request.workspace,
         since: request.since,
         primary_only: request.primary_only,
@@ -94,7 +96,8 @@ impl LocalToolBackend {
     }
 
     fn sources(&self) -> Result<SourceCatalog, ToolBackendError> {
-        let report = crate::provider_sources::discovered_sources_report(&self.data_root);
+        let report = crate::provider_sources::discovered_sources_report(&self.data_root)
+            .map_err(classify_application_error)?;
         let mut source_values = crate::sources_json(&report.sources);
         source_values.extend(
             crate::discovered_plugin_sources_json(&self.data_root)
@@ -446,6 +449,8 @@ mod tests {
             provider_key: None,
             source_id: None,
             source_format: None,
+            source_roots: Vec::new(),
+            scopes: Vec::new(),
             workspace: None,
             since: None,
             primary_only: false,
@@ -505,6 +510,8 @@ mod tests {
             provider_key: None,
             source_id: None,
             source_format: None,
+            source_roots: Vec::new(),
+            scopes: Vec::new(),
             workspace: Some("/workspace/pinned".to_owned()),
             since: Some("30d".to_owned()),
             primary_only: true,

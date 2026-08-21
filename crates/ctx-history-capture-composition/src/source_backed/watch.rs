@@ -47,9 +47,17 @@ enum RouteTargetSample {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SourceBackedWatchCatalog {
     routes: BTreeMap<SourceRouteIdentity, RouteWatchTargets>,
+    provider_root_config_digest: Option<String>,
 }
 
 impl SourceBackedWatchCatalog {
+    /// Returns the provider-root config snapshot used to construct this
+    /// catalog. Daemons use this value only to decide when exact watch-route
+    /// maintenance must be widened to one full topology refresh.
+    pub fn provider_root_config_digest(&self) -> Option<&str> {
+        self.provider_root_config_digest.as_deref()
+    }
+
     pub fn route_ids(&self) -> impl ExactSizeIterator<Item = &SourceRouteIdentity> {
         self.routes.keys()
     }
@@ -323,7 +331,13 @@ impl SourceBackedProviderRegistry {
 
     /// Derives watcher authority from this exact executable registry snapshot.
     pub fn watch_catalog(&self) -> SourceBackedWatchCatalog {
-        let mut catalog = SourceBackedWatchCatalog::default();
+        let mut catalog = SourceBackedWatchCatalog {
+            provider_root_config_digest: self
+                .applied_provider_roots
+                .as_ref()
+                .map(|(_, digest, _)| digest.clone()),
+            ..SourceBackedWatchCatalog::default()
+        };
         for route in &self.routes {
             if route.driver.is_none() && route.certified_missing_paths.is_empty() {
                 continue;

@@ -135,10 +135,14 @@ impl DaemonConfigPort for CliDaemonConfigPort {
         super::model_config::semantic_model_config(data_root)
     }
 
-    fn discovery_context(&self, _data_root: &Path) -> Result<DiscoveryContext> {
+    fn discovery_context(&self, data_root: &Path) -> Result<DiscoveryContext> {
         let home = crate::identity::home_dir()
             .context("resolve the user home for source-backed provider discovery")?;
-        Ok(DiscoveryContext::from_process(home))
+        let config = AppConfig::load(data_root)
+            .context("load configured provider roots for source-backed discovery")?;
+        Ok(DiscoveryContext::from_process(home)
+            .with_automatic_provider_discovery(config.automatic_provider_discovery_enabled())
+            .with_configured_provider_roots(config.provider_roots().to_vec()))
     }
 }
 

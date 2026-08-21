@@ -17,8 +17,9 @@ mod show;
 
 use arguments::{
     optional_bool, optional_content_scope, optional_f32, optional_provider,
-    optional_search_backend, optional_string, optional_transcript_mode, optional_usize,
-    validate_argument_keys, validate_search_filter_arguments, SourceIdentityFilterArgs,
+    optional_search_backend, optional_string, optional_strings, optional_transcript_mode,
+    optional_usize, validate_argument_keys, validate_search_filter_arguments,
+    SourceIdentityFilterArgs,
 };
 pub use input::{read_mcp_input_line, McpInputLine};
 use query_events::query_events_operation;
@@ -103,6 +104,8 @@ const SEARCH_ARGUMENTS: &[&str] = &[
     "provider_key",
     "source_id",
     "source_format",
+    "source_roots",
+    "scopes",
     "workspace",
     "since",
     "primary_only",
@@ -569,6 +572,8 @@ fn search_request<B: ToolBackend>(
     let provider_key = optional_string(arguments, "provider_key")?;
     let source_id = optional_string(arguments, "source_id")?;
     let source_format = optional_string(arguments, "source_format")?;
+    let source_roots = optional_strings(arguments, "source_roots")?;
+    let scopes = optional_strings(arguments, "scopes")?;
     let session = optional_string(arguments, "session")?;
     let workspace = optional_string(arguments, "workspace")?;
     let since = optional_string(arguments, "since")?;
@@ -608,6 +613,8 @@ fn search_request<B: ToolBackend>(
         provider_key: source_identity.provider_key,
         source_id: source_identity.source_id,
         source_format: source_identity.source_format,
+        source_roots,
+        scopes,
         workspace,
         since,
         primary_only,
@@ -672,6 +679,8 @@ fn tool_definitions(provider_names: Vec<&'static str>) -> Vec<Value> {
                 "provider_key": { "type": "string", "description": "Custom history provider_key." },
                 "source_id": { "type": "string", "description": "Custom history source_id." },
                 "source_format": { "type": "string", "description": "Custom history source_format." },
+                "source_roots": { "type": "array", "maxItems": 64, "items": { "type": "string", "minLength": 1, "maxLength": 64 }, "description": "Configured provider-root names to union." },
+                "scopes": { "type": "array", "maxItems": 64, "items": { "type": "string", "minLength": 1, "maxLength": 64 }, "description": "Configured provider-root scopes to union." },
                 "workspace": { "type": "string", "description": "Workspace path or name text." },
                 "since": { "type": "string", "description": "RFC3339 timestamp or day window such as 30d." },
                 "primary_only": { "type": "boolean", "default": false, "description": "Search only primary agent sessions." },
@@ -804,7 +813,7 @@ mod request_id_tests {
     use serde_json::{json, Value};
 
     use super::{
-        encoded_json_string_bytes, handle_protocol_message, request_id_is_accepted,
+        encoded_json_string_bytes, handle_protocol_message, request_id_is_accepted, search_request,
         tool_definitions, McpServerIdentity, McpToolKind, RequestDescriptor,
         MCP_MAX_ENCODED_REQUEST_ID_BYTES,
     };
@@ -828,7 +837,7 @@ mod request_id_tests {
         }
 
         fn provider_names(&self) -> Vec<&'static str> {
-            panic!("request-ID validation must run before the backend")
+            Vec::new()
         }
     }
 
@@ -902,5 +911,43 @@ mod request_id_tests {
             !McpToolKind::from_tool_name(tool.get("name").and_then(Value::as_str))
                 .is_companion_owned()
         }));
+    }
+
+    #[test]
+    fn search_root_and_scope_arrays_are_typed_and_forwarded() {
+        let request = search_request(
+            &json!({
+                "query": "fixture",
+                "source_roots": ["personal", "archive"],
+                "scopes": ["work"]
+            }),
+            &UnusedBackend,
+        )
+        .unwrap();
+        assert_eq!(request.source_roots, ["personal", "archive"]);
+        assert_eq!(request.scopes, ["work"]);
+
+        let error = search_request(
+            &json!({"query": "fixture", "source_roots": ["personal", 7]}),
+            &UnusedBackend,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("source_roots entries must be strings"));
+
+        let definitions = tool_definitions(Vec::new());
+        let search = definitions
+            .iter()
+            .find(|tool| tool["name"] == "search")
+            .unwrap();
+        assert_eq!(
+            search["inputSchema"]["properties"]["source_roots"]["maxItems"],
+            64
+        );
+        assert_eq!(
+            search["inputSchema"]["properties"]["scopes"]["items"]["maxLength"],
+            64
+        );
     }
 }

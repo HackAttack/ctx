@@ -148,6 +148,7 @@ fn load_without_config_file_uses_defaults() {
     assert_eq!(config.daemon.mode, DaemonMode::Full);
     assert_eq!(config.search.semantic, None);
     assert!(!config.semantic_search_enabled());
+    assert!(config.automatic_source_discovery_enabled());
 }
 
 #[test]
@@ -912,6 +913,250 @@ fn rejects_unknown_search_config_keys() {
 
     assert!(error.contains("unknown config key"), "{error}");
     assert!(error.contains("search.semantics"), "{error}");
+}
+
+#[test]
+fn parses_multiple_named_provider_roots_and_global_automatic_disable() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join(CONFIG_FILE),
+        r#"
+[sources]
+automatic = false
+
+[sources.roots.claude-personal]
+provider = "claude"
+path = "/home/example/.claude-personal"
+scope = "personal"
+
+[sources.roots.codex-work]
+provider = "codex"
+path = "/home/example/.codex-work"
+scope = "work"
+"#,
+    )
+    .unwrap();
+
+    let config = AppConfig::load(temp.path()).unwrap();
+    assert!(!config.automatic_source_discovery_enabled());
+    assert_eq!(
+        config
+            .provider_root_definitions()
+            .into_iter()
+            .map(|root| (root.id, root.provider, root.path, root.scope))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "claude-personal".to_owned(),
+                CaptureProvider::Claude,
+                PathBuf::from("/home/example/.claude-personal"),
+                Some("personal".to_owned()),
+            ),
+            (
+                "codex-work".to_owned(),
+                CaptureProvider::Codex,
+                PathBuf::from("/home/example/.codex-work"),
+                Some("work".to_owned()),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn rejects_invalid_provider_root_config_as_one_atomic_config() {
+    let cases = [
+        (
+            "[sources.roots.work]\nprovider = \"cursor\"\npath = \"/tmp/work\"\n",
+            "currently support only claude and codex",
+        ),
+        (
+            "[sources.roots.work]\nprovider = \"claude\"\npath = \"relative\"\n",
+            "normalized absolute UTF-8 path",
+        ),
+        (
+            "[sources.roots.bad.name]\nprovider = \"claude\"\npath = \"/tmp/work\"\n",
+            "provider root name",
+        ),
+        ("[search]\ndefault_scope = \"work\"\n", "unknown config key"),
+    ];
+    for (text, expected) in cases {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join(CONFIG_FILE), text).unwrap();
+        let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
+        assert!(error.contains(expected), "{error}");
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join(CONFIG_FILE),
+        "[sources.roots.first]\nprovider = \"claude\"\npath = \"/tmp/same\"\n\n[sources.roots.second]\nprovider = \"claude\"\npath = \"/tmp/same\"\n",
+    )
+    .unwrap();
+    let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
+    assert!(error.contains("select the same claude home"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn hand_edited_provider_root_symlink_is_canonicalized() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("claude-home");
+    let alias = temp.path().join("alias");
+    fs::create_dir(&home).unwrap();
+    symlink(&home, &alias).unwrap();
+    fs::write(
+        temp.path().join(CONFIG_FILE),
+        format!(
+            "[sources.roots.personal]\nprovider = \"claude\"\npath = {:?}\nscope = \"personal\"\n",
+            alias.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    let config = AppConfig::load(temp.path()).unwrap();
+    assert_eq!(config.provider_roots["personal"].path, home);
+}
+
+#[cfg(unix)]
+#[test]
+fn hand_edited_provider_roots_reject_distinct_symlinks_to_one_physical_home() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("claude-home");
+    let first = temp.path().join("first-alias");
+    let second = temp.path().join("second-alias");
+    fs::create_dir(&home).unwrap();
+    symlink(&home, &first).unwrap();
+    symlink(&home, &second).unwrap();
+    fs::write(
+        temp.path().join(CONFIG_FILE),
+        format!(
+            "[sources.roots.first]\nprovider = \"claude\"\npath = {:?}\n\n[sources.roots.second]\nprovider = \"claude\"\npath = {:?}\n",
+            first.display().to_string(),
+            second.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
+    assert!(error.contains("select the same claude home"), "{error}");
+}
+
+#[test]
+fn provider_root_count_is_bounded() {
+    let temp = tempfile::tempdir().unwrap();
+    let text = (0..=MAX_CONFIGURED_PROVIDER_ROOTS)
+        .map(|index| {
+            format!(
+                "[sources.roots.root{index}]\nprovider = \"claude\"\npath = \"/tmp/claude-{index}\"\n"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(temp.path().join(CONFIG_FILE), text).unwrap();
+
+    let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
+    assert!(error.contains("exceed the maximum"), "{error}");
+}
+
+#[test]
+fn provider_root_cli_mutations_are_durable_and_preserve_other_config() {
+    let data_root = tempfile::tempdir().unwrap();
+    let provider_parent = tempfile::tempdir().unwrap();
+    let provider_home = provider_parent.path().join("claude-personal");
+    fs::create_dir(&provider_home).unwrap();
+    fs::write(
+        data_root.path().join(CONFIG_FILE),
+        "[analytics]\nenabled = false\n\n[sources]\nautomatic = false\n",
+    )
+    .unwrap();
+
+    let added = add_provider_root(
+        data_root.path(),
+        "personal",
+        CaptureProvider::Claude,
+        &provider_home,
+        Some("personal"),
+    )
+    .unwrap();
+    assert!(added.changed);
+    let unchanged = add_provider_root(
+        data_root.path(),
+        "personal",
+        CaptureProvider::Claude,
+        &provider_home,
+        Some("personal"),
+    )
+    .unwrap();
+    assert!(!unchanged.changed);
+    let loaded = AppConfig::load(data_root.path()).unwrap();
+    assert!(!loaded.analytics.enabled);
+    assert!(!loaded.automatic_source_discovery_enabled());
+    assert_eq!(loaded.provider_roots["personal"], added.root);
+
+    let removed = remove_provider_root(data_root.path(), "personal").unwrap();
+    assert!(removed.changed);
+    let loaded = AppConfig::load(data_root.path()).unwrap();
+    assert!(!loaded.analytics.enabled);
+    assert!(!loaded.automatic_source_discovery_enabled());
+    assert!(loaded.provider_roots.is_empty());
+}
+
+#[test]
+fn provider_root_mutation_waits_for_the_shared_config_transaction_lock() {
+    let data_root = tempfile::tempdir().unwrap();
+    let provider_parent = tempfile::tempdir().unwrap();
+    let provider_home = provider_parent.path().join("claude-personal");
+    fs::create_dir(&provider_home).unwrap();
+    let config_path = AppConfig::config_path(data_root.path());
+    let lock = durable_write::ConfigMutationLock::acquire(&config_path).unwrap();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let data_root_path = data_root.path().to_path_buf();
+    let provider_home_path = provider_home.clone();
+    let worker = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let result = add_provider_root(
+            &data_root_path,
+            "personal",
+            CaptureProvider::Claude,
+            &provider_home_path,
+            Some("personal"),
+        );
+        finished_tx.send(result).unwrap();
+    });
+    started_rx.recv().unwrap();
+    assert!(
+        finished_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err(),
+        "a concurrent read-modify-write must not pass the config lock"
+    );
+    drop(lock);
+    assert!(finished_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("provider-root mutation did not resume after unlock")
+        .is_ok());
+    worker.join().unwrap();
+}
+
+#[test]
+fn removing_the_last_member_of_a_scope_is_allowed() {
+    let data_root = tempfile::tempdir().unwrap();
+    fs::write(
+        data_root.path().join(CONFIG_FILE),
+        "[sources.roots.personal]\nprovider = \"claude\"\npath = \"/tmp/claude-personal\"\nscope = \"personal\"\n",
+    )
+    .unwrap();
+
+    remove_provider_root(data_root.path(), "personal").unwrap();
+    assert!(AppConfig::load(data_root.path())
+        .unwrap()
+        .provider_roots
+        .is_empty());
 }
 
 #[test]

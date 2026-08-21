@@ -91,6 +91,8 @@ fn search_request() -> ToolSearchRequest {
         provider_key: None,
         source_id: None,
         source_format: None,
+        source_roots: Vec::new(),
+        scopes: Vec::new(),
         workspace: Some("/workspace".to_owned()),
         since: None,
         primary_only: false,

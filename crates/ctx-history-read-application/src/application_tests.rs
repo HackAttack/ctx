@@ -200,6 +200,8 @@ fn lexical_request() -> SearchRequest {
         provider_key: None,
         source_id: None,
         source_format: None,
+        source_roots: Vec::new(),
+        scopes: Vec::new(),
         workspace: None,
         since: None,
         primary_only: false,
@@ -433,6 +435,36 @@ fn manual_session_exclusions_request_retained_peer_and_render_original_selectors
         })
         .unwrap();
     assert_eq!(read_model["filters"]["exclude_session"], json!([compact]));
+}
+
+#[test]
+fn search_rejects_root_and_scope_selectors_absent_from_the_pinned_generation() {
+    let temp = tempdir().unwrap();
+    let (index, _) = publish(temp.path());
+    let mut request = lexical_request();
+    request.source_roots = vec!["personal".to_owned()];
+    request.scopes = vec!["work".to_owned()];
+    let plan = plan_search(
+        request,
+        SearchPolicy::lexical_only(SemanticReason::PolicyDisabled),
+    )
+    .unwrap();
+    let mut generation = RecordingGenerationPort::new(index);
+    let error = match execute_search(
+        SearchApplicationRequest {
+            plan,
+            generation_target: GenerationReadTarget::Active,
+            compact_projection: false,
+            active_session: None,
+        },
+        &mut generation,
+        &UnusedSemanticPort,
+    ) {
+        Err(SearchApplicationError::Query(error)) => error,
+        Err(other) => panic!("expected query error, got {other:?}"),
+        Ok(_) => panic!("expected unknown provider-root selector to fail"),
+    };
+    assert!(error.to_string().contains("unknown provider root selector"));
 }
 
 #[test]

@@ -21,6 +21,21 @@ pub(super) fn filtered_event_query(
     if let Some(query) = source_identity_query {
         add_filter_clause(&mut clauses, query);
     }
+    if let Some(source_keys) = &filters.allowed_source_keys {
+        if source_keys.is_empty() {
+            add_filter_clause(&mut clauses, Box::new(EmptyQuery));
+        } else {
+            add_filter_clause(
+                &mut clauses,
+                Box::new(TermSetQuery::new(
+                    source_keys
+                        .iter()
+                        .map(|source_key| Term::from_field_text(fields.source_key, source_key))
+                        .collect::<Vec<_>>(),
+                )),
+            );
+        }
+    }
     add_optional_text_filter(
         &mut clauses,
         fields.provider,

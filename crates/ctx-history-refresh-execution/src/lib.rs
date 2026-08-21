@@ -482,7 +482,9 @@ pub fn source_backed_admitted_discovery_from_report(
     AdmittedRefresh::new(
         coverage,
         selected_routes,
-        SourceBackedAdmittedDiscovery::new(admitted_report, discovery_duration, watch_catalog),
+        SourceBackedAdmittedDiscovery::new(admitted_report, discovery_duration, watch_catalog)
+            .with_automatic_provider_discovery(discovery.automatic_provider_discovery_enabled())
+            .with_configured_provider_roots(discovery.configured_provider_roots().to_vec()),
     )?
     .with_execution_facts(route_worksets)
 }

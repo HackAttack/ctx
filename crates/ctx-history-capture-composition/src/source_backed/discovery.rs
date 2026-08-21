@@ -177,6 +177,7 @@ fn build_automatic_source_backed_registry_from_parts_with_probes(
     let mut codex_session_tree_sources = Vec::new();
 
     for source in sources {
+        let configured_root = configured_provider_root_for_source(discovery, &source);
         if let Err(error) =
             validate_provider_source_roots_outside_data_root(data_root, std::iter::once(&source))
         {
@@ -196,7 +197,9 @@ fn build_automatic_source_backed_registry_from_parts_with_probes(
         if source.import_support == ProviderImportSupport::Unsupported
             || source.source_kind == ProviderSourceKind::DetectionOnly
             || source.status == ProviderSourceStatus::Unsupported
-            || (source.unsupported_reason.is_some() && source.status != ProviderSourceStatus::Empty)
+            || (source.unsupported_reason.is_some()
+                && source.status != ProviderSourceStatus::Empty
+                && !(configured_root.is_some() && source.status == ProviderSourceStatus::Unknown))
         {
             let detail = source
                 .unsupported_reason
@@ -206,10 +209,24 @@ fn build_automatic_source_backed_registry_from_parts_with_probes(
         }
         if source.status == ProviderSourceStatus::Unknown {
             let reason = SourceBackedAutomaticUnavailableReason::SourceStatus(source.status);
-            registry.register(SourceBackedRoute::unsupported(
-                source.clone(),
-                automatic_unavailable_detail(&reason),
-            ));
+            let route = if configured_root.is_some() {
+                SourceBackedRoute::unavailable_explicit(
+                    source.clone(),
+                    automatic_unavailable_detail(&reason),
+                )
+                .unwrap_or_else(|_| {
+                    SourceBackedRoute::unsupported(
+                        source.clone(),
+                        automatic_unavailable_detail(&reason),
+                    )
+                })
+            } else {
+                SourceBackedRoute::unsupported(
+                    source.clone(),
+                    automatic_unavailable_detail(&reason),
+                )
+            };
+            registry.register(route);
             issues.push(SourceBackedAutomaticRegistryIssue::Unavailable { reason, source });
             continue;
         }
@@ -238,10 +255,18 @@ fn build_automatic_source_backed_registry_from_parts_with_probes(
         }
 
         if source.status == ProviderSourceStatus::Missing {
-            match SourceBackedRoute::certified_missing(
-                source.clone(),
-                format_route.selector_authority,
-            ) {
+            let route = if configured_root.is_some() {
+                SourceBackedRoute::certified_explicit_missing(
+                    source.clone(),
+                    SourceBackedSelectorAuthority::ExplicitPath,
+                )
+            } else {
+                SourceBackedRoute::certified_missing(
+                    source.clone(),
+                    format_route.selector_authority,
+                )
+            };
+            match route {
                 Ok(route) => registry.register(route),
                 Err(error) => {
                     let reason = automatic_registration_rejected(error);
@@ -273,6 +298,36 @@ fn build_automatic_source_backed_registry_from_parts_with_probes(
             // Resolver diagnostics explain why a present root is empty; they do
             // not make its landed adapter unsupported.
             source.unsupported_reason = None;
+        }
+        if configured_root.is_some() {
+            let registration = if source.provider == CaptureProvider::Codex
+                && source.source_format == "codex_session_jsonl_tree"
+            {
+                register_configured_codex_session_tree_route(
+                    &mut registry,
+                    source.clone(),
+                    SourceBackedRouteSelection::ExplicitManual,
+                )
+            } else {
+                register_landed_source_backed_route_with_data_root(
+                    &mut registry,
+                    source.clone(),
+                    SourceBackedRouteSelection::ExplicitManual,
+                    data_root,
+                )
+            };
+            match registration {
+                Ok(()) => {}
+                Err(error) => {
+                    let reason = automatic_registration_rejected(error);
+                    registry.register(SourceBackedRoute::unsupported(
+                        source.clone(),
+                        automatic_unavailable_detail(&reason),
+                    ));
+                    issues.push(SourceBackedAutomaticRegistryIssue::Unavailable { source, reason });
+                }
+            }
+            continue;
         }
         if source.provider == CaptureProvider::Codex
             && source.source_format == "codex_session_jsonl_tree"
@@ -339,11 +394,94 @@ fn build_automatic_source_backed_registry_from_parts_with_probes(
         }
     }
 
+    let definitions = discovery.configured_provider_roots().to_vec();
+    let applied_roots = definitions
+        .iter()
+        .map(|definition| {
+            let routes = registry
+                .routes
+                .iter()
+                .filter(|route| {
+                    configured_provider_root_for_source(discovery, &route.metadata.source)
+                        .is_some_and(|root| root.id == definition.id)
+                })
+                .filter_map(|route| route.metadata.route_identity.clone())
+                .collect::<Vec<_>>();
+            AppliedProviderRoot::new(definition.clone(), routes)
+                .map_err(SourceBackedCoordinatorError::Index)
+        })
+        .collect::<SourceBackedCoordinatorResult<Vec<_>>>();
+    match applied_roots {
+        Ok(applied_roots) => {
+            if let Err(error) = registry.set_applied_provider_roots(
+                discovery.automatic_provider_discovery_enabled(),
+                provider_source_config_digest(
+                    discovery.automatic_provider_discovery_enabled(),
+                    &definitions,
+                ),
+                applied_roots,
+            ) {
+                if let Some(source) = registry
+                    .routes
+                    .first()
+                    .map(|route| route.metadata.source.clone())
+                {
+                    issues.push(SourceBackedAutomaticRegistryIssue::Unavailable {
+                        source,
+                        reason: SourceBackedAutomaticUnavailableReason::RegistrationRejected {
+                            kind: SourceBackedRouteErrorKind::Internal,
+                            detail: error.to_string(),
+                        },
+                    });
+                }
+            }
+        }
+        Err(error) => {
+            if let Some(source) = registry
+                .routes
+                .first()
+                .map(|route| route.metadata.source.clone())
+            {
+                issues.push(SourceBackedAutomaticRegistryIssue::Unavailable {
+                    source,
+                    reason: SourceBackedAutomaticUnavailableReason::RegistrationRejected {
+                        kind: SourceBackedRouteErrorKind::Internal,
+                        detail: error.to_string(),
+                    },
+                });
+            }
+        }
+    }
+
     SourceBackedAutomaticRegistryBuild {
         registry,
         issues,
         discovery_duration: Duration::ZERO,
     }
+}
+
+fn configured_provider_root_for_source<'a>(
+    discovery: &'a DiscoveryContext,
+    source: &ProviderSource,
+) -> Option<&'a ctx_history_capture_model::ProviderRootDefinition> {
+    discovery
+        .configured_provider_roots()
+        .iter()
+        .find(|root| match root.provider {
+            CaptureProvider::Claude => {
+                let projects = root.path.join("projects");
+                source.provider == CaptureProvider::Claude && source.path == projects
+            }
+            CaptureProvider::Codex => {
+                let sessions = root.path.join("sessions");
+                let archived_sessions = root.path.join("archived_sessions");
+                source.provider == CaptureProvider::Codex
+                    && (source.path == root.path.join("history.jsonl")
+                        || source.path == sessions
+                        || source.path == archived_sessions)
+            }
+            _ => false,
+        })
 }
 
 #[cfg(test)]

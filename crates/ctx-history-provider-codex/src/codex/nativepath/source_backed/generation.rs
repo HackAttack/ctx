@@ -10,6 +10,7 @@ use super::*;
 enum CodexGenerationParticipantAuthorityV0 {
     SessionTree {
         roots: Box<[PathBuf]>,
+        qualify_source_root: bool,
     },
     ExplicitSession {
         input: Box<CodexExplicitSessionSourceBackedInputV0>,
@@ -50,9 +51,19 @@ impl CodexGenerationRouteV0 {
 
     pub(super) fn session_tree_roots(&self) -> Option<&[PathBuf]> {
         match &self.participant.authority {
-            CodexGenerationParticipantAuthorityV0::SessionTree { roots } => Some(roots),
+            CodexGenerationParticipantAuthorityV0::SessionTree { roots, .. } => Some(roots),
             CodexGenerationParticipantAuthorityV0::ExplicitSession { .. } => None,
         }
+    }
+
+    pub(super) fn qualifies_source_root(&self) -> bool {
+        matches!(
+            &self.participant.authority,
+            CodexGenerationParticipantAuthorityV0::SessionTree {
+                qualify_source_root: true,
+                ..
+            }
+        )
     }
 
     pub(super) fn explicit_session_input(
@@ -132,9 +143,11 @@ impl CodexGenerationNormalizationCoordinatorV0 {
     pub fn register_session_tree(
         self: &Arc<Self>,
         roots: Vec<PathBuf>,
+        qualify_source_root: bool,
     ) -> CodexSourceBackedResultV0<CodexGenerationRouteV0> {
         self.register(CodexGenerationParticipantAuthorityV0::SessionTree {
             roots: roots.into_boxed_slice(),
+            qualify_source_root,
         })
     }
 
@@ -174,12 +187,12 @@ impl CodexGenerationNormalizationCoordinatorV0 {
         // overlapping automatic and explicit routes establish exact source
         // ownership, independent of HashMap randomization.
         let selected = selected.iter().copied().collect::<BTreeSet<_>>();
-        let participants = {
+        let (participants, session_tree_roots) = {
             let state = self
                 .state
                 .lock()
                 .map_err(|_| CodexSourceBackedErrorV0::GenerationCoordinatorUnavailable)?;
-            selected
+            let participants = selected
                 .iter()
                 .map(|id| {
                     state
@@ -189,21 +202,59 @@ impl CodexGenerationNormalizationCoordinatorV0 {
                         .map(|participant| (*id, participant))
                         .ok_or(CodexSourceBackedErrorV0::GenerationCoordinatorUnavailable)
                 })
-                .collect::<CodexSourceBackedResultV0<Vec<_>>>()?
+                .collect::<CodexSourceBackedResultV0<Vec<_>>>()?;
+            let session_tree_roots = state
+                .participants
+                .values()
+                .flat_map(|participant| match &participant.authority {
+                    CodexGenerationParticipantAuthorityV0::SessionTree {
+                        roots,
+                        qualify_source_root: true,
+                    } => roots.iter().cloned().collect::<Vec<_>>(),
+                    CodexGenerationParticipantAuthorityV0::SessionTree { .. }
+                    | CodexGenerationParticipantAuthorityV0::ExplicitSession { .. } => Vec::new(),
+                })
+                .collect::<Vec<_>>();
+            (participants, session_tree_roots)
         };
 
         let mut routes = HashMap::with_capacity(participants.len());
-        let mut established_owners = HashMap::<(PathBuf, String), usize>::new();
+        let mut established_owners = HashMap::<[u8; 32], usize>::new();
+        let mut physical_owners = HashMap::<(PathBuf, String), usize>::new();
         let mut descriptor_bindings = HashMap::<[u8; 32], (SourceKey, String)>::new();
         for (participant_id, participant) in participants {
             let (missing, discovered, rejected_leaves) = match &participant.authority {
-                CodexGenerationParticipantAuthorityV0::SessionTree { roots } => {
-                    let inventory =
+                CodexGenerationParticipantAuthorityV0::SessionTree {
+                    roots,
+                    qualify_source_root,
+                } => {
+                    let mut inventory =
                         super::catalog::discover_codex_deferred_session_tree_inventory_v0(roots)?;
+                    if !qualify_source_root {
+                        for (source, source_key, native_session_id) in &mut inventory.sources {
+                            source.source_root_lineage = None;
+                            *source_key = codex_source_key_in_root(None, native_session_id)?;
+                        }
+                        for rejected in &mut inventory.rejected_leaves {
+                            rejected.source_root_lineage = None;
+                        }
+                    }
                     (false, inventory.sources, inventory.rejected_leaves)
                 }
                 CodexGenerationParticipantAuthorityV0::ExplicitSession { input } => {
-                    let plan = observe_codex_explicit_session_source_backed_v0(input)?;
+                    let mut plan = observe_codex_explicit_session_source_backed_v0(input)?;
+                    if let Some((source, source_key, native_session_id)) = plan.as_mut() {
+                        if let Some(root) = session_tree_roots
+                            .iter()
+                            .filter(|root| source.source_path.starts_with(root))
+                            .max_by_key(|root| root.components().count())
+                        {
+                            let lineage = codex_session_tree_source_root_lineage(root)?;
+                            source.source_root_lineage = Some(lineage);
+                            *source_key =
+                                codex_source_key_in_root(Some(lineage), native_session_id)?;
+                        }
+                    }
                     (plan.is_none(), plan.into_iter().collect(), Vec::new())
                 }
             };
@@ -211,6 +262,7 @@ impl CodexGenerationNormalizationCoordinatorV0 {
             let mut sources = Vec::with_capacity(discovered.len());
             for plan in discovered {
                 let descriptor = plan.1.exact_descriptor_digest();
+                let physical = (plan.0.source_path.clone(), plan.2.clone());
                 if let Some((existing, native_session_id)) = descriptor_bindings.get(&descriptor) {
                     if !existing.exact_descriptor_eq(&plan.1) || native_session_id != &plan.2 {
                         return Err(CaptureError::SystemInvariant(
@@ -222,13 +274,26 @@ impl CodexGenerationNormalizationCoordinatorV0 {
                     descriptor_bindings.insert(descriptor, (plan.1.clone(), plan.2.clone()));
                 }
 
-                let observation = (plan.0.source_path.clone(), plan.2.clone());
-                if established_owners
-                    .insert(observation, participant_id)
-                    .is_some()
-                {
+                // A released explicit one-file route keeps its historical
+                // unqualified source identity. When it overlaps a selected
+                // tree route for the exact same file, however, both routes
+                // still refer to one physical source and must not duplicate
+                // records in the generation.
+                if physical_owners.contains_key(&physical) {
                     continue;
                 }
+
+                // Active and archived trees inside one provider home may
+                // expose the same native session representation. Their
+                // root-qualified descriptor is one source and must have one
+                // route owner. The same native ID in another home has a
+                // distinct descriptor and remains independent.
+                if let Some(existing_owner) = established_owners.get(&descriptor).copied() {
+                    physical_owners.insert(physical, existing_owner);
+                    continue;
+                }
+                established_owners.insert(descriptor, participant_id);
+                physical_owners.insert(physical, participant_id);
 
                 // No route may reconstruct ancestry from another source. A
                 // changed leaf derives its local root from its own direct

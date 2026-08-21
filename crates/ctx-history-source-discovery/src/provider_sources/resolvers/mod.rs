@@ -1,11 +1,9 @@
 use std::{
     collections::HashSet,
+    fs,
     io::ErrorKind,
     path::{Path, PathBuf},
 };
-
-#[cfg(test)]
-use std::fs;
 
 use ctx_history_core::CaptureProvider;
 
@@ -149,6 +147,13 @@ pub(super) fn resolve(
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
 ) -> DiscoveryReport {
+    let has_configured_roots = context
+        .configured_provider_roots()
+        .iter()
+        .any(|root| root.provider == spec.provider);
+    if !context.automatic_provider_discovery_enabled() && !has_configured_roots {
+        return DiscoveryReport::default();
+    }
     match resolver_group(spec.provider) {
         Some(ResolverGroup::Simple) => simple::resolve(probes, context, spec),
         Some(ResolverGroup::Platform) => platform::resolve(probes, context, spec),
@@ -347,6 +352,9 @@ pub(super) fn dedupe_report(mut report: DiscoveryReport) -> DiscoveryReport {
 }
 
 fn comparison_path(path: &Path) -> Option<PathBuf> {
+    if let Ok(physical_path) = fs::canonicalize(path) {
+        return Some(physical_path);
+    }
     source_path_kind(path).ok()?;
     Some(path.to_path_buf())
 }

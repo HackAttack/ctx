@@ -46,6 +46,18 @@ pub struct SearchArgs {
     )]
     pub source_format: Option<String>,
     #[arg(
+        long = "source-root",
+        value_name = "NAME",
+        help = "Search one configured provider root; repeat to union roots"
+    )]
+    pub source_roots: Vec<String>,
+    #[arg(
+        long = "scope",
+        value_name = "SCOPE",
+        help = "Search configured provider roots in this scope; repeat to union scopes"
+    )]
+    pub scopes: Vec<String>,
+    #[arg(
         long,
         help = "Filter by stored workspace, cwd, source path, or repo-name text"
     )]
@@ -183,6 +195,8 @@ pub fn adapt(args: SearchArgs) -> ctx_history_cli::SearchArgs {
         provider_key: args.provider_key,
         source_id: args.source_id,
         source_format: args.source_format,
+        source_roots: args.source_roots,
+        scopes: args.scopes,
         workspace: args.workspace,
         since: args.since,
         primary_only: args.primary_only,

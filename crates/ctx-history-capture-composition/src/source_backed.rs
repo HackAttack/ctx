@@ -14,7 +14,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use ctx_history_capture_model::SourceRouteIdentity;
+use ctx_history_capture_model::{provider_source_config_digest, SourceRouteIdentity};
 use ctx_history_capture_runtime::{
     CaptureLifecycleSink, CapturePublicationContext, CapturePublicationDisposition,
     CaptureSourceAggregateRef, ImmutableCaptureSnapshot,
@@ -22,7 +22,7 @@ use ctx_history_capture_runtime::{
 use ctx_history_core::{CaptureProvider, CertifiedSource, CertifiedSourceInventory, SourceKey};
 #[cfg(test)]
 use ctx_history_core::{CertifiedSourceAppend, CertifiedSourceDeletion, SourceAnchor, TypedKey};
-use ctx_history_index::{IndexError, PublicationStage, WriterOptions};
+use ctx_history_index::{AppliedProviderRoot, IndexError, PublicationStage, WriterOptions};
 use ctx_history_provider_mistral_mux::{mistral_vibe_jsonl_adapter, mux_jsonl_adapter};
 use sha2::{Digest, Sha256};
 

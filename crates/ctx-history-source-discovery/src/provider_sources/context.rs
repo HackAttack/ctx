@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use ctx_history_capture_model::ProviderRootDefinition;
 use directories::BaseDirs;
 
 /// Process environment keys that discovery may inherit.
@@ -135,6 +136,8 @@ pub struct DiscoveryContext {
     platform: DiscoveryPlatform,
     platform_dirs: DiscoveryPlatformDirs,
     inherited_env: BTreeMap<&'static str, OsString>,
+    automatic_provider_discovery: bool,
+    configured_provider_roots: Vec<ProviderRootDefinition>,
 }
 
 impl DiscoveryContext {
@@ -151,6 +154,8 @@ impl DiscoveryContext {
             platform: DiscoveryPlatform::current(),
             platform_dirs: DiscoveryPlatformDirs::from_process(),
             inherited_env,
+            automatic_provider_discovery: true,
+            configured_provider_roots: Vec::new(),
         }
     }
 
@@ -168,6 +173,8 @@ impl DiscoveryContext {
             platform,
             platform_dirs,
             inherited_env: BTreeMap::new(),
+            automatic_provider_discovery: true,
+            configured_provider_roots: Vec::new(),
         }
     }
 
@@ -184,6 +191,8 @@ impl DiscoveryContext {
             platform,
             platform_dirs,
             inherited_env: BTreeMap::new(),
+            automatic_provider_discovery: true,
+            configured_provider_roots: Vec::new(),
         }
     }
 
@@ -247,6 +256,28 @@ impl DiscoveryContext {
             self.inherited_env.insert(name, value.into());
         }
         self
+    }
+
+    pub fn with_configured_provider_roots(
+        mut self,
+        mut roots: Vec<ProviderRootDefinition>,
+    ) -> Self {
+        roots.sort_by(|left, right| left.id.cmp(&right.id));
+        self.configured_provider_roots = roots;
+        self
+    }
+
+    pub fn configured_provider_roots(&self) -> &[ProviderRootDefinition] {
+        &self.configured_provider_roots
+    }
+
+    pub fn with_automatic_provider_discovery(mut self, enabled: bool) -> Self {
+        self.automatic_provider_discovery = enabled;
+        self
+    }
+
+    pub const fn automatic_provider_discovery_enabled(&self) -> bool {
+        self.automatic_provider_discovery
     }
 }
 

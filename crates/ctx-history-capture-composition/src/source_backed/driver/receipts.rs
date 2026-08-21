@@ -185,6 +185,93 @@ impl SourceBackedRoute {
         })
     }
 
+    /// Represents one explicitly configured path that is currently absent.
+    /// The path-derived route identity is the same identity the executable
+    /// route will use when the path appears.
+    pub fn certified_explicit_missing(
+        source: ProviderSource,
+        selector_authority: SourceBackedSelectorAuthority,
+    ) -> SourceBackedCoordinatorResult<Self> {
+        let known = validate_executable_route(
+            &source,
+            SourceBackedRouteSelection::ExplicitManual,
+            selector_authority,
+        )?;
+        let route_identity = source_backed_route_identity(
+            &source,
+            known.certified_source_format,
+            SourceBackedRouteSelection::ExplicitManual,
+            selector_authority,
+        )?;
+        let path = source.path.clone();
+        Ok(Self {
+            metadata: SourceBackedRouteMetadata {
+                source: source.clone(),
+                certified_source_format: known.certified_source_format,
+                selection: Some(SourceBackedRouteSelection::ExplicitManual),
+                selector_authority,
+                unsupported_reason: None,
+                route_identity: Some(route_identity),
+                watch_target_kind: known.watch_target_kind,
+            },
+            registration_sources: vec![source],
+            driver: None,
+            certified_missing_paths: vec![path],
+            retire_after_success: Vec::new(),
+            automatic_retire_after_success: Vec::new(),
+            controlled_retire_after_success: Vec::new(),
+            codex_generation_participant: None,
+        })
+    }
+
+    /// Represents one configured physical route whose path could not be
+    /// classified safely during discovery. It retains the same path-derived
+    /// identity as the executable route so a warm refresh can carry only this
+    /// route while healthy peers continue.
+    pub fn unavailable_explicit(
+        source: ProviderSource,
+        reason: impl Into<String>,
+    ) -> SourceBackedCoordinatorResult<Self> {
+        let known =
+            landed_format_route(source.provider, source.source_format).ok_or_else(|| {
+                invalid_route(
+                    source.provider,
+                    "configured unavailable source has no landed route",
+                )
+            })?;
+        if !known.explicit_manual || known.unsupported_reason.is_some() {
+            return Err(invalid_route(
+                source.provider,
+                "configured unavailable source has no explicit route authority",
+            ));
+        }
+        let selector_authority = SourceBackedSelectorAuthority::ExplicitPath;
+        let route_identity = source_backed_route_identity(
+            &source,
+            known.certified_source_format,
+            SourceBackedRouteSelection::ExplicitManual,
+            selector_authority,
+        )?;
+        Ok(Self {
+            metadata: SourceBackedRouteMetadata {
+                source: source.clone(),
+                certified_source_format: known.certified_source_format,
+                selection: Some(SourceBackedRouteSelection::ExplicitManual),
+                selector_authority,
+                unsupported_reason: Some(reason.into()),
+                route_identity: Some(route_identity),
+                watch_target_kind: known.watch_target_kind,
+            },
+            registration_sources: vec![source],
+            driver: None,
+            certified_missing_paths: Vec::new(),
+            retire_after_success: Vec::new(),
+            automatic_retire_after_success: Vec::new(),
+            controlled_retire_after_success: Vec::new(),
+            codex_generation_participant: None,
+        })
+    }
+
     pub fn unsupported(source: ProviderSource, reason: impl Into<String>) -> Self {
         let certified_source_format = landed_format_route(source.provider, source.source_format)
             .map_or(source.source_format, |route| route.certified_source_format);
@@ -250,6 +337,8 @@ impl SourceBackedRegistryRoute for SourceBackedRoute {
 pub struct SourceBackedProviderRegistry {
     pub(in super::super) routes: SourceBackedRouteRegistry<SourceBackedRoute>,
     pub(in super::super) codex_generation: Option<Arc<CodexGenerationNormalizationCoordinatorV0>>,
+    pub(in super::super) applied_provider_roots: Option<(bool, String, Vec<AppliedProviderRoot>)>,
+    pub(in super::super) provider_root_route_retirements: BTreeSet<SourceRouteIdentity>,
 }
 
 impl SourceBackedProviderRegistry {
@@ -259,6 +348,48 @@ impl SourceBackedProviderRegistry {
 
     pub fn register(&mut self, route: SourceBackedRoute) {
         self.routes.register(route);
+    }
+
+    pub fn set_applied_provider_roots(
+        &mut self,
+        automatic_provider_discovery: bool,
+        config_digest: String,
+        roots: Vec<AppliedProviderRoot>,
+    ) -> SourceBackedCoordinatorResult<()> {
+        if self.applied_provider_roots.is_some() {
+            return Err(SourceBackedCoordinatorError::InvalidRoute {
+                provider: CaptureProvider::Unknown,
+                detail: "applied provider roots were installed more than once".to_owned(),
+            });
+        }
+        self.applied_provider_roots = Some((automatic_provider_discovery, config_digest, roots));
+        Ok(())
+    }
+
+    pub fn applied_provider_roots(&self) -> Option<&(bool, String, Vec<AppliedProviderRoot>)> {
+        self.applied_provider_roots.as_ref()
+    }
+
+    pub fn executable_route_identities(&self) -> Vec<SourceRouteIdentity> {
+        self.routes
+            .iter()
+            .filter(|route| route.driver.is_some())
+            .filter_map(|route| route.metadata.route_identity.clone())
+            .collect()
+    }
+
+    /// Records exact routes retired by a validated provider-root config
+    /// transition. Unlike discovery absence, removing a configured root is
+    /// direct desired-state authority and does not require missing grace.
+    pub fn set_provider_root_route_retirements(
+        &mut self,
+        routes: impl IntoIterator<Item = SourceRouteIdentity>,
+    ) {
+        self.provider_root_route_retirements = routes.into_iter().collect();
+    }
+
+    pub fn provider_root_route_retirements(&self) -> &BTreeSet<SourceRouteIdentity> {
+        &self.provider_root_route_retirements
     }
 
     /// Binds exact carried base routes to an executable replacement route.

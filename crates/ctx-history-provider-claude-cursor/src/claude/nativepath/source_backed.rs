@@ -44,6 +44,7 @@ type JsonlReader = ProviderJsonlReader;
 type JsonlFamilyWorkerContext<B> = ProviderJsonlWorkerContext<B>;
 
 const SOURCE_ANCHOR_NAMESPACE: &str = "claude.session-leaf";
+const SOURCE_ROOT_LINEAGE_DOMAIN: &[u8] = b"ctx-claude-source-root-lineage-v1\0";
 const SESSION_KEY_NAMESPACE: &str = "claude.session";
 const NATIVE_EVENT_KEY_NAMESPACE: &str = "claude.event";
 const FALLBACK_EVENT_ID_VERSION: &str = "claude.fallback-event.v1";
@@ -112,6 +113,7 @@ where
         }
         let canonical_root = fs::canonicalize(root)?;
         let projects_root = claude_projects_root(&canonical_root);
+        let source_root_lineage = source_root_lineage(&canonical_root)?;
         let authority = Arc::new(ProviderSourceRoot::open(&canonical_root)?);
         let mut paths = BTreeSet::new();
         visit_bounded_tree_files::<CaptureError, _>(
@@ -138,10 +140,11 @@ where
             };
             let binding = Binding {
                 project_dir,
+                source_root_lineage,
                 key,
                 layout,
             };
-            let source = source_key(&binding.key)?;
+            let source = source_key(binding.source_root_lineage, &binding.key)?;
             let relative_path = relative_to_authority(&authority, &path)?;
             let opened = authority.open_file(&relative_path)?;
             let observation = observe_opened_file(&path, &opened)?;
@@ -176,6 +179,13 @@ where
         mode: JsonlFamilyProjectionMode,
     ) -> Result<Box<dyn JsonlFamilyProjector<Runtime = ProviderJsonlRuntime<B>>>> {
         let binding = decode_binding(leaf)?;
+        if !source_key(binding.source_root_lineage, &binding.key)?
+            .exact_descriptor_eq(leaf.source())
+        {
+            return Err(contract(
+                "Claude family binding does not match its certified source",
+            ));
+        }
         let identities = identities(&binding)?;
         Ok(Box::new(ClaudeProjector {
             source: leaf.source().clone(),
@@ -557,14 +567,14 @@ fn row_event_sequence(row: &ClaudeRetainedRow) -> Result<u64> {
 
 fn identities(binding: &Binding) -> Result<Identities> {
     let native_session_key = session_typed_key(&binding.key)?;
-    let source = source_key(&binding.key)?;
+    let source = source_key(binding.source_root_lineage, &binding.key)?;
     let session_id = session_identity(&source, native_session_key)?;
     let root_key = ClaudeSessionKey {
         root_session_id: binding.key.root_session_id.clone(),
         workflow_run_id: None,
         agent_id: None,
     };
-    let root_source = source_key(&root_key)?;
+    let root_source = source_key(binding.source_root_lineage, &root_key)?;
     let root_session_id = if binding.layout == SessionLayout::Primary {
         session_id
     } else {
@@ -602,14 +612,27 @@ fn session_typed_key(key: &ClaudeSessionKey) -> Result<TypedKey> {
     .map_err(contract)
 }
 
-fn source_key(key: &ClaudeSessionKey) -> Result<SourceKey> {
+fn source_root_lineage(root: &Path) -> Result<[u8; 32]> {
+    let identity = ctx_history_source_io::provider_path_identity(root).map_err(contract)?;
+    let mut digest = Sha256::new();
+    digest.update(SOURCE_ROOT_LINEAGE_DOMAIN);
+    digest.update((identity.len() as u64).to_be_bytes());
+    digest.update(identity.as_bytes());
+    Ok(digest.finalize().into())
+}
+
+fn source_key(source_root_lineage: [u8; 32], key: &ClaudeSessionKey) -> Result<SourceKey> {
     SourceKey::derive_provider_native(
         CaptureProvider::Claude.as_str(),
         CLAUDE_PROJECTS_SOURCE_FORMAT,
         SOURCE_SCHEMA_VARIANT,
         1,
         SOURCE_ANCHOR_NAMESPACE,
-        session_typed_key(key)?,
+        TypedKey::composite(vec![
+            TypedKey::bytes(source_root_lineage.to_vec()).map_err(contract)?,
+            session_typed_key(key)?,
+        ])
+        .map_err(contract)?,
     )
     .map_err(contract)
 }
@@ -762,6 +785,23 @@ mod tests {
             line_number: 1,
             record_sha256: Sha256::digest(bytes).into(),
         }
+    }
+
+    #[test]
+    fn identical_native_sessions_under_distinct_roots_have_distinct_sources() {
+        let key = ClaudeSessionKey {
+            root_session_id: "shared-session".to_owned(),
+            workflow_run_id: None,
+            agent_id: None,
+        };
+        let personal = source_root_lineage(Path::new("/tmp/claude-personal/projects")).unwrap();
+        let work = source_root_lineage(Path::new("/tmp/claude-work/projects")).unwrap();
+
+        let personal_source = source_key(personal, &key).unwrap();
+        let work_source = source_key(work, &key).unwrap();
+
+        assert!(!personal_source.exact_descriptor_eq(&work_source));
+        assert!(personal_source.exact_descriptor_eq(&source_key(personal, &key).unwrap()));
     }
 
     #[test]

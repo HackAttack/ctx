@@ -315,6 +315,8 @@ pub(crate) fn run_cli() -> Result<()> {
                 .sources_mut(),
             &mut local_usage_draft,
             crate::identity::home_dir(),
+            config.automatic_source_discovery_enabled(),
+            config.provider_root_definitions(),
             &mut ui,
         ),
         CommandRoot::Import(args) => run_import(

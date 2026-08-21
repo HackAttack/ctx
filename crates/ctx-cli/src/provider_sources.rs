@@ -11,9 +11,15 @@ pub(crate) fn discovered_plugin_sources_json(data_root: &Path) -> Result<Vec<ser
     ctx_history_cli::discovered_plugin_sources_json(data_root)
 }
 
-pub(crate) fn discovered_sources_report(data_root: &Path) -> DiscoveryReport {
-    ctx_history_cli::discovered_sources_report_with_data_root(
-        crate::identity::home_dir().as_deref(),
-        data_root,
+pub(crate) fn discovered_sources_report(data_root: &Path) -> Result<DiscoveryReport> {
+    let config = crate::config::AppConfig::load(data_root)?;
+    let provider_roots = config.provider_root_definitions();
+    Ok(
+        ctx_history_cli::discovered_sources_report_with_data_root_and_provider_roots(
+            crate::identity::home_dir().as_deref(),
+            data_root,
+            config.automatic_source_discovery_enabled(),
+            &provider_roots,
+        ),
     )
 }

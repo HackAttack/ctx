@@ -44,9 +44,10 @@ pub use provider_sources::{
 };
 
 pub use ctx_history_capture_model::{
-    stable_capture_uuid, CatalogSummary, OutputObservationKind, OutputOutcome,
-    OutputOutcomeMetadata, ProviderImportFailure, ProviderImportSummary, ProviderImportWorkResult,
-    ProviderSourceFailureKind,
+    provider_source_config_digest, stable_capture_uuid, CatalogSummary, OutputObservationKind,
+    OutputOutcome, OutputOutcomeMetadata, ProviderImportFailure, ProviderImportSummary,
+    ProviderImportWorkResult, ProviderRootDefinition, ProviderSourceFailureKind,
+    MAX_CONFIGURED_PROVIDER_ROOTS, MAX_PROVIDER_ROOT_SELECTOR_BYTES,
 };
 mod error;
 pub use error::{CaptureError, ProviderJsonlInventoryLimit, Result};

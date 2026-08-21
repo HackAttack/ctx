@@ -60,14 +60,14 @@ pub use ctx_history_index_format::{
     SEMANTIC_CHUNK_TARGET_CHARS, SEMANTIC_SOURCE_MAX_CHARS,
 };
 pub(crate) use ctx_history_index_format::{
-    fields_from_schema, lexical_schema, validate_schema, Fields,
+    fields_from_schema, lexical_schema, provider_source_config_digest, validate_schema, Fields,
 };
 pub use ctx_history_index_format::{
-    CommittedPredecessorMigrationRecovery, ConsecutiveSourceMissingCount, GenerationManifest,
-    IndexError, Result, SourceCoreRecordAggregate, SourceMissingObservationPoint,
-    SourceRouteIdentity, SourceRouteMissingState, SourceRouteSnapshot, GENERATION_MANIFEST_VERSION,
-    LEXICAL_ANALYZER_VERSION, LEXICAL_SCHEMA_VERSION, LEXICAL_SEGMENT_MERGE_FAN_IN,
-    MAX_PUBLICATION_METADATA_BYTES,
+    AppliedProviderRoot, CommittedPredecessorMigrationRecovery, ConsecutiveSourceMissingCount,
+    GenerationManifest, IndexError, ProviderRootDefinition, Result, SourceCoreRecordAggregate,
+    SourceMissingObservationPoint, SourceRouteIdentity, SourceRouteMissingState,
+    SourceRouteSnapshot, GENERATION_MANIFEST_VERSION, LEXICAL_ANALYZER_VERSION,
+    LEXICAL_SCHEMA_VERSION, LEXICAL_SEGMENT_MERGE_FAN_IN, MAX_PUBLICATION_METADATA_BYTES,
 };
 #[cfg(test)]
 pub(crate) use ctx_history_index_generation::sha256_hex;
@@ -379,6 +379,8 @@ pub struct GenerationWriter {
     deletions: HashMap<SourceKey, PendingDeletion>,
     route_deletions: HashSet<SourceKey>,
     present_source_routes: Option<Vec<SourceRouteSnapshot>>,
+    applied_provider_roots: Option<(bool, String, Vec<AppliedProviderRoot>)>,
+    authorized_topology_route_retirements: Option<BTreeSet<SourceRouteIdentity>>,
     observed_missing_routes: HashMap<SourceRouteIdentity, SourceRouteSnapshot>,
     route_publication_revalidations:
         Vec<(SourceRouteIdentity, Box<dyn Fn() -> bool + Send + 'static>)>,
@@ -573,6 +575,7 @@ impl GenerationWriter {
             ));
         }
         self.deletions.remove(&source);
+        self.route_deletions.remove(&source);
         self.pending.insert(
             token.clone(),
             PendingSource {

@@ -7,8 +7,8 @@ use ctx_history_capture::{
     discover_provider_sources_for_provider_report,
     discover_provider_sources_for_provider_with_context, discover_provider_sources_report,
     discover_provider_sources_with_context, provider_source_status_reason, DiscoveryContext,
-    DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport, ProviderImportSupport, ProviderSource,
-    ProviderSourceStatus,
+    DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport, ProviderImportSupport,
+    ProviderRootDefinition, ProviderSource, ProviderSourceStatus,
 };
 use ctx_history_core::CaptureProvider;
 pub use ctx_history_ingest_application::history_source_plugin_report;
@@ -36,28 +36,51 @@ pub type SourceInfo = ProviderSource;
 pub struct CliSourceDiscoveryPort {
     home: Option<PathBuf>,
     data_root: PathBuf,
+    automatic_provider_discovery: bool,
+    provider_roots: Vec<ProviderRootDefinition>,
 }
 
 impl CliSourceDiscoveryPort {
     pub fn new(home: Option<PathBuf>, data_root: PathBuf) -> Self {
-        Self { home, data_root }
+        Self {
+            home,
+            data_root,
+            automatic_provider_discovery: true,
+            provider_roots: Vec::new(),
+        }
+    }
+
+    pub fn with_provider_roots(mut self, roots: Vec<ProviderRootDefinition>) -> Self {
+        self.provider_roots = roots;
+        self
+    }
+
+    pub fn with_automatic_provider_discovery(mut self, enabled: bool) -> Self {
+        self.automatic_provider_discovery = enabled;
+        self
     }
 }
 
 impl SourceDiscoveryPort for CliSourceDiscoveryPort {
     fn discover_all(&self) -> Result<DiscoveryReport> {
-        Ok(discovered_sources_report_with_data_root(
+        Ok(discovered_sources_report_with_data_root_and_provider_roots(
             self.home.as_deref(),
             &self.data_root,
+            self.automatic_provider_discovery,
+            &self.provider_roots,
         ))
     }
 
     fn discover_provider(&self, provider: CaptureProvider) -> Result<DiscoveryReport> {
-        Ok(discovered_sources_for_provider_report_with_data_root(
-            self.home.as_deref(),
-            &self.data_root,
-            provider,
-        ))
+        Ok(
+            discovered_sources_for_provider_report_with_data_root_and_provider_roots(
+                self.home.as_deref(),
+                &self.data_root,
+                provider,
+                self.automatic_provider_discovery,
+                &self.provider_roots,
+            ),
+        )
     }
 
     fn provider_selection_guidance(
@@ -94,8 +117,20 @@ pub fn discovered_sources_report_with_data_root(
     home: Option<&Path>,
     data_root: &Path,
 ) -> DiscoveryReport {
+    discovered_sources_report_with_data_root_and_provider_roots(home, data_root, true, &[])
+}
+
+pub fn discovered_sources_report_with_data_root_and_provider_roots(
+    home: Option<&Path>,
+    data_root: &Path,
+    automatic_provider_discovery: bool,
+    provider_roots: &[ProviderRootDefinition],
+) -> DiscoveryReport {
     home.map(|home| {
-        let context = DiscoveryContext::from_process(home).with_data_root(data_root);
+        let context = DiscoveryContext::from_process(home)
+            .with_data_root(data_root)
+            .with_automatic_provider_discovery(automatic_provider_discovery)
+            .with_configured_provider_roots(provider_roots.to_vec());
         discover_provider_sources_with_context(&context)
     })
     .map(filter_cli_supported_report)
@@ -118,11 +153,30 @@ pub fn discovered_sources_for_provider_report_with_data_root(
     data_root: &Path,
     provider: CaptureProvider,
 ) -> DiscoveryReport {
+    discovered_sources_for_provider_report_with_data_root_and_provider_roots(
+        home,
+        data_root,
+        provider,
+        true,
+        &[],
+    )
+}
+
+pub fn discovered_sources_for_provider_report_with_data_root_and_provider_roots(
+    home: Option<&Path>,
+    data_root: &Path,
+    provider: CaptureProvider,
+    automatic_provider_discovery: bool,
+    provider_roots: &[ProviderRootDefinition],
+) -> DiscoveryReport {
     if !cli_supported_provider(provider) {
         return DiscoveryReport::default();
     }
     home.map(|home| {
-        let context = DiscoveryContext::from_process(home).with_data_root(data_root);
+        let context = DiscoveryContext::from_process(home)
+            .with_data_root(data_root)
+            .with_automatic_provider_discovery(automatic_provider_discovery)
+            .with_configured_provider_roots(provider_roots.to_vec());
         discover_provider_sources_for_provider_with_context(&context, provider)
     })
     .unwrap_or_default()
