@@ -132,28 +132,6 @@ fn parallel_all_ignored_pages_publish_bytes_before_terminal_reconciliation() {
     let mut coordinator_bytes = 0_u64;
     let mut accepted_records = 0_u64;
     let mut observed_ignored_progress = false;
-    let mut report_record_progress =
-        |delta: ctx_history_capture_model::SourceBackedRecordProgressDelta| -> std::result::Result<
-            (),
-            ctx_history_capture_runtime::SourceBackedCoordinatorError<CaptureError>,
-        > {
-            if delta.completed_bytes != 0 {
-                let before = callback_history.snapshot();
-                assert!(
-                    before.processed_bytes
-                        >= coordinator_bytes.saturating_add(delta.completed_bytes),
-                    "ignored JSONL bytes must be producer-published before terminal reconciliation: before={before:?}, coordinator_bytes={coordinator_bytes}, delta={delta:?}"
-                );
-                assert_eq!(before.processed_sessions, 0);
-                assert_eq!(before.processed_messages, 0);
-                assert_eq!(before.processed_tool_calls, 0);
-                observed_ignored_progress = true;
-            }
-            callback_history.advance_coordinator(&delta);
-            coordinator_bytes = coordinator_bytes.saturating_add(delta.completed_bytes);
-            accepted_records = accepted_records.saturating_add(delta.accepted_records);
-            Ok(())
-        };
     let mut owners = HashMap::new();
     let mut complete_inventories = Vec::new();
     let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
@@ -161,27 +139,49 @@ fn parallel_all_ignored_pages_publish_bytes_before_terminal_reconciliation() {
     let mut applied_removals = Vec::new();
     let resources = SourceBackedRouteResources::production(2)
         .with_attempt_history_progress(shared_history.clone());
-    let mut sink = SourceBackedGenerationSink::new(
-        &mut writer,
-        &mut owners,
-        &mut complete_inventories,
-        &mut applied_removals,
-        0,
-        test_route_identity(),
-        None,
-        resources.clone(),
-        &mut logical_source_failures,
-        &mut record_rejections,
-        Some(&mut report_record_progress),
-        None,
-        None,
-    );
+    {
+        let mut report_record_progress =
+            |delta: ctx_history_capture_model::SourceBackedRecordProgressDelta| -> std::result::Result<
+                (),
+                ctx_history_capture_runtime::SourceBackedCoordinatorError<CaptureError>,
+            > {
+                if delta.completed_bytes != 0 {
+                    let before = callback_history.snapshot();
+                    assert!(
+                        before.processed_bytes
+                            >= coordinator_bytes.saturating_add(delta.completed_bytes),
+                        "ignored JSONL bytes must be producer-published before terminal reconciliation: before={before:?}, coordinator_bytes={coordinator_bytes}, delta={delta:?}"
+                    );
+                    assert_eq!(before.processed_sessions, 0);
+                    assert_eq!(before.processed_messages, 0);
+                    assert_eq!(before.processed_tool_calls, 0);
+                    observed_ignored_progress = true;
+                }
+                callback_history.advance_coordinator(&delta);
+                coordinator_bytes = coordinator_bytes.saturating_add(delta.completed_bytes);
+                accepted_records = accepted_records.saturating_add(delta.accepted_records);
+                Ok(())
+            };
+        let mut sink = SourceBackedGenerationSink::new(
+            &mut writer,
+            &mut owners,
+            &mut complete_inventories,
+            &mut applied_removals,
+            0,
+            test_route_identity(),
+            None,
+            resources.clone(),
+            &mut logical_source_failures,
+            &mut record_rejections,
+            Some(&mut report_record_progress),
+            None,
+            None,
+        );
 
-    with_family_scanner_workers(2, || {
-        capture(&adapter, &root, &resident, &mut sink).unwrap();
-    });
-    drop(sink);
-    drop(report_record_progress);
+        with_family_scanner_workers(2, || {
+            capture(&adapter, &root, &resident, &mut sink).unwrap();
+        });
+    }
 
     assert!(observed_ignored_progress);
     assert_eq!(accepted_records, 0);

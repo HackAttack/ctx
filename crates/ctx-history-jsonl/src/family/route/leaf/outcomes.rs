@@ -36,6 +36,9 @@ pub(in crate::family::route) struct LeafScanResult<E: JsonlFamilyError> {
     pub(in crate::family::route) quarantined: Vec<QuarantinedLeaf<E>>,
 }
 
+// Both variants are transient per-source scan outcomes. Boxing them would add
+// one allocation to every JSONL source, including the successful hot path.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum LeafScanOutcome<E: JsonlFamilyError> {
     Certified(TerminalSourceEvidence<E>),
     Quarantined(QuarantinedLeaf<E>),

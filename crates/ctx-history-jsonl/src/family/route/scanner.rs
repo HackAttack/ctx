@@ -53,7 +53,7 @@ pub(super) fn map_parallel_leaf_error<E: std::error::Error + 'static>(
 ) -> SourceBackedRouteError {
     match error {
         ParallelLeafScanError::Worker { source, .. } => source,
-        ParallelLeafScanError::Sink { source, .. } => match source {
+        ParallelLeafScanError::Sink { source, .. } => match *source {
             SourceBackedCoordinatorError::CoreEmission(source) => source,
             source => route_internal(source),
         },
