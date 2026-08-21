@@ -685,60 +685,32 @@ mod tests {
     }
 
     #[test]
-    fn every_capture_provider_has_an_unsuppressed_closed_wire_name() {
-        let providers = [
-            CaptureProvider::Codex,
-            CaptureProvider::GrokBuild,
-            CaptureProvider::DeepSeekHarness,
-            CaptureProvider::Claude,
-            CaptureProvider::Pi,
-            CaptureProvider::OpenCode,
-            CaptureProvider::Kilo,
-            CaptureProvider::KiroCli,
-            CaptureProvider::Antigravity,
-            CaptureProvider::Gemini,
-            CaptureProvider::Tabnine,
-            CaptureProvider::Cursor,
-            CaptureProvider::Zed,
-            CaptureProvider::CopilotCli,
-            CaptureProvider::FactoryAiDroid,
-            CaptureProvider::QwenCode,
-            CaptureProvider::KimiCodeCli,
-            CaptureProvider::Auggie,
-            CaptureProvider::Junie,
-            CaptureProvider::Firebender,
-            CaptureProvider::ForgeCode,
-            CaptureProvider::DeepAgents,
-            CaptureProvider::MistralVibe,
-            CaptureProvider::Mux,
-            CaptureProvider::RovoDev,
-            CaptureProvider::OpenClaw,
-            CaptureProvider::Hermes,
-            CaptureProvider::NanoClaw,
-            CaptureProvider::AstrBot,
-            CaptureProvider::Shelley,
-            CaptureProvider::Continue,
-            CaptureProvider::OpenHands,
-            CaptureProvider::Cline,
-            CaptureProvider::RooCode,
-            CaptureProvider::Crush,
-            CaptureProvider::Goose,
-            CaptureProvider::Lingma,
-            CaptureProvider::Qoder,
-            CaptureProvider::Warp,
-            CaptureProvider::CodeBuddy,
-            CaptureProvider::Shell,
-            CaptureProvider::Git,
-            CaptureProvider::Jj,
-            CaptureProvider::Gh,
-            CaptureProvider::Custom,
-            CaptureProvider::Unknown,
-            CaptureProvider::MiMoCode,
-        ];
+    fn every_capture_provider_matches_the_versioned_telemetry_vocabulary() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../contracts/telemetry-v1/providers-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(manifest["schema_version"], 1);
+        assert_eq!(manifest["vocabulary"], "ctx-telemetry-provider");
 
-        assert_eq!(providers.len(), 47);
-        for provider in providers {
-            assert!(!provider.as_str().is_empty());
-        }
+        let providers = manifest["providers"].as_array().unwrap();
+        let current = providers
+            .iter()
+            .filter(|entry| entry["status"] == "current")
+            .map(|entry| entry["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        let retired = providers
+            .iter()
+            .filter(|entry| entry["status"] == "retired")
+            .map(|entry| entry["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        let unique = providers
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap())
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(current, CaptureProvider::variants());
+        assert_eq!(retired, ["windsurf", "trae"]);
+        assert_eq!(unique.len(), providers.len());
     }
 }

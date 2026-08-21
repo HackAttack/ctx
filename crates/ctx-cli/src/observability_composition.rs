@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(provenance["repository"], "ctxrs/ctx");
         assert_eq!(
             provenance["base_commit"],
-            "a4acd13f53fab3fdf27ebe20f580c2b087e99fb8"
+            "b33107ed37ead44e20df85da789258826f9724ae"
         );
         assert_eq!(provenance["provenance_kind"], "content_addressed_candidate");
         assert_eq!(
@@ -187,6 +187,10 @@ mod tests {
         );
         let files = provenance["files"].as_object().unwrap();
         let sources = [
+            (
+                "contracts/telemetry-v1/providers-v1.json",
+                include_bytes!("../../../contracts/telemetry-v1/providers-v1.json").as_slice(),
+            ),
             (
                 "crates/ctx-client-observability/src/analytics/operation.rs",
                 include_bytes!("../../ctx-client-observability/src/analytics/operation.rs")

@@ -46,6 +46,9 @@ failure of the snapshot-bearing batch leaves the claim unacknowledged.
 `provider_refresh_completed@1` records one completed aggregate for every
 observed closed provider/source-mode pair. Provider names are the complete
 `CaptureProvider` vocabulary; producers do not suppress low-usage providers.
+`providers-v1.json` is the versioned machine-readable vocabulary for those
+wire names. Current entries must exactly match `CaptureProvider`; retired
+entries remain reserved so a name is never silently reused.
 That per-provider contract remains unchanged. One provider-neutral aggregate is
 also permitted for an authoritative all-provider publication when the global
 receipt cannot truthfully attribute a provider, source mode, or per-run count
