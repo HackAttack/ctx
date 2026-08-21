@@ -330,6 +330,7 @@ param(
   [long]$MaxExpandedBytes
 )
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $expectedFiles = [System.Collections.Generic.HashSet[string]]::new(
   [string[]]@(
@@ -351,8 +352,19 @@ $expectedEntries = [System.Collections.Generic.HashSet[string]]::new($expectedFi
 $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 $entries = @{}
 [long]$totalLength = 0
-$archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+$archiveStream = [System.IO.FileStream]::new(
+  $ArchivePath,
+  [System.IO.FileMode]::Open,
+  [System.IO.FileAccess]::Read,
+  [System.IO.FileShare]::ReadWrite
+)
+$archive = $null
 try {
+  $archive = [System.IO.Compression.ZipArchive]::new(
+    $archiveStream,
+    [System.IO.Compression.ZipArchiveMode]::Read,
+    $true
+  )
   foreach ($entry in $archive.Entries) {
     $rawName = $entry.FullName
     if (
@@ -426,7 +438,13 @@ try {
     }
   }
 } finally {
-  $archive.Dispose()
+  try {
+    if ($null -ne $archive) {
+      $archive.Dispose()
+    }
+  } finally {
+    $archiveStream.Dispose()
+  }
 }
 "#;
 

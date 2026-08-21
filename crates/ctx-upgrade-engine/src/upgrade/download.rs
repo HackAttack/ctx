@@ -207,13 +207,19 @@ impl DownloadedArtifact {
     }
 
     fn open_cached(path: &Path, expected_sha256: &str) -> Result<Option<Self>> {
-        let file = match open_private_file(path) {
+        let file = match open_retained_private_file(path) {
             Ok(file) => file,
             Err(error)
                 if error
                     .downcast_ref::<std::io::Error>()
                     .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
             {
+                return Ok(None);
+            }
+            Err(error) if cached_artifact_has_active_writer(&error) => {
+                // A concurrent publisher still owns write access. Treat the
+                // cache as unavailable; the separately verified download path
+                // remains authoritative and publication is create-new.
                 return Ok(None);
             }
             Err(error) => {
@@ -466,31 +472,76 @@ fn remove_file_if_identity(path: &Path, expected: &FileIdentity) {
 }
 
 fn open_private_file(path: &Path) -> Result<fs::File> {
-    #[cfg(unix)]
-    use std::os::unix::fs::OpenOptionsExt as _;
-
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
     #[cfg(windows)]
     {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        };
-        options
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        return open_private_file_windows(path, FILE_SHARE_READ | FILE_SHARE_WRITE);
     }
+
+    #[cfg(not(windows))]
+    {
+        #[cfg(unix)]
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        let file = options.open(path)?;
+        verify_private_file(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(anyhow!("private artifact path is not a regular file"));
+        }
+        Ok(file)
+    }
+}
+
+fn open_retained_private_file(path: &Path) -> Result<fs::File> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        // Retained cache handles admit concurrent readers but deny writers and
+        // deletion until digest-checked consumption has completed.
+        return open_private_file_windows(path, FILE_SHARE_READ);
+    }
+
+    #[cfg(not(windows))]
+    open_private_file(path)
+}
+
+#[cfg(windows)]
+fn open_private_file_windows(path: &Path, share_mode: u32) -> Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+
+    let mut options = fs::OpenOptions::new();
+    options
+        .read(true)
+        .share_mode(share_mode)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     let file = options.open(path)?;
     verify_private_file(path)?;
-    #[cfg(windows)]
     ctx_history_platform::platform_security::verify_private_file_handle(&file)?;
     if !file.metadata()?.is_file() {
         return Err(anyhow!("private artifact path is not a regular file"));
     }
     Ok(file)
+}
+
+#[cfg(windows)]
+fn cached_artifact_has_active_writer(error: &anyhow::Error) -> bool {
+    use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32))
+}
+
+#[cfg(not(windows))]
+fn cached_artifact_has_active_writer(_error: &anyhow::Error) -> bool {
+    false
 }
 
 pub(super) fn copy_file_verified(
