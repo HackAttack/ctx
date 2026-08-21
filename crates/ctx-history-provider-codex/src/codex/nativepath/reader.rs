@@ -30,7 +30,10 @@ use crate::{
     },
     CaptureError, Result,
 };
-const MAX_CODEX_PAGE_UNITS: usize = 64;
+// Pages are also the exact progress-publication boundary. Keep them small
+// enough that a worker cannot make the visible counters appear stalled while
+// projecting a dense rollout.
+const MAX_CODEX_PAGE_UNITS: usize = 16;
 const MAX_CODEX_SOURCE_BACKED_PAGE_RECORDS: u64 = 4 * 1024;
 const MAX_CODEX_SOURCE_BACKED_PAGE_PROGRESS_BYTES: u64 = 32 * 1024 * 1024;
 const PAGE_FIXED_WIRE_BYTES: usize = 4 * 1024;
