@@ -1,6 +1,8 @@
 use super::*;
 
 pub(super) use ctx_daemon_runtime::terminate_identity_verified_residual_daemon;
+#[cfg(windows)]
+use ctx_daemon_runtime::wait_for_released_residual_daemon;
 use ctx_daemon_runtime::{
     daemon_upgrade_handoff_path, daemon_upgrade_restart_request_root,
     terminate_identity_verified_legacy_daemon, DaemonLifecycleControlLock,

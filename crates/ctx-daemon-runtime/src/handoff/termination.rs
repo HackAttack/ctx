@@ -1,29 +1,40 @@
 #[cfg(unix)]
 use super::{DAEMON_UPGRADE_POLL_INTERVAL, DAEMON_UPGRADE_RESTART_TIMEOUT};
+#[cfg(not(windows))]
 use std::path::Path;
 
 #[cfg(unix)]
 use std::time::Instant;
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 use std::{fs, process};
 
 #[cfg(all(test, target_os = "linux"))]
 use std::process::Command;
 
-use anyhow::{anyhow, Context, Result};
+#[cfg(unix)]
+use anyhow::Context;
+#[cfg(not(windows))]
+use anyhow::{anyhow, Result};
+#[cfg(unix)]
 use serde_json::Value;
 
 #[cfg(unix)]
-use crate::daemon_lock_is_active;
 use crate::{
-    daemon_lock_path, observe_pid_advisory_lock, pid_from_lock_json, process_executable_sha256,
-    read_pid_lock_json, PidAdvisoryLockObservation,
+    daemon_lock_is_active, daemon_lock_path, observe_pid_advisory_lock, pid_from_lock_json,
+    process_executable_sha256, read_pid_lock_json, PidAdvisoryLockObservation,
 };
 
 #[cfg(target_os = "linux")]
 mod legacy;
 #[cfg(target_os = "linux")]
 use legacy::verify_legacy_v025_identity;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::{
+    terminate_identity_verified_legacy_daemon, terminate_identity_verified_residual_daemon,
+    terminate_identity_verified_residual_daemon_owner, wait_for_released_residual_daemon,
+};
 
 #[cfg(unix)]
 #[derive(Clone, Copy)]
@@ -370,153 +381,6 @@ fn signal_verified_process(pid: u32, signal: libc::c_int) -> Result<()> {
         return Ok(());
     }
     Err(error).context("signal identity-verified residual ctx daemon")
-}
-
-#[cfg(windows)]
-pub fn terminate_identity_verified_residual_daemon(
-    data_root: &Path,
-    expected_executable: &Path,
-) -> Result<()> {
-    terminate_identity_verified_residual_daemon_owner(data_root, expected_executable, None)
-}
-
-#[cfg(windows)]
-pub fn terminate_identity_verified_residual_daemon_owner(
-    data_root: &Path,
-    expected_executable: &Path,
-    expected_owner_id: Option<&str>,
-) -> Result<()> {
-    use windows_sys::Win32::{
-        Foundation::CloseHandle,
-        System::Threading::{
-            OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
-        },
-    };
-
-    let lock_path = daemon_lock_path(data_root);
-    let value = read_pid_lock_json(&lock_path)
-        .ok_or_else(|| anyhow!("active ctx daemon lock has no readable identity"))?;
-    let pid = pid_from_lock_json(&value)
-        .ok_or_else(|| anyhow!("active ctx daemon lock has no process identity"))?;
-    let observed_owner_id = value.get("owner_id").and_then(Value::as_str);
-    if expected_owner_id.is_some() && observed_owner_id != expected_owner_id {
-        return Err(anyhow!(
-            "ctx daemon ownership changed after health verification; refusing to terminate"
-        ));
-    }
-    let owner_id = expected_owner_id.or(observed_owner_id).map(str::to_owned);
-    verify_residual_daemon_identity(data_root, expected_executable, pid, &value)?;
-    let handle = unsafe {
-        OpenProcess(
-            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
-            0,
-            pid,
-        )
-    };
-    if handle.is_null() {
-        return Err(std::io::Error::last_os_error())
-            .context("open identity-verified residual ctx daemon");
-    }
-    let owner_still_matches = read_pid_lock_json(&lock_path).is_some_and(|current| {
-        pid_from_lock_json(&current) == Some(pid)
-            && owner_id.as_ref().is_none_or(|expected| {
-                current.get("owner_id").and_then(Value::as_str) == Some(expected.as_str())
-            })
-    });
-    if !owner_still_matches {
-        unsafe {
-            CloseHandle(handle);
-        }
-        return Err(anyhow!(
-            "ctx daemon ownership changed before termination; refusing to terminate"
-        ));
-    }
-    let terminated = unsafe { TerminateProcess(handle, 0) };
-    unsafe {
-        CloseHandle(handle);
-    }
-    if terminated == 0 {
-        return Err(std::io::Error::last_os_error())
-            .context("terminate identity-verified residual ctx daemon");
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-pub fn terminate_identity_verified_legacy_daemon(
-    _data_root: &Path,
-    _expected_executable: &Path,
-) -> Result<()> {
-    Err(anyhow!(
-        "legacy automatic daemon replacement is not supported on Windows"
-    ))
-}
-
-#[cfg(windows)]
-fn verify_residual_daemon_identity(
-    data_root: &Path,
-    expected_executable: &Path,
-    pid: u32,
-    value: &Value,
-) -> Result<()> {
-    if pid == process::id() {
-        return Err(anyhow!("refusing to terminate the current ctx process"));
-    }
-    if observe_pid_advisory_lock(&daemon_lock_path(data_root))
-        != Some(PidAdvisoryLockObservation {
-            held: true,
-            released: false,
-        })
-    {
-        return Err(anyhow!(
-            "ctx daemon owner lock is not held; refusing residual termination"
-        ));
-    }
-    let recorded_root = value
-        .get("data_root")
-        .and_then(Value::as_str)
-        .map(Path::new)
-        .ok_or_else(|| anyhow!("ctx daemon lock has no data-root identity"))?;
-    if !same_windows_path(recorded_root, data_root) {
-        return Err(anyhow!(
-            "ctx daemon lock data-root identity does not match uninstall target"
-        ));
-    }
-    let recorded_binary = value
-        .get("binary")
-        .and_then(Value::as_str)
-        .map(Path::new)
-        .ok_or_else(|| anyhow!("ctx daemon lock has no executable identity"))?;
-    if !same_windows_path(recorded_binary, expected_executable) {
-        return Err(anyhow!(
-            "ctx daemon lock executable is not the installed ctx executable"
-        ));
-    }
-    let recorded_sha256 = value
-        .get("binary_sha256")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("ctx daemon lock has no executable digest identity"))?;
-    let process_sha256 = process_executable_sha256(pid).ok_or_else(|| {
-        anyhow!(
-            "cannot verify executable image for residual ctx process {pid}; refusing to terminate"
-        )
-    })?;
-    if process_sha256 != recorded_sha256 {
-        return Err(anyhow!(
-            "residual lock owner image does not match its held ctx daemon lock; refusing to terminate"
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn same_windows_path(left: &Path, right: &Path) -> bool {
-    let normalize = |path: &Path| {
-        fs::canonicalize(path)
-            .ok()
-            .map(|path| path.to_string_lossy().to_lowercase())
-    };
-    normalize(left) == normalize(right)
 }
 
 #[cfg(not(any(unix, windows)))]
