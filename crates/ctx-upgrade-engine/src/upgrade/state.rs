@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use ctx_history_core::utc_now;
+use ctx_history_platform::platform_security::restrict_private_file_handle;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
@@ -528,11 +529,36 @@ pub(super) fn atomic_write_json(path: &Path, value: &Value) -> Result<()> {
     let tmp = path.with_extension(format!("tmp.{}", Uuid::new_v4().simple()));
     let body = serde_json::to_vec_pretty(value)?;
     let result = (|| -> Result<()> {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows_sys::Win32::{
+                Foundation::{GENERIC_READ, GENERIC_WRITE},
+                Storage::FileSystem::{
+                    FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, READ_CONTROL, WRITE_DAC,
+                },
+            };
+
+            options
+                .access_mode(GENERIC_READ | GENERIC_WRITE | READ_CONTROL | WRITE_DAC)
+                .share_mode(FILE_SHARE_READ)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let mut file = options
             .open(&tmp)
             .with_context(|| format!("create {}", tmp.display()))?;
+        restrict_private_file_handle(&file)
+            .with_context(|| format!("protect {}", tmp.display()))?;
         file.write_all(&body)
             .with_context(|| format!("write {}", tmp.display()))?;
         file.sync_all()
