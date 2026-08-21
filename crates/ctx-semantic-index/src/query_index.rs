@@ -197,17 +197,8 @@ fn semantic_candidates_with_embedding(
         ));
     }
     let active_events = pinned.stats().active_events;
-    let eligible_events = projection.len();
-    if eligible_events > active_events {
-        return Err(semantic_not_ready(
-            "semantic_projection_event_mismatch",
-            format!(
-                "Core generation {} selected {eligible_events} semantic events but the flat-F32 generation contains only {active_events}",
-                index.generation_id()
-            ),
-        ));
-    }
-    let requested_k = candidate_limit.min(eligible_events.max(1));
+    let metadata_matches = projection.len();
+    let requested_k = candidate_limit.min(metadata_matches.max(1));
     let event_is_eligible = |event_id| projection.contains(event_id);
     let search = scan_exact_generation(
         pinned,
@@ -217,16 +208,6 @@ fn semantic_candidates_with_embedding(
         Instant::now(),
     )?;
     let stats = search.stats.clone();
-    if stats.events_scored != eligible_events {
-        return Err(semantic_not_ready(
-            "semantic_projection_event_mismatch",
-            format!(
-                "flat-F32 generation scored {} of {eligible_events} metadata-eligible events from Core generation {}",
-                stats.events_scored,
-                index.generation_id()
-            ),
-        ));
-    }
     let raw_candidates = search.hits.len();
     let mut non_positive = 0_usize;
     let mut positive_hits = Vec::with_capacity(raw_candidates);
@@ -287,9 +268,9 @@ fn semantic_candidates_with_embedding(
         1,
         raw_candidates,
         candidates.len(),
-        active_events.saturating_sub(eligible_events),
+        active_events.saturating_sub(stats.events_scored),
         non_positive,
-        eligible_events,
+        stats.events_scored,
         query_embed_ms,
     );
     Ok((candidates, diagnostics))

@@ -115,7 +115,9 @@ fn typed_cases_construct_the_expected_production_status_shapes() {
         assert!(status["lexical"]["status"].is_string());
         assert!(status["lexical"]["indexed_items"].is_u64());
         assert!(status["semantic"]["enabled"].is_boolean());
+        assert!(status["semantic"]["coverage"]["candidate_items"].is_u64());
         assert!(status["semantic"]["coverage"]["embedded_items"].is_u64());
+        assert!(status["semantic"]["coverage"]["filtered_items"].is_u64());
         assert!(status["daemon"]["running"].is_boolean());
         assert!(status["daemon"]["jobs"]["semantic_index"]["status"].is_string());
     }

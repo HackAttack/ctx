@@ -1,7 +1,17 @@
 use super::*;
 use std::fs;
 
-use ctx_history_index::{GenerationWriter, WriterOptions};
+use ctx_history_core::{
+    derive_event_id, derive_session_id, CaptureProvider, CertifiedSource, CoreRecord,
+    EventIdentityInput, EventRole, EventType, NativeItemKey, NativeSessionKey, ScannedSourceCounts,
+    SessionIdentityInput, SourceAnchor, SourceKey, SourceObservation, TypedKey,
+};
+use ctx_history_index::{CoreEventRecord, GenerationWriter, WriterOptions};
+use ctx_semantic_index::{
+    SemanticBatchEmbedder, SemanticChunkDocument, SemanticDocumentBuilder, SemanticEventDocument,
+    SemanticVectorStore,
+};
+use ctx_semantic_model::SEMANTIC_DIMENSIONS;
 
 fn core_publication_fixture() -> (tempfile::TempDir, std::path::PathBuf, String) {
     let temp = tempfile::tempdir().unwrap();
@@ -103,6 +113,207 @@ fn core_publication_fixture() -> (tempfile::TempDir, std::path::PathBuf, String)
     )
     .unwrap();
     (temp, data_root, generation_id)
+}
+
+struct StatusSemanticBuilder;
+
+const EMPTY_DOCUMENT_TOKEN: &str = "semantic-empty-status-document-fixture";
+
+impl SemanticDocumentBuilder for StatusSemanticBuilder {
+    fn build_document(
+        &mut self,
+        record: &CoreEventRecord,
+    ) -> anyhow::Result<Option<SemanticEventDocument>> {
+        let text = record.core_record.content.meaningful_text();
+        if text.trim().is_empty() || text.contains(EMPTY_DOCUMENT_TOKEN) {
+            return Ok(None);
+        }
+        Ok(Some(SemanticEventDocument::new(
+            record.event_id.as_uuid(),
+            Some(record.session_id.as_uuid()),
+            record.event_sequence,
+            record.occurred_at_unix_ms.unwrap_or_default(),
+            EventType::Message,
+            Some(EventRole::User),
+            "status_test".to_owned(),
+            Some(CaptureProvider::Codex),
+            Some(record.source_format.clone()),
+            record.core_record.agent_scope,
+            Vec::new(),
+            format!("user:\n{text}"),
+        )))
+    }
+}
+
+struct StatusSemanticEmbedder;
+
+impl SemanticBatchEmbedder for StatusSemanticEmbedder {
+    fn embed_chunks(&mut self, chunks: &[SemanticChunkDocument]) -> anyhow::Result<Vec<Vec<f32>>> {
+        Ok(chunks
+            .iter()
+            .map(|_| {
+                let mut vector = vec![0.0; SEMANTIC_DIMENSIONS];
+                vector[0] = 1.0;
+                vector
+            })
+            .collect())
+    }
+}
+
+#[test]
+fn public_semantic_counters_accept_the_exact_json_integer_maximum() {
+    for field in [
+        "semantic_documents",
+        "projected_documents",
+        "filtered_documents",
+    ] {
+        assert_eq!(
+            validate_public_semantic_counter(field, MAX_SAFE_PUBLIC_JSON_COUNTER).unwrap(),
+            MAX_SAFE_PUBLIC_JSON_COUNTER
+        );
+    }
+    let projected = PublicSemanticDocumentCounts::new(
+        MAX_SAFE_PUBLIC_JSON_COUNTER,
+        MAX_SAFE_PUBLIC_JSON_COUNTER,
+    )
+    .unwrap();
+    assert_eq!(projected.projected_documents, MAX_SAFE_PUBLIC_JSON_COUNTER);
+    assert_eq!(projected.filtered_documents, 0);
+    let filtered = PublicSemanticDocumentCounts::new(MAX_SAFE_PUBLIC_JSON_COUNTER, 0).unwrap();
+    assert_eq!(filtered.projected_documents, 0);
+    assert_eq!(filtered.filtered_documents, MAX_SAFE_PUBLIC_JSON_COUNTER);
+}
+
+#[test]
+fn public_semantic_counters_reject_exact_json_integer_maximum_plus_one() {
+    let rejected = MAX_SAFE_PUBLIC_JSON_COUNTER + 1;
+    for field in [
+        "semantic_documents",
+        "projected_documents",
+        "filtered_documents",
+    ] {
+        let error = validate_public_semantic_counter(field, rejected).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("{field} exceeds maximum {MAX_SAFE_PUBLIC_JSON_COUNTER}")
+        );
+    }
+    assert!(PublicSemanticDocumentCounts::new(rejected, rejected).is_err());
+}
+
+#[test]
+fn semantic_status_reports_ready_only_with_exact_projected_and_filtered_counts() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    fs::create_dir_all(&data_root).unwrap();
+    fs::write(
+        data_root.join(crate::config::CONFIG_FILE),
+        "[search]\nsemantic = true\n",
+    )
+    .unwrap();
+    let source = SourceKey::derive(
+        "codex",
+        "codex_session_jsonl",
+        "session",
+        1,
+        SourceAnchor::provider_native(
+            "session-file",
+            TypedKey::utf8("semantic-status.jsonl").unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let native_session_key =
+        NativeSessionKey::native_id("session", TypedKey::utf8("semantic-status").unwrap()).unwrap();
+    let session_id = derive_session_id(SessionIdentityInput {
+        source: &source,
+        logical_session_kind: "thread",
+        native_session_key: &native_session_key,
+    })
+    .unwrap();
+    let mut writer =
+        GenerationWriter::open(data_root.join("search/lexical"), WriterOptions::default())
+            .unwrap()
+            .into_writer()
+            .unwrap();
+    writer.begin_source(source.clone()).unwrap();
+    for (sequence, body) in [
+        (1_u64, "ordinary semantic question"),
+        (
+            2,
+            "<environment_context>status control</environment_context>",
+        ),
+        (3, EMPTY_DOCUMENT_TOKEN),
+    ] {
+        let event_id = derive_event_id(EventIdentityInput {
+            source: &source,
+            session_id,
+            logical_item_kind: "message",
+            native_item_key: &NativeItemKey::native_id("message", TypedKey::U64(sequence)).unwrap(),
+            subrecord_selector: None,
+        })
+        .unwrap();
+        let mut record = CoreRecord::new_selected(
+            event_id,
+            session_id,
+            source.clone(),
+            sequence,
+            "message",
+            "semantic-status-v1",
+            body,
+        )
+        .unwrap();
+        record.provider_session_id = Some("semantic-status".to_owned());
+        record.native_event_id = Some(TypedKey::U64(sequence));
+        record.role = Some("user".to_owned());
+        record.validate_contract().unwrap();
+        writer.add_core_record(record).unwrap();
+    }
+    let observation =
+        SourceObservation::new(source.clone(), "regular-file-v1", vec![1_u8]).unwrap();
+    writer
+        .certify_source(
+            CertifiedSource::certify(
+                observation.clone(),
+                observation,
+                "semantic-status-parser-v1",
+                [1; 32],
+                ScannedSourceCounts {
+                    complete_records: 3,
+                    retained_records: 3,
+                    indexed_documents: 3,
+                    certified_bytes: 3,
+                    ..ScannedSourceCounts::default()
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    writer.commit(|_| true).unwrap();
+    let index = VerifiedIndex::open(data_root.join("search/lexical")).unwrap();
+    let mut store =
+        SemanticVectorStore::open(&source_backed_semantic_vector_path(&data_root)).unwrap();
+    for _ in 0..16 {
+        let outcome = store
+            .reconcile_source_backed_index(
+                &index,
+                &mut StatusSemanticBuilder,
+                &mut StatusSemanticEmbedder,
+            )
+            .unwrap();
+        if outcome.ready() {
+            break;
+        }
+    }
+
+    let config = AppConfig::load(&data_root).unwrap();
+    let status = source_epoch_status_report(&data_root, &config).unwrap();
+    let semantic = &status.report["semantic"];
+    assert_eq!(semantic["status"], "ready");
+    assert_eq!(semantic["flat_f32"]["semantic_documents"], 3);
+    assert_eq!(semantic["flat_f32"]["projected_documents"], 1);
+    assert_eq!(semantic["flat_f32"]["filtered_documents"], 2);
+    assert_eq!(semantic["flat_f32"]["active_events"], 1);
 }
 
 #[test]

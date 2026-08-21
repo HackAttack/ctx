@@ -52,9 +52,24 @@ use uuid::Uuid;
 mod source_projection;
 pub use flat_segments::PinnedFlatGeneration;
 pub use source_projection::{
-    semantic_core_content_is_control, source_backed_semantic_vector_path, SemanticBatchEmbedder,
-    SemanticDocumentBuilder, SourceBackedGenerationPin, SourceBackedSemanticOutcome,
+    semantic_core_content_is_control, source_backed_semantic_contract_fingerprint,
+    source_backed_semantic_vector_path, SemanticBatchEmbedder, SemanticDocumentBuilder,
+    SourceBackedGenerationPin, SourceBackedSemanticOutcome,
 };
 pub(super) mod control;
 pub(super) mod flat_scan;
 pub(super) mod flat_segments;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn seed_filter_unaware_derived_state(path: &std::path::Path) -> anyhow::Result<()> {
+    const FILTER_UNAWARE_CONTROL_SCHEMA_VERSION: i64 = 5;
+
+    let connection = Connection::open(path.join(control::CONTROL_FILE))?;
+    connection.pragma_update(None, "user_version", FILTER_UNAWARE_CONTROL_SCHEMA_VERSION)?;
+    drop(connection);
+    flat_segments::seed_filter_unaware_manifest(
+        path,
+        crate::vector_store_schema::active_model_contract(),
+    )
+    .map_err(anyhow::Error::new)
+}

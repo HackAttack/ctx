@@ -18,11 +18,13 @@ use super::*;
 use crate::vector_store_search::scan_exact_generation;
 
 mod content;
+mod filter_accounting;
 mod policy_rebuild;
 mod proportionality;
 mod recovery;
 
 const TAIL_TOKEN: &str = "semantic-tail-token-7f0d";
+const EMPTY_DOCUMENT_TOKEN: &str = "semantic-empty-document-fixture-7f0d";
 
 #[derive(Default)]
 struct CoreBuilder {
@@ -46,7 +48,7 @@ impl SemanticDocumentBuilder for CoreBuilder {
         }
         let text = ctx_history_index::project_body_search(record.core_record.content.clone())?
             .unwrap_or_default();
-        if text.is_empty() {
+        if text.is_empty() || text.contains(EMPTY_DOCUMENT_TOKEN) {
             return Ok(None);
         }
         Ok(Some(SemanticEventDocument {
@@ -481,7 +483,7 @@ fn semantic_generation_uses_exact_per_source_core_aggregates_without_candidate_t
         &[(0, bodies("stable", 3)), (1, bodies("changed", 2))],
     )?;
     let generation = SourceBackedSemanticGeneration::from_verified_index(&index)?;
-    assert_eq!(SOURCE_CONTRACT_VERSION, 12);
+    assert_eq!(SOURCE_CONTRACT_VERSION, 13);
     assert_eq!(SOURCE_INPUT_LEXICAL_SCHEMA_VERSION, 22);
     assert_eq!(index.semantic_eligible_event_count()?, 5);
     assert_eq!(generation.core_generation_id, index.generation_id());

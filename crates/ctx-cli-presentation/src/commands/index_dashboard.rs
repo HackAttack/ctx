@@ -209,6 +209,7 @@ fn render_semantic(readiness: &Value, context: &RenderContext) -> Document {
 
     let semantic_status = string_at(readiness, &["semantic", "status"], "unknown");
     let embedded = u64_at(readiness, &["semantic", "coverage", "embedded_items"]).unwrap_or(0);
+    let candidates = u64_at(readiness, &["semantic", "coverage", "candidate_items"]);
     let searchable = u64_at(readiness, &["semantic", "coverage", "searchable_items"]);
     if semantic_status == "ready" {
         return fields(context, &[Field::new("Semantic search", "On")]);
@@ -230,7 +231,8 @@ fn render_semantic(readiness: &Value, context: &RenderContext) -> Document {
         return document;
     }
 
-    let total = searchable
+    let total = candidates
+        .or(searchable)
         .filter(|total| *total > 0)
         .map(|total| total.max(embedded));
     let mut document = progress(

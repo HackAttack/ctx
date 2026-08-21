@@ -103,7 +103,23 @@ fn full_compaction_preserves_receipts_and_readiness_exactly() -> Result<()> {
     let fixture = Fixture::new(2)?;
     let index = fixture.publish(
         "full-compaction",
-        &[(0, bodies("first", 3)), (1, bodies("second", 2))],
+        &[
+            (
+                0,
+                vec![
+                    "first projected".to_owned(),
+                    "<turn_aborted>first filtered</turn_aborted>".to_owned(),
+                    "first projected again".to_owned(),
+                ],
+            ),
+            (
+                1,
+                vec![
+                    "second projected".to_owned(),
+                    EMPTY_DOCUMENT_TOKEN.to_owned(),
+                ],
+            ),
+        ],
     )?;
     let mut store = SemanticVectorStore::open(&fixture.semantic_path)?;
     reconcile_all(
@@ -112,10 +128,22 @@ fn full_compaction_preserves_receipts_and_readiness_exactly() -> Result<()> {
         &mut CoreBuilder::default(),
         &mut MarkerEmbedder::default(),
     )?;
+    let acknowledgement = store
+        .source_acknowledgement()?
+        .ok_or_else(|| anyhow!("pre-compaction acknowledgement is missing"))?;
+    assert_eq!(acknowledgement.semantic_documents, 5);
+    assert_eq!(acknowledgement.projected_documents, 3);
+    assert_eq!(acknowledgement.filtered_documents, 2);
     let before = projection_snapshot(&store)?;
     let compacted = store.flat.compact().map_err(anyhow::Error::new)?;
     assert!(compacted.published);
     assert_eq!(projection_snapshot(&store)?, before);
+    assert_eq!(
+        store
+            .source_acknowledgement()?
+            .ok_or_else(|| anyhow!("post-compaction acknowledgement is missing"))?,
+        acknowledgement
+    );
     assert!(matches!(
         store.source_backed_generation_pin_exact(index.generation_id(), 5)?,
         SourceBackedGenerationPin::Ready(_)
