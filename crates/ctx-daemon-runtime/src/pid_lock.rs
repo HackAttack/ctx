@@ -262,14 +262,32 @@ pub fn observe_pid_advisory_lock(path: &Path) -> Option<PidAdvisoryLockObservati
             let _ = fs2::FileExt::unlock(&guard);
             observation
         }
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+        Err(error) if pid_lock_error_is_contended(&error) => {
+            let released = read_pid_lock_json(path)
+                .filter(pid_lock_uses_advisory_protocol)
+                .and_then(|value| value.get("released").and_then(Value::as_bool))
+                .unwrap_or(false);
             Some(PidAdvisoryLockObservation {
                 held: true,
-                released: false,
+                released,
             })
         }
         Err(_) => None,
     }
+}
+
+fn pid_lock_error_is_contended(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // fs2 forwards LockFileEx's ERROR_LOCK_VIOLATION without mapping it
+        // to WouldBlock. It is the exact nonblocking contention result.
+        return error.raw_os_error() == Some(crate::WINDOWS_ERROR_LOCK_VIOLATION);
+    }
+    #[cfg(not(windows))]
+    false
 }
 
 pub fn try_lock_pid_file(file: &fs::File) -> std::io::Result<bool> {
