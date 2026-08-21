@@ -1193,16 +1193,20 @@ fn batch_validates_every_source_before_writing_and_propagates_progress_errors() 
             },
         )
         .unwrap_err();
+    let ParallelLeafScanError::Sink {
+        operation: ParallelLeafSinkOperation::AddCoreRecordBatch,
+        source,
+        ..
+    } = error
+    else {
+        panic!("expected add-core-record-batch sink failure");
+    };
     assert!(matches!(
-        error,
-        ParallelLeafScanError::Sink {
-            operation: ParallelLeafSinkOperation::AddCoreRecordBatch,
-            source: SourceBackedCoordinatorError::Progress(SourceBackedRouteError {
-                detail,
-                ..
-            }),
+        *source,
+        SourceBackedCoordinatorError::Progress(SourceBackedRouteError {
+            ref detail,
             ..
-        } if detail == "injected batch progress failure"
+        }) if detail == "injected batch progress failure"
     ));
     assert_eq!(accepted, 3);
     assert_eq!(
