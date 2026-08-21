@@ -73,6 +73,19 @@ pub(in crate::sqlite_source) fn open_root_handle_sqlite_source_snapshot_with_lim
     )
 }
 
+pub(in crate::sqlite_source) fn planned_snapshot_copy_bytes_for_test(
+    authority: &SqliteSourceDirectoryAuthority,
+    database_name: &OsStr,
+) -> SqliteSourceAccessResult<u64> {
+    let family = SqliteSourceFamily::open(authority, database_name, || {})?;
+    let evidence = family.capture_evidence()?;
+    enforce_snapshot_copy_bounds_with_limit(
+        &family,
+        &evidence,
+        SqliteSourceSnapshotLimits::default().maximum_source_bytes(),
+    )
+}
+
 pub(in crate::sqlite_source) fn open_root_handle_sqlite_source_stable_snapshot_after_database_copy_for_test(
     authority: &SqliteSourceDirectoryAuthority,
     database_name: &OsStr,

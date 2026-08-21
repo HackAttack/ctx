@@ -1,5 +1,40 @@
 use super::*;
 
+#[test]
+fn snapshot_capacity_failures_are_distinct_from_runtime_resource_failures() {
+    let capacity = SqliteSourceAccessError::InsufficientScratchSpace {
+        path: PathBuf::from("ctx-data"),
+        required: 10,
+        available: 9,
+    };
+    assert!(capacity.is_snapshot_capacity_failure());
+    assert!(capacity.is_systemic_resource_failure());
+
+    let diagnosed = capacity.with_diagnostic(
+        SqliteFailurePhase::SourceAcquisition,
+        SqliteArtifactKind::PrivateSourceCopy,
+        0,
+        0,
+        SqliteCleanupStatus::NotRequired,
+    );
+    assert!(diagnosed.is_snapshot_capacity_failure());
+
+    let runtime = SqliteSourceAccessError::ScratchIoUnavailable {
+        operation: "writing a private SQLite source-family copy",
+        path: PathBuf::from("ctx-data/source.sqlite"),
+        source: io::Error::from(io::ErrorKind::StorageFull),
+    };
+    assert!(!runtime.is_snapshot_capacity_failure());
+    assert!(runtime.is_systemic_resource_failure());
+
+    let finalization = SqliteSourceAccessError::Finalization {
+        primary: Box::new(diagnosed),
+        cleanup: Box::new(runtime),
+    };
+    assert!(!finalization.is_snapshot_capacity_failure());
+    assert!(finalization.is_systemic_resource_failure());
+}
+
 fn assert_revalidation_resource_unavailable(error: SqliteSourceAccessError) {
     assert!(error.is_systemic_resource_failure());
     assert!(matches!(

@@ -257,7 +257,12 @@ contract for that source family:
 - SQLite is observed as one short read-only logical snapshot. WAL size,
   checkpointing, and physical database-file size are not ingestion states.
   Concurrent committed rows belong to a subsequent certified snapshot unless
-  they are visible inside the admitted transaction.
+  they are visible inside the admitted transaction. On platforms and routes
+  that cannot retain a no-write snapshot directly, ctx first preallocates and
+  streams one private DB/WAL copy below its data root. Admission depends on
+  available temporary disk capacity plus safety headroom, not a fixed source
+  size ceiling; copy memory remains bounded and the private family is removed
+  when the route finishes.
 - JSON documents and document trees use unchanged-or-replace semantics. A
   mutation during a scan invalidates that candidate; the retry reads one
   complete replacement.

@@ -400,6 +400,44 @@ fn cold_second_route_failure_after_output_publishes_first_without_partial_record
 }
 
 #[test]
+fn cold_opencode_capacity_failure_publishes_healthy_peer() {
+    let healthy = fixture_route(CaptureProvider::Gemini, GEMINI_CLI_SOURCE_FORMAT, 41);
+    let failing = fixture_route(CaptureProvider::OpenCode, "opencode_sqlite", 42);
+    let healthy_id = healthy.metadata.route_identity.clone().unwrap();
+    let failing_id = failing.metadata.route_identity.clone().unwrap();
+    let mut registry = SourceBackedProviderRegistry::new();
+    registry.register(healthy);
+    registry.register(fail_route_before_scan(
+        failing,
+        SourceBackedRouteErrorKind::Unavailable,
+    ));
+    let temp = tempdir().unwrap();
+
+    let receipt =
+        refresh_source_backed_generation(temp.path(), &registry, WriterOptions::default()).unwrap();
+
+    assert_eq!(receipt.successful_route_ids, vec![healthy_id.clone()]);
+    assert_eq!(receipt.failed_routes.len(), 1);
+    assert_eq!(receipt.failed_routes[0].route_identity, failing_id.clone());
+    assert_eq!(
+        receipt.failed_routes[0].class,
+        SourceBackedSourceFailureClass::Unavailable
+    );
+    assert!(!receipt.failed_routes[0].carried_forward);
+    assert!(receipt
+        .commit
+        .manifest()
+        .source_route(&healthy_id)
+        .is_some());
+    assert!(receipt
+        .commit
+        .manifest()
+        .source_route(&failing_id)
+        .is_none());
+    assert_eq!(receipt.commit.indexed_documents, 1);
+}
+
+#[test]
 fn warm_success_advances_while_failed_route_is_carried_exactly() {
     let (first_v1, _) = revisioned_receipt_route(1);
     let second = fixture_route(CaptureProvider::Mux, "mux_session_jsonl_tree", 9);
