@@ -484,9 +484,10 @@ fn classify_incomplete_first_records<R: JsonlFamilyRuntime>(
                         &leaf.source_path,
                         &leaf.authority,
                         &leaf.authority_path,
-                        Some(&leaf.observation),
+                        &leaf.observation,
                         adapter.physical_encoding(&leaf),
                         adapter.record_framing(),
+                        leaf.frozen_scan_observation().is_some(),
                     )? =>
             {
                 changed = true;
@@ -511,9 +512,10 @@ fn classify_incomplete_first_records<R: JsonlFamilyRuntime>(
                     &leaf.source_path,
                     authority,
                     &leaf.authority_path,
-                    Some(&leaf.observation),
+                    &leaf.observation,
                     leaf.physical_encoding,
                     adapter.record_framing(),
+                    false,
                 )? {
                     changed = true;
                     classified.push(JsonlFamilyInventoryMember::Pending {
@@ -544,15 +546,27 @@ fn first_record_is_incomplete<E: JsonlFamilyError>(
     source_path: &Path,
     authority: &Arc<ProviderSourceRoot<E>>,
     authority_path: &Path,
-    expected: Option<&JsonlFileObservation>,
+    expected: &JsonlFileObservation,
     encoding: JsonlPhysicalEncoding,
     framing: JsonlRecordFraming,
+    freeze_observation_at_scan: bool,
 ) -> JsonlResult<bool, E> {
     let opened = authority.open_file(authority_path)?;
-    let observation = observe_opened_file(source_path, &opened)?;
-    if expected.is_some_and(|expected| expected != &observation) {
+    let current = if freeze_observation_at_scan {
+        observe_opened_file_allow_append(source_path, &opened)?
+    } else {
+        observe_opened_file(source_path, &opened)?
+    };
+    // Frozen-scan leaves already bind publication to the discovery-time
+    // observation. Classify their first record inside that bound while later
+    // scan and terminal proofs authenticate the prefix; newly appended bytes
+    // belong to the next refresh. Exact leaves retain exact preflight behavior.
+    if (freeze_observation_at_scan && !expected.admits_frozen_prefix_in(&current))
+        || (!freeze_observation_at_scan && expected != &current)
+    {
         return Err(E::source_changed());
     }
+    let observation = expected;
     if observation.length() == 0 {
         opened.revalidate_same_object()?;
         return Ok(false);

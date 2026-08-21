@@ -240,7 +240,13 @@ contract for that source family:
   prefix. Daemon startup and watcher replacement are exhaustive safety
   boundaries as well. Only complete records ending at or before the frozen EOF
   are published; a partial final record is deferred until a later refresh
-  completes it.
+  completes it. Cold bootstrap and exhaustive refresh must not require the
+  provider to become globally quiescent: once a leaf's opening observation is
+  admitted, ordinary append-only growth of that retained object publishes the
+  complete records inside the frozen prefix and defers the newer suffix. The
+  next refresh imports that suffix exactly once, while truncation, path
+  replacement, and mutation inside the authenticated prefix continue to fail
+  closed.
 - Standard-Zstandard Codex rollouts snapshot exactly the frozen compressed
   prefix from the retained source handle, then decode and hash that same private
   snapshot. The compressed snapshot plus decoded spool is bounded to 256 MiB
