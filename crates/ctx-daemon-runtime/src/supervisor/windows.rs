@@ -65,7 +65,7 @@ pub fn install_windows_supervisor(
     let path = identity.artifact_path();
     let system_root = manager_environment_value(manager_environment, "SystemRoot")
         .ok_or_else(|| anyhow!("Windows SystemRoot is unavailable"))?;
-    let sid = current_windows_user_sid(manager_environment)?;
+    let sid = crate::current_windows_user_sid()?;
     let xml = windows_task_xml(spec, Path::new(system_root), &sid)?;
     write_atomic_supervisor_file(path, &windows_task_xml_bytes(&xml))?;
 
@@ -295,27 +295,6 @@ pub fn windows_command_line_quote(value: &str) -> String {
 }
 
 #[cfg(windows)]
-pub fn current_windows_user_sid(
-    manager_environment: &SupervisorManagerEnvironment,
-) -> Result<String> {
-    let mut command = supervisor_command("whoami", manager_environment);
-    command.args(["/user", "/fo", "csv", "/nh"]);
-    let output = supervisor_output(&mut command).context("query current Windows user SID")?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "whoami /user failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .split(',')
-        .nth(1)
-        .map(|value| value.trim().trim_matches('"').to_owned())
-        .filter(|value| value.starts_with("S-1-"))
-        .ok_or_else(|| anyhow!("whoami returned no current-user SID"))
-}
-
-#[cfg(windows)]
 fn query_windows_task(
     task_name: &str,
     manager_environment: &SupervisorManagerEnvironment,
@@ -332,7 +311,7 @@ pub fn verify_windows_supervisor_registration(
 ) -> Result<()> {
     let system_root = manager_environment_value(manager_environment, "SystemRoot")
         .ok_or_else(|| anyhow!("Windows SystemRoot is unavailable"))?;
-    let sid = current_windows_user_sid(manager_environment)?;
+    let sid = crate::current_windows_user_sid()?;
     let task_name = spec.identity().name();
     let output = query_windows_task(&task_name, manager_environment)?;
     if !output.status.success() {

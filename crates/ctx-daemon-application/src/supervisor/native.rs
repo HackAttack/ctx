@@ -233,9 +233,9 @@ fn native_supervisor_identity(
 #[cfg(windows)]
 fn native_supervisor_identity(
     data_root: &Path,
-    manager_environment: &SupervisorManagerEnvironment,
+    _manager_environment: &SupervisorManagerEnvironment,
 ) -> Result<Option<SupervisorIdentity>> {
-    let sid = ctx_daemon_runtime::current_windows_user_sid(manager_environment)?;
+    let sid = ctx_daemon_runtime::current_windows_user_sid()?;
     environment::windows_supervisor_identity(data_root, &sid).map(Some)
 }
 

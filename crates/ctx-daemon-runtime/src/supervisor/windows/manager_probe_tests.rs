@@ -20,6 +20,25 @@ fn task_scheduler_probe_is_read_only() {
 }
 
 #[test]
+fn current_windows_sid_uses_the_process_token_without_a_path_command() {
+    let supervisor = include_str!("../windows.rs");
+    let identity = include_str!("../../windows_identity.rs");
+    let pipe_security = include_str!("../../ipc/server/windows_security.rs");
+
+    assert!(!supervisor.contains("whoami"));
+    assert!(!identity.contains("Command::new"));
+    assert!(!identity.contains("\"whoami\""));
+    assert!(identity.contains("OpenProcessToken(GetCurrentProcess()"));
+    assert!(identity.contains("GetTokenInformation"));
+    assert!(identity.contains("TokenUser"));
+    assert!(identity.contains("ConvertSidToStringSidW"));
+    assert!(identity.contains("impl Drop for LocalSidString"));
+    assert!(identity.contains("LocalFree"));
+    assert!(pipe_security.contains("CurrentProcessTokenUser::current()"));
+    assert!(!pipe_security.contains("GetTokenInformation"));
+}
+
+#[test]
 fn task_state_query_represents_absence_separately_from_failure() {
     let script = windows_task_state_script(r"\ctx-test-task");
     assert!(script.contains("-ErrorAction Stop"));

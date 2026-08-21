@@ -10,6 +10,8 @@ mod process;
 mod supervisor;
 mod wakeup;
 mod watch;
+#[cfg(windows)]
+mod windows_identity;
 
 pub use handoff::*;
 pub use ipc::*;
@@ -23,3 +25,5 @@ pub use process::*;
 pub use supervisor::*;
 pub use wakeup::*;
 pub use watch::*;
+#[cfg(windows)]
+pub use windows_identity::current_windows_user_sid;
