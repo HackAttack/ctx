@@ -57,7 +57,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 # Bazel passes these cfgs for its owned test wiring (binary binding, fixture
 # selection, upgrade fixtures); plain cargo builds never set them, so declare
 # them for check-cfg.
-unexpected_cfgs = { level = "allow", check-cfg = [
+unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(ctx_cli_bazel_test)',
     'cfg(ctx_cli_test_support_fixtures)',
     'cfg(ctx_cli_test_support_upgrade)',

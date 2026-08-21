@@ -11,6 +11,9 @@ use ctx_history_capture_model::{
 use ctx_history_core::CaptureProvider;
 use std::{sync::Barrier, thread};
 
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, Ordering};
+
 fn catalog_route(
     provider: CaptureProvider,
     path: PathBuf,

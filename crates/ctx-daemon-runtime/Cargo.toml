@@ -43,4 +43,4 @@ tempfile.workspace = true
 [lints.rust]
 # Bazel passes --cfg ctx_release_qualification for the release-qualification
 # build; plain cargo builds never set it, so declare it for check-cfg.
-unexpected_cfgs = { level = "allow", check-cfg = ['cfg(ctx_release_qualification)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(ctx_release_qualification)'] }

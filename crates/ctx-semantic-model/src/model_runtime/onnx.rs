@@ -540,6 +540,8 @@ pub(super) fn semantic_onnxruntime_platform_dir() -> &'static str {
 #[cfg(test)]
 #[cfg(ctx_semantic_fastembed)]
 mod ort_runtime_tests {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    use std::env;
 
     use super::*;
 

@@ -11,6 +11,9 @@ use std::{
     },
 };
 
+#[cfg(target_os = "linux")]
+use std::sync::atomic::AtomicBool;
+
 use super::*;
 use crate::source_backed_refresh_coordinator::{
     source_backed_index_root, SourceBackedRefreshCurrent, SourceBackedRefreshExecution,

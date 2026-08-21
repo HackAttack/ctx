@@ -1,6 +1,9 @@
 use super::*;
 
 #[cfg(target_os = "linux")]
+use std::time::Instant;
+
+#[cfg(target_os = "linux")]
 #[test]
 fn local_json_ordinary_completion_reaps_descendants_on_success_and_failure() {
     let cases = [

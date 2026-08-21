@@ -22,6 +22,8 @@ mod event_routing;
 use event_routing::record_and_observe_watch_event;
 use event_routing::{ignored_watch_event, record_ignored_watch_event, record_watch_event};
 
+#[cfg(all(test, target_os = "linux"))]
+use ctx_daemon_runtime::WATCH_DEBOUNCE_QUIET;
 #[cfg(test)]
 use ctx_daemon_runtime::WATCH_EVENT_QUEUE_CAPACITY;
 const WATCH_RECEIPT_FILE: &str = "wakeup.json";
