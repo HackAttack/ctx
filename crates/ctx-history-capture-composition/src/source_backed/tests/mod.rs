@@ -5,7 +5,6 @@ mod gemini_retrieval_exclusion;
 mod hermes;
 mod inventory;
 mod jsonl_shared_publication;
-mod mistral_vibe_publication;
 mod mux_publication;
 mod openclaw_sqlite;
 mod ordinary_projector_liveness;

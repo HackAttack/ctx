@@ -1,21 +1,34 @@
 use std::{fs, path::Path};
 
+use ctx_history_capture_composition::{
+    refresh_source_backed_generation, register_landed_source_backed_route, ProviderCatalogSupport,
+    ProviderImportSupport, ProviderSource, ProviderSourceKind, ProviderSourceStatus,
+    SourceBackedProviderRegistry, SourceBackedRouteSelection,
+};
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, AgentScope, CaptureProvider, CertifiedSource,
-    CoreRecord, EventIdentityInput, EventType, NativeItemKey, PositionStability, SourceKey,
-    StableEntityId, SubrecordSelector, TypedKey,
+    CoreRecord, EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, PositionStability,
+    SourceKey, StableEntityId, SubrecordSelector, TypedKey,
 };
 use ctx_history_index::{GenerationWriter, VerifiedIndex, WriterOptions};
 use serde_json::Value;
 
-use crate::{
-    provider::source_backed::{
-        refresh_source_backed_generation, register_landed_source_backed_route,
-        SourceBackedProviderRegistry, SourceBackedRouteSelection,
-    },
-    ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
-    ProviderSourceStatus,
-};
+fn tempdir() -> tempfile::TempDir {
+    let root = fs::canonicalize(std::env::temp_dir()).unwrap();
+    tempfile::Builder::new()
+        .prefix("ctx-mistral-vibe-publication-")
+        .tempdir_in(root)
+        .unwrap()
+}
+
+fn has_literal_fact(record: &CoreRecord, kind: LiteralFactKind, value: &str) -> bool {
+    record
+        .content
+        .activity
+        .iter()
+        .flat_map(|activity| activity.facts.iter())
+        .any(|fact| fact.kind == kind && fact.value == value)
+}
 
 const SESSION_ID: &str = "mistral-mcp-abstention";
 const SOURCE_FORMAT: &str = "mistral_vibe_session_jsonl";
@@ -168,7 +181,7 @@ fn unchanged_pre_agent_scope_certificate_is_replaced_instead_of_replayed_stale()
     })
     .to_string()
         + "\n";
-    let temp = crate::test_support_paths::tempdir().unwrap();
+    let temp = tempdir();
     let source_root = temp.path().join("source");
     let index = temp.path().join("index");
     write_session(&source_root, &messages);
@@ -255,8 +268,8 @@ fn exact_parent_metadata_publishes_literal_parent_identity() {
     })
     .to_string()
         + "\n";
-    let temp = crate::test_support_paths::tempdir().unwrap();
-    let index_temp = crate::test_support_paths::tempdir().unwrap();
+    let temp = tempdir();
+    let index_temp = tempdir();
     write_named_session(
         temp.path(),
         "parent",
@@ -286,12 +299,12 @@ fn exact_parent_metadata_publishes_literal_parent_identity() {
     let child = published_session(&index, "mistral-child").remove(0);
     assert_eq!(child.parent_session_id, Some(parent.session_id));
     assert_eq!(child.root_session_id, Some(parent.session_id));
-    assert!(super::has_literal_fact(
+    assert!(has_literal_fact(
         &parent,
         ctx_history_core::LiteralFactKind::SessionCwd,
         "/tmp/mistral"
     ));
-    assert!(super::has_literal_fact(
+    assert!(has_literal_fact(
         &child,
         ctx_history_core::LiteralFactKind::SessionCwd,
         "/tmp/mistral"
@@ -322,7 +335,7 @@ fn url_and_stdio_transport_metadata_publish_terminal_content_without_mcp_identit
     ]
     .join("\n")
         + "\n";
-    let temp = crate::test_support_paths::tempdir().unwrap();
+    let temp = tempdir();
     let source_root = temp.path().join("source");
     write_session(&source_root, &messages);
 
@@ -421,7 +434,7 @@ fn reused_tool_result_ids_keep_existing_native_and_collision_identities() {
     ]
     .join("\n")
         + "\n";
-    let temp = crate::test_support_paths::tempdir().unwrap();
+    let temp = tempdir();
     let source_root = temp.path().join("source");
     write_session(&source_root, &messages);
 
