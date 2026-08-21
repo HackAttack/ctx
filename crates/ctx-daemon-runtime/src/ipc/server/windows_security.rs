@@ -174,58 +174,16 @@ impl WindowsDaemonQueryPipeSecurity {
 }
 
 struct WindowsDaemonQueryPipeIdentities {
-    _token: TokenHandle,
-    token_user: AlignedBuffer,
+    user: crate::windows_identity::CurrentProcessTokenUser,
     system: AlignedBuffer,
     user_is_system: bool,
 }
 
 impl WindowsDaemonQueryPipeIdentities {
     fn current() -> std::io::Result<Self> {
-        use windows_sys::Win32::{
-            Foundation::ERROR_INSUFFICIENT_BUFFER,
-            Security::{
-                CreateWellKnownSid, EqualSid, GetTokenInformation, TokenUser, WinLocalSystemSid,
-                TOKEN_QUERY,
-            },
-            System::Threading::{GetCurrentProcess, OpenProcessToken},
-        };
+        use windows_sys::Win32::Security::{CreateWellKnownSid, EqualSid, WinLocalSystemSid};
 
-        let mut token = std::ptr::null_mut();
-        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) } == 0 {
-            return Err(last_error());
-        }
-        let token = TokenHandle(token);
-        let mut required = 0;
-        let first = unsafe {
-            GetTokenInformation(
-                token.0,
-                TokenUser,
-                std::ptr::null_mut(),
-                0,
-                &raw mut required,
-            )
-        };
-        if first != 0
-            || unsafe { windows_sys::Win32::Foundation::GetLastError() }
-                != ERROR_INSUFFICIENT_BUFFER
-            || required == 0
-        {
-            return Err(last_error());
-        }
-        let mut token_user = AlignedBuffer::new(required as usize)?;
-        if unsafe {
-            GetTokenInformation(
-                token.0,
-                TokenUser,
-                token_user.as_mut_ptr().cast(),
-                required,
-                &raw mut required,
-            )
-        } == 0
-        {
-            return Err(last_error());
-        }
+        let user = crate::windows_identity::CurrentProcessTokenUser::current()?;
         let mut system = AlignedBuffer::new(68)?;
         let mut system_size = 68;
         if unsafe {
@@ -240,8 +198,7 @@ impl WindowsDaemonQueryPipeIdentities {
             return Err(last_error());
         }
         let mut identities = Self {
-            _token: token,
-            token_user,
+            user,
             system,
             user_is_system: false,
         };
@@ -253,8 +210,7 @@ impl WindowsDaemonQueryPipeIdentities {
     }
 
     fn user_sid(&self) -> windows_sys::Win32::Security::PSID {
-        use windows_sys::Win32::Security::TOKEN_USER;
-        unsafe { (*self.token_user.as_ptr().cast::<TOKEN_USER>()).User.Sid }
+        self.user.sid()
     }
 
     fn system_sid(&self) -> windows_sys::Win32::Security::PSID {
@@ -310,16 +266,6 @@ fn sid_size(sid: windows_sys::Win32::Security::PSID) -> std::io::Result<usize> {
         return Err(invalid_acl());
     }
     Ok(unsafe { GetLengthSid(sid) } as usize)
-}
-
-struct TokenHandle(windows_sys::Win32::Foundation::HANDLE);
-
-impl Drop for TokenHandle {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = windows_sys::Win32::Foundation::CloseHandle(self.0);
-        }
-    }
 }
 
 struct AlignedBuffer {
