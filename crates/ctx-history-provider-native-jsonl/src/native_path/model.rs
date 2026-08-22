@@ -49,16 +49,7 @@ pub(crate) struct DirectJsonlEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum DirectJsonlRetryDiscriminator {
     FactoryDroidToolResult { tool_use_id: String },
-    FactoryDroidRepeatedRecord {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        parent_id: Option<String>,
-        #[serde(default, skip_serializing_if = "is_zero")]
-        occurrence: u32,
-    },
-}
-
-const fn is_zero(value: &u32) -> bool {
-    *value == 0
+    FactoryDroidRepeatedRecord { parent_id: String },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

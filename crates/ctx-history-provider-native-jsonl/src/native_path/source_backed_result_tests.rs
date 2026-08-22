@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::Path,
 };
 
@@ -68,7 +68,7 @@ fn fallback_identities(
         session_id,
         "direct-jsonl-event",
         format!("{}.direct-jsonl-fallback", adapter.provider.as_str()),
-        DIRECT_JSONL_EVENT_IDENTITY_REVISION,
+        DIRECT_JSONL_FALLBACK_EVENT_IDENTITY_REVISION,
         JsonlFamilyProjectionMode::Cold.into(),
         None,
     )
@@ -98,10 +98,13 @@ fn project(provider: CaptureProvider, value: &Value) -> (Vec<CoreRecord>, u64) {
         session_id,
         projector: direct,
         rejected_records: 0,
-        repeated_record_occurrence: BTreeMap::new(),
-        repeated_record_parent_occurrence: BTreeMap::new(),
+        repeated_record_observations: BTreeMap::new(),
+        repeated_record_plan: BTreeMap::new(),
+        repeated_record_plan_prepared: provider != CaptureProvider::FactoryAiDroid,
+        repeated_record_preflight_error: None,
         base_event_lookup: None,
     };
+    prepare_repeated_records_for_test(&mut projector, std::slice::from_ref(value)).unwrap();
     let encoded = serde_json::to_vec(value).unwrap();
     let mut records = Vec::new();
     let mut worker = JsonlFamilyWorkerContext::default();
@@ -129,6 +132,10 @@ fn native_subrecord_index(record: &CoreRecord) -> u64 {
 }
 
 fn project_all(provider: CaptureProvider, values: &[Value]) -> (Vec<CoreRecord>, u64) {
+    try_project_all(provider, values).unwrap()
+}
+
+fn try_project_all(provider: CaptureProvider, values: &[Value]) -> Result<(Vec<CoreRecord>, u64)> {
     let adapter = adapter(provider);
     let session = session(provider);
     let source_path = "direct-jsonl-identity-contract.jsonl";
@@ -152,10 +159,13 @@ fn project_all(provider: CaptureProvider, values: &[Value]) -> (Vec<CoreRecord>,
         session_id,
         projector: direct,
         rejected_records: 0,
-        repeated_record_occurrence: BTreeMap::new(),
-        repeated_record_parent_occurrence: BTreeMap::new(),
+        repeated_record_observations: BTreeMap::new(),
+        repeated_record_plan: BTreeMap::new(),
+        repeated_record_plan_prepared: provider != CaptureProvider::FactoryAiDroid,
+        repeated_record_preflight_error: None,
         base_event_lookup: None,
     };
+    prepare_repeated_records_for_test(&mut projector, values)?;
     let mut records = Vec::new();
     let mut worker = JsonlFamilyWorkerContext::default();
     for (ordinal, value) in values.iter().enumerate() {
@@ -168,10 +178,32 @@ fn project_all(provider: CaptureProvider, values: &[Value]) -> (Vec<CoreRecord>,
                 records.push(record);
                 Ok(())
             },
-        )
-        .unwrap();
+        )?;
     }
-    (records, projector.rejected_records())
+    Ok((records, projector.rejected_records()))
+}
+
+fn prepare_repeated_records_for_test(
+    projector: &mut DirectJsonlFamilyProjector<NativeJsonlTestRuntime>,
+    values: &[Value],
+) -> Result<()> {
+    if projector.adapter.provider != CaptureProvider::FactoryAiDroid {
+        return Ok(());
+    }
+    for (ordinal, value) in values.iter().enumerate() {
+        let encoded = serde_json::to_vec(value).unwrap();
+        let projected = projector
+            .projector
+            .project_record(JsonlRecordRef::for_test(&encoded, ordinal as u64))?;
+        for event in &projected.events {
+            projector
+                .observe_repeated_record(event, false)
+                .map_err(capture_error)?;
+        }
+    }
+    projector
+        .prepare_repeated_record_plan(false)
+        .map_err(capture_error)
 }
 
 fn event_ids_by_body(records: &[CoreRecord]) -> BTreeMap<String, String> {
@@ -311,9 +343,13 @@ fn direct_provider_revision_matrix_matches_the_neutral_projection_and_identity_i
     for (provider, parser_revision) in parser_cases {
         let adapter = adapter(provider);
         assert_eq!(adapter.parser_revision(), parser_revision, "{provider:?}");
+        let identity_revision = match provider {
+            CaptureProvider::FactoryAiDroid => FACTORY_DROID_EVENT_IDENTITY_REVISION,
+            _ => DIRECT_JSONL_FALLBACK_EVENT_IDENTITY_REVISION,
+        };
         assert_eq!(
             adapter.event_identity_revision(),
-            "direct-jsonl-content-occurrence-v2",
+            identity_revision,
             "{provider:?}"
         );
     }
@@ -666,12 +702,17 @@ fn factory_retry_ambiguity_and_missing_evidence_fail_closed() {
     let anchor = factory_result("shared", None, "Execute_anchor", "anchor");
     let same_no_parent_repeat =
         factory_result("shared", None, "Execute_other", "same no-parent repeat");
-    let (records, rejected) =
-        project_all(CaptureProvider::FactoryAiDroid, &[anchor, same_no_parent_repeat]);
-    assert_eq!(rejected, 0);
-    // Repeats without the self-parented retry evidence are discriminated after
-    // the first occurrence, so the two no-parent copies no longer collapse.
-    assert_ne!(records[0].event_id, records[1].event_id);
+    let error = try_project_all(
+        CaptureProvider::FactoryAiDroid,
+        &[anchor, same_no_parent_repeat],
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("every copy must have non-empty parentId evidence"),
+        "{error}"
+    );
 
     let qoder = |call_id: &str, body: &str| {
         json!({
@@ -697,94 +738,106 @@ fn factory_retry_ambiguity_and_missing_evidence_fail_closed() {
 
 #[test]
 
-fn factory_repeated_record_ids_discriminate_repeats_under_same_parent() {
+fn factory_repeated_record_ids_reject_repeats_under_same_parent() {
     let base = factory_result("shared", Some("parent-a"), "Execute_1", "base copy");
     let same_parent_repeat =
         factory_result("shared", Some("parent-a"), "Execute_1", "same parent copy");
 
-    let (records, rejected) = project_all(
-        CaptureProvider::FactoryAiDroid,
-        &[base.clone(), same_parent_repeat.clone()],
+    let error =
+        try_project_all(CaptureProvider::FactoryAiDroid, &[base, same_parent_repeat]).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("parentId does not uniquely identify every copy"),
+        "{error}"
     );
-    assert_eq!(rejected, 0);
-    assert_eq!(records.len(), 2);
-    assert_ne!(records[0].event_id, records[1].event_id);
-    assert_eq!(
-        records[0].native_event_id,
-        Some(TypedKey::Composite(vec![
-            TypedKey::Utf8("shared".to_owned()),
-            TypedKey::U64(0),
-        ]))
-    );
-    assert_ne!(records[1].native_event_id, records[0].native_event_id);
-
-    let (replayed, rejected) =
-        project_all(CaptureProvider::FactoryAiDroid, &[base, same_parent_repeat]);
-    assert_eq!(rejected, 0);
-    assert_eq!(event_ids_by_body(&replayed), event_ids_by_body(&records));
 }
 
 #[test]
-fn factory_repeated_record_ids_discriminate_mixed_parent_shapes_without_collision() {
-    // Mixed parent/no-parent repeats are scan-order dependent, but both
-    // orderings must avoid duplicate identities by discriminating the later
-    // occurrence. Cross-ordering equality is not asserted because the base
-    // identity is pinned to whichever copy is scanned first.
+fn factory_repeated_record_ids_reject_mixed_parent_shapes() {
     let with_parent = || factory_result("shared", Some("parent-a"), "Execute_1", "with parent");
     let no_parent = || factory_result("shared", None, "Execute_1", "no parent");
 
-    let (parent_first, rejected) = project_all(
-        CaptureProvider::FactoryAiDroid,
-        &[with_parent(), no_parent()],
-    );
-    assert_eq!(rejected, 0);
-    assert_eq!(parent_first.len(), 2);
-    assert_ne!(parent_first[0].event_id, parent_first[1].event_id);
-
-    let (parent_first_replay, rejected) =
-        project_all(CaptureProvider::FactoryAiDroid, &[with_parent(), no_parent()]);
-    assert_eq!(rejected, 0);
-    assert_eq!(
-        event_ids_by_body(&parent_first),
-        event_ids_by_body(&parent_first_replay)
-    );
-
-    let (no_parent_first, rejected) =
-        project_all(CaptureProvider::FactoryAiDroid, &[no_parent(), with_parent()]);
-    assert_eq!(rejected, 0);
-    assert_eq!(no_parent_first.len(), 2);
-    assert_ne!(no_parent_first[0].event_id, no_parent_first[1].event_id);
-
-    let (no_parent_first_replay, rejected) =
-        project_all(CaptureProvider::FactoryAiDroid, &[no_parent(), with_parent()]);
-    assert_eq!(rejected, 0);
-    assert_eq!(
-        event_ids_by_body(&no_parent_first),
-        event_ids_by_body(&no_parent_first_replay)
-    );
+    for values in [
+        vec![with_parent(), no_parent()],
+        vec![no_parent(), with_parent()],
+    ] {
+        let error = try_project_all(CaptureProvider::FactoryAiDroid, &values).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("every copy must have non-empty parentId evidence"),
+            "{error}"
+        );
+    }
 }
 
 #[test]
-fn factory_repeated_record_ids_discriminate_triplicates_under_same_parent() {
+fn factory_repeated_record_ids_reject_triplicates_under_same_parent() {
     let one = factory_result("shared", Some("parent-a"), "Execute_1", "one");
     let two = factory_result("shared", Some("parent-a"), "Execute_1", "two");
     let three = factory_result("shared", Some("parent-a"), "Execute_1", "three");
 
-    let (records, rejected) = project_all(CaptureProvider::FactoryAiDroid, &[one, two, three]);
-    assert_eq!(rejected, 0);
-    assert_eq!(records.len(), 3);
+    let error = try_project_all(CaptureProvider::FactoryAiDroid, &[one, two, three]).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("parentId does not uniquely identify every copy"),
+        "{error}"
+    );
+}
 
-    let ids: BTreeMap<_, _> = records
+#[test]
+fn factory_repeated_record_ids_survive_content_rewrites() {
+    let first = factory_result("shared", Some("parent-a"), "Execute_1", "first copy");
+    let second = factory_result("shared", Some("parent-b"), "Execute_1", "changed copy");
+
+    let (initial, rejected) = project_all(
+        CaptureProvider::FactoryAiDroid,
+        &[first.clone(), second.clone()],
+    );
+    assert_eq!(rejected, 0);
+    let initial_ids = initial
         .iter()
-        .map(|r| (r.content.normalized_body.clone().unwrap(), r.event_id.to_string()))
-        .collect();
-    assert_eq!(ids.len(), 3, "triplicates must receive distinct event ids");
+        .map(|record| record.event_id.to_string())
+        .collect::<BTreeSet<_>>();
+
+    let rewritten_first =
+        factory_result("shared", Some("parent-a"), "Execute_1", "rewritten first");
+    let rewritten_second =
+        factory_result("shared", Some("parent-b"), "Execute_1", "rewritten second");
+    let (rewritten, rejected) = project_all(
+        CaptureProvider::FactoryAiDroid,
+        &[rewritten_second, rewritten_first],
+    );
+    assert_eq!(rejected, 0);
+    assert_eq!(
+        rewritten
+            .iter()
+            .map(|record| record.event_id.to_string())
+            .collect::<BTreeSet<_>>(),
+        initial_ids
+    );
+}
+
+#[test]
+fn factory_repeated_record_ids_reject_different_call_linkage() {
+    let first = factory_result("shared", Some("parent-a"), "Execute_1", "first copy");
+    let second = factory_result("shared", Some("parent-b"), "Execute_2", "second copy");
+
+    let error = try_project_all(CaptureProvider::FactoryAiDroid, &[first, second]).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("copies do not share one provider call id"),
+        "{error}"
+    );
 }
 
 #[test]
 fn factory_repeated_record_ids_are_retained_with_distinct_parent_discriminator() {
-    let first = factory_result("shared", Some("parent-a"), "Execute_1", "first copy");
-    let second = factory_result("shared", Some("parent-b"), "Execute_1", "second copy");
+    let first = factory_result("shared", Some("parent-a"), "Execute_1", "shared copy");
+    let second = factory_result("shared", Some("parent-b"), "Execute_1", "shared copy");
 
     let (records, rejected) = project_all(
         CaptureProvider::FactoryAiDroid,
@@ -797,7 +850,11 @@ fn factory_repeated_record_ids_are_retained_with_distinct_parent_discriminator()
         records[0].native_event_id,
         Some(TypedKey::Composite(vec![
             TypedKey::Utf8("shared".to_owned()),
-            TypedKey::U64(0),
+            TypedKey::Composite(vec![
+                TypedKey::Utf8("factory-ai-droid.repeated-record".to_owned()),
+                TypedKey::Utf8("parent-a".to_owned()),
+                TypedKey::U64(0),
+            ]),
         ]))
     );
     assert_eq!(
@@ -808,14 +865,23 @@ fn factory_repeated_record_ids_are_retained_with_distinct_parent_discriminator()
                 TypedKey::Utf8("factory-ai-droid.repeated-record".to_owned()),
                 TypedKey::Utf8("parent-b".to_owned()),
                 TypedKey::U64(0),
-                TypedKey::U64(0),
             ]),
         ]))
     );
 
-    let (replayed, rejected) = project_all(CaptureProvider::FactoryAiDroid, &[first, second]);
+    let baseline_ids = records
+        .iter()
+        .map(|record| record.event_id.to_string())
+        .collect::<BTreeSet<_>>();
+    let (replayed, rejected) = project_all(CaptureProvider::FactoryAiDroid, &[second, first]);
     assert_eq!(rejected, 0);
-    assert_eq!(event_ids_by_body(&replayed), event_ids_by_body(&records));
+    assert_eq!(
+        replayed
+            .iter()
+            .map(|record| record.event_id.to_string())
+            .collect::<BTreeSet<_>>(),
+        baseline_ids
+    );
 }
 
 #[test]

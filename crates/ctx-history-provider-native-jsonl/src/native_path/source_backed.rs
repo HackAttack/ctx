@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -40,7 +40,9 @@ use ctx_history_source_io::{
 
 const DIRECT_JSONL_SOURCE_IDENTITY_VERSION: u32 = 1;
 const DIRECT_JSONL_MAX_DIRECTORY_DEPTH: usize = 128;
-const DIRECT_JSONL_EVENT_IDENTITY_REVISION: &str = "direct-jsonl-content-occurrence-v2";
+const DIRECT_JSONL_FALLBACK_EVENT_IDENTITY_REVISION: &str = "direct-jsonl-content-occurrence-v2";
+const FACTORY_DROID_EVENT_IDENTITY_REVISION: &str =
+    "direct-jsonl-content-occurrence-v2+factory-parent-replay-v1";
 
 #[derive(Debug, Error)]
 enum DirectJsonlAdapterError {
@@ -58,6 +60,14 @@ enum DirectJsonlAdapterError {
     NativeSessionChanged,
     #[error("direct JSONL record expansion does not reconcile")]
     CountMismatch,
+    #[error(
+        "Factory Droid repeated record {native_record_id:?} subrecord {sub_ordinal} is ambiguous: {reason}"
+    )]
+    AmbiguousFactoryRepeatedRecord {
+        native_record_id: String,
+        sub_ordinal: u32,
+        reason: &'static str,
+    },
 }
 
 type DirectJsonlAdapterResult<T> = std::result::Result<T, DirectJsonlAdapterError>;
@@ -238,12 +248,16 @@ impl<R: NativeJsonlRuntime> JsonlFamilyAdapter for DirectJsonlFamilyAdapter<R> {
     }
 
     fn event_identity_revision(&self) -> &'static str {
-        DIRECT_JSONL_EVENT_IDENTITY_REVISION
+        match self.provider {
+            CaptureProvider::FactoryAiDroid => FACTORY_DROID_EVENT_IDENTITY_REVISION,
+            _ => DIRECT_JSONL_FALLBACK_EVENT_IDENTITY_REVISION,
+        }
     }
 
     fn append_mode(&self) -> JsonlFamilyAppendMode {
         match self.provider {
             CaptureProvider::CopilotCli => JsonlFamilyAppendMode::Replacement,
+            CaptureProvider::FactoryAiDroid => JsonlFamilyAppendMode::ProjectorPreflight(true),
             _ => JsonlFamilyAppendMode::CertifiedSuffix,
         }
     }
@@ -544,6 +558,19 @@ fn bind_opened_leaf<R: NativeJsonlRuntime>(
 
 type RepeatedRecordKey = (String, u32);
 
+#[derive(Debug, Clone)]
+struct RepeatedRecordObservation {
+    parent_id: Option<String>,
+    provider_call_id: TypedKey,
+    in_certified_prefix: bool,
+}
+
+#[derive(Debug, Clone)]
+struct RepeatedRecordPlan {
+    parent_ids: BTreeSet<String>,
+    base_parent_id: Option<String>,
+}
+
 struct DirectJsonlFamilyProjector<R: NativeJsonlRuntime> {
     adapter: DirectJsonlFamilyAdapter<R>,
     source: SourceKey,
@@ -552,12 +579,10 @@ struct DirectJsonlFamilyProjector<R: NativeJsonlRuntime> {
     projector: DirectJsonlProjector,
     fallback_identities: FallbackEventIdentityState<JsonlRuntimeLookup<R>, CaptureError>,
     rejected_records: u64,
-    /// Per-scan occurrence counter for a given native `(record_id, sub_ordinal)`.
-    repeated_record_occurrence: BTreeMap<RepeatedRecordKey, u32>,
-    /// Per-scan occurrence counter for a given native `(record_id, sub_ordinal,
-    /// parent_id)` used to mint distinct identities for repeats under the same
-    /// parent.
-    repeated_record_parent_occurrence: BTreeMap<(String, u32, String), u32>,
+    repeated_record_observations: BTreeMap<RepeatedRecordKey, Vec<RepeatedRecordObservation>>,
+    repeated_record_plan: BTreeMap<RepeatedRecordKey, RepeatedRecordPlan>,
+    repeated_record_plan_prepared: bool,
+    repeated_record_preflight_error: Option<String>,
     base_event_lookup: Option<JsonlRuntimeLookup<R>>,
 }
 
@@ -586,7 +611,7 @@ impl<R: NativeJsonlRuntime> DirectJsonlFamilyProjector<R> {
             session_id,
             "direct-jsonl-event",
             format!("{}.direct-jsonl-fallback", adapter.provider.as_str()),
-            DIRECT_JSONL_EVENT_IDENTITY_REVISION,
+            DIRECT_JSONL_FALLBACK_EVENT_IDENTITY_REVISION,
             mode.into(),
             base_event_lookup.clone(),
         )?;
@@ -598,25 +623,159 @@ impl<R: NativeJsonlRuntime> DirectJsonlFamilyProjector<R> {
             projector,
             fallback_identities,
             rejected_records: 0,
-            repeated_record_occurrence: BTreeMap::new(),
-            repeated_record_parent_occurrence: BTreeMap::new(),
+            repeated_record_observations: BTreeMap::new(),
+            repeated_record_plan: BTreeMap::new(),
+            repeated_record_plan_prepared: adapter.provider != CaptureProvider::FactoryAiDroid,
+            repeated_record_preflight_error: None,
             base_event_lookup,
         })
     }
 
-    /// Factory AI Droid sometimes emits one message id more than once without
-    /// self-parented retry evidence (observed: one tool_result message written
-    /// under different parents, or with and without parent linkage). The first
-    /// scanned occurrence of a native record id keeps the base identity. Every
-    /// later occurrence is discriminated by its parent linkage (`None` when
-    /// there is none) and a per-parent occurrence index, so no repeat collides
-    /// with the base or with another repeat. Repeats are rare and limited to
-    /// FactoryAiDroid; other providers keep upstream behavior.
-    ///
-    /// This is intentionally scan-order dependent: the first occurrence keeps
-    /// the base identity. FactoryAiDroid sources use CertifiedSuffix append
-    /// semantics and do not reorder an already-imported prefix, so the base
-    /// is stable across normal re-imports and appends.
+    fn observe_repeated_record(
+        &mut self,
+        event: &DirectJsonlEvent,
+        in_certified_prefix: bool,
+    ) -> DirectJsonlAdapterResult<()> {
+        if self.adapter.provider != CaptureProvider::FactoryAiDroid
+            || event.stable_retry_discriminator.is_some()
+        {
+            return Ok(());
+        }
+        let Some(provider_call_id) = event
+            .activity
+            .as_ref()
+            .and_then(|activity| activity.provider_call_id.clone())
+        else {
+            return Ok(());
+        };
+        let Some(native_record_id) = event.native_record_id.as_deref() else {
+            return Ok(());
+        };
+        self.repeated_record_observations
+            .entry((native_record_id.to_owned(), event.sub_ordinal))
+            .or_default()
+            .push(RepeatedRecordObservation {
+                parent_id: event.native_parent_id.clone(),
+                provider_call_id,
+                in_certified_prefix,
+            });
+        Ok(())
+    }
+
+    /// Assigns parent selectors to every member of a newly observed repeated
+    /// group. If a prior generation already used the ordinary base identity,
+    /// exactly one parent may retain it; existing selector IDs and the trusted
+    /// append prefix identify that parent without relying on current scan order.
+    fn prepare_repeated_record_plan(
+        &mut self,
+        has_certified_prefix: bool,
+    ) -> DirectJsonlAdapterResult<()> {
+        let mut plan = BTreeMap::new();
+        for (key, observations) in &self.repeated_record_observations {
+            if observations.len() == 1 {
+                let Some(parent_id) = observations[0].parent_id.as_deref() else {
+                    continue;
+                };
+                if self.repeated_record_identity_exists(key, parent_id)? {
+                    plan.insert(
+                        key.clone(),
+                        RepeatedRecordPlan {
+                            parent_ids: BTreeSet::from([parent_id.to_owned()]),
+                            base_parent_id: None,
+                        },
+                    );
+                }
+                continue;
+            }
+
+            let mut parents = BTreeMap::new();
+            for observation in observations {
+                let Some(parent_id) = observation.parent_id.as_ref() else {
+                    return Err(Self::ambiguous_repeated_record(
+                        key,
+                        "every copy must have non-empty parentId evidence",
+                    ));
+                };
+                if parents.insert(parent_id.clone(), observation).is_some() {
+                    return Err(Self::ambiguous_repeated_record(
+                        key,
+                        "parentId does not uniquely identify every copy",
+                    ));
+                }
+            }
+            if observations
+                .iter()
+                .skip(1)
+                .any(|observation| observation.provider_call_id != observations[0].provider_call_id)
+            {
+                return Err(Self::ambiguous_repeated_record(
+                    key,
+                    "copies do not share one provider call id",
+                ));
+            }
+
+            let parent_ids = parents.keys().cloned().collect::<BTreeSet<_>>();
+            let base_parent_id = if self.base_identity_exists(key)? {
+                let mut missing_selector = Vec::new();
+                for parent_id in &parent_ids {
+                    if !self.repeated_record_identity_exists(key, parent_id)? {
+                        missing_selector.push(parent_id.clone());
+                    }
+                }
+                if missing_selector.is_empty() {
+                    None
+                } else if has_certified_prefix {
+                    let prefix_missing = missing_selector
+                        .iter()
+                        .filter(|parent_id| {
+                            parents
+                                .get(*parent_id)
+                                .is_some_and(|observation| observation.in_certified_prefix)
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if prefix_missing.len() != 1 {
+                        return Err(Self::ambiguous_repeated_record(
+                            key,
+                            "the prior base copy cannot be identified from the certified prefix",
+                        ));
+                    }
+                    prefix_missing.into_iter().next()
+                } else if missing_selector.len() == 1 {
+                    missing_selector.into_iter().next()
+                } else {
+                    return Err(Self::ambiguous_repeated_record(
+                        key,
+                        "the prior base copy cannot be reconciled during replacement",
+                    ));
+                }
+            } else {
+                None
+            };
+            plan.insert(
+                key.clone(),
+                RepeatedRecordPlan {
+                    parent_ids,
+                    base_parent_id,
+                },
+            );
+        }
+        self.repeated_record_plan = plan;
+        self.repeated_record_plan_prepared = true;
+        Ok(())
+    }
+
+    fn ambiguous_repeated_record(
+        key: &RepeatedRecordKey,
+        reason: &'static str,
+    ) -> DirectJsonlAdapterError {
+        DirectJsonlAdapterError::AmbiguousFactoryRepeatedRecord {
+            native_record_id: key.0.clone(),
+            sub_ordinal: key.1,
+            reason,
+        }
+    }
+
     fn apply_repeated_record_discriminator(
         &mut self,
         event: &mut DirectJsonlEvent,
@@ -630,58 +789,69 @@ impl<R: NativeJsonlRuntime> DirectJsonlFamilyProjector<R> {
             return Ok(());
         };
         let key = (native_record_id.to_owned(), event.sub_ordinal);
-        let scan_occurrence = self
-            .repeated_record_occurrence
-            .entry(key.clone())
-            .and_modify(|count| *count += 1)
-            .or_insert(0);
-        if *scan_occurrence == 0 && !self.base_identity_exists(event)? {
+        let Some(plan) = self.repeated_record_plan.get(&key) else {
+            return Ok(());
+        };
+        let Some(parent_id) = event.native_parent_id.clone() else {
+            return Err(Self::ambiguous_repeated_record(
+                &key,
+                "planned copy lost its parentId evidence",
+            ));
+        };
+        if !plan.parent_ids.contains(&parent_id) {
+            return Err(Self::ambiguous_repeated_record(
+                &key,
+                "projected copy was absent from the admitted preflight",
+            ));
+        }
+        if plan.base_parent_id.as_deref() == Some(parent_id.as_str()) {
             return Ok(());
         }
-        let parent_id = event.native_parent_id.clone();
-        let parent_occurrence = self
-            .repeated_record_parent_occurrence
-            .entry((
-                native_record_id.to_owned(),
-                event.sub_ordinal,
-                parent_id.clone().unwrap_or_default(),
-            ))
-            .and_modify(|count| *count += 1)
-            .or_insert(0);
         event.stable_retry_discriminator =
-            Some(DirectJsonlRetryDiscriminator::FactoryDroidRepeatedRecord {
-                parent_id,
-                occurrence: *parent_occurrence,
-            });
+            Some(DirectJsonlRetryDiscriminator::FactoryDroidRepeatedRecord { parent_id });
         Ok(())
     }
 
-    fn base_identity_exists(&self, event: &DirectJsonlEvent) -> DirectJsonlAdapterResult<bool> {
-        let Some(base_lookup) = self.base_event_lookup.as_ref() else {
-            return Ok(false);
-        };
-        let Some(native_record_id) = event.native_record_id.as_deref() else {
-            return Ok(false);
-        };
-        let native_item_key = NativeItemKey::native_id(
-            format!("{}.direct-jsonl-event", self.adapter.provider.as_str()),
-            TypedKey::utf8(native_record_id)?,
-        )?;
-        let subrecord_selector = (event.sub_ordinal != 0)
+    fn base_identity_exists(&self, key: &RepeatedRecordKey) -> DirectJsonlAdapterResult<bool> {
+        let subrecord_selector = (key.1 != 0)
             .then(|| {
                 SubrecordSelector::certified_position(
                     "direct-jsonl-subrecord",
-                    TypedKey::U64(u64::from(event.sub_ordinal)),
+                    TypedKey::U64(u64::from(key.1)),
                     PositionStability::StableSlot,
                 )
             })
             .transpose()?;
+        self.event_identity_exists(key, subrecord_selector.as_ref())
+    }
+
+    fn repeated_record_identity_exists(
+        &self,
+        key: &RepeatedRecordKey,
+        parent_id: &str,
+    ) -> DirectJsonlAdapterResult<bool> {
+        let selector = factory_repeated_record_selector(parent_id, key.1)?;
+        self.event_identity_exists(key, Some(&selector))
+    }
+
+    fn event_identity_exists(
+        &self,
+        key: &RepeatedRecordKey,
+        subrecord_selector: Option<&SubrecordSelector>,
+    ) -> DirectJsonlAdapterResult<bool> {
+        let Some(base_lookup) = self.base_event_lookup.as_ref() else {
+            return Ok(false);
+        };
+        let native_item_key = NativeItemKey::native_id(
+            format!("{}.direct-jsonl-event", self.adapter.provider.as_str()),
+            TypedKey::utf8(&key.0)?,
+        )?;
         let candidate = derive_event_id(EventIdentityInput {
             source: &self.source,
             session_id: self.session_id,
             logical_item_kind: "direct-jsonl-event",
             native_item_key: &native_item_key,
-            subrecord_selector: subrecord_selector.as_ref(),
+            subrecord_selector,
         })?;
         base_lookup
             .contains(candidate.as_uuid())
@@ -703,12 +873,67 @@ impl<R: NativeJsonlRuntime> DirectJsonlFamilyProjector<R> {
 impl<R: NativeJsonlRuntime> JsonlFamilyProjector for DirectJsonlFamilyProjector<R> {
     type Runtime = R;
 
+    fn preflight(
+        &mut self,
+        reader: &mut ctx_history_jsonl::JsonlReader<CaptureError>,
+        certified_prefix_end: Option<u64>,
+    ) -> Result<bool> {
+        if self.adapter.provider != CaptureProvider::FactoryAiDroid {
+            return Ok(false);
+        }
+        self.repeated_record_observations.clear();
+        self.repeated_record_plan.clear();
+        self.repeated_record_plan_prepared = false;
+        loop {
+            let page = reader.visit_page(&mut |record| -> Result<()> {
+                let in_certified_prefix = certified_prefix_end
+                    .is_some_and(|prefix_end| record.evidence().byte_end_exclusive() <= prefix_end);
+                let projected = self.projector.project_record(record)?;
+                if !projected.rejections.is_empty() && !projected.events.is_empty() {
+                    return Err(capture_error(DirectJsonlAdapterError::CountMismatch));
+                }
+                for event in &projected.events {
+                    self.observe_repeated_record(event, in_certified_prefix)
+                        .map_err(capture_error)?;
+                }
+                Ok(())
+            })?;
+            if page.is_none() {
+                break;
+            }
+        }
+        self.validate_session().map_err(capture_error)?;
+        self.prepare_repeated_record_plan(certified_prefix_end.is_some())
+            .map_err(capture_error)?;
+        Ok(false)
+    }
+
+    fn retry_replacement(&mut self) {
+        if self.adapter.provider != CaptureProvider::FactoryAiDroid {
+            return;
+        }
+        self.repeated_record_plan.clear();
+        self.repeated_record_plan_prepared = false;
+        if let Err(error) = self.prepare_repeated_record_plan(false) {
+            self.repeated_record_preflight_error = Some(error.to_string());
+        }
+    }
+
     fn project(
         &mut self,
         record: JsonlRecordRef<'_>,
         _worker: &mut JsonlFamilyWorkerContext<R>,
         emit: &mut dyn FnMut(CoreRecord) -> Result<()>,
     ) -> Result<()> {
+        if let Some(error) = self.repeated_record_preflight_error.as_ref() {
+            return Err(CaptureError::InvalidPayload(error.clone()));
+        }
+        if !self.repeated_record_plan_prepared {
+            return Err(CaptureError::SystemInvariant(
+                "Factory Droid projection did not prepare repeated-record identities",
+            ));
+        }
+        self.repeated_record_observations.clear();
         let projected = self.projector.project_record(record)?;
         if !projected.rejections.is_empty() {
             if !projected.events.is_empty() {
@@ -743,6 +968,14 @@ impl<R: NativeJsonlRuntime> JsonlFamilyProjector for DirectJsonlFamilyProjector<
     }
 
     fn finish(&mut self) -> Result<()> {
+        if let Some(error) = self.repeated_record_preflight_error.as_ref() {
+            return Err(CaptureError::InvalidPayload(error.clone()));
+        }
+        if !self.repeated_record_plan_prepared {
+            return Err(CaptureError::SystemInvariant(
+                "Factory Droid projection did not prepare repeated-record identities",
+            ));
+        }
         self.validate_session().map_err(capture_error)?;
         self.fallback_identities.finish()
     }
@@ -768,6 +1001,19 @@ fn same_session_identity(left: &DirectJsonlSession, right: &DirectJsonlSession) 
         && left.root_provider_session_id == right.root_provider_session_id
 }
 
+fn factory_repeated_record_selector(
+    parent_id: &str,
+    sub_ordinal: u32,
+) -> DirectJsonlAdapterResult<SubrecordSelector> {
+    Ok(SubrecordSelector::native_id(
+        "factory-ai-droid.repeated-record",
+        TypedKey::composite(vec![
+            TypedKey::utf8(parent_id)?,
+            TypedKey::U64(u64::from(sub_ordinal)),
+        ])?,
+    )?)
+}
+
 fn project_event<R: NativeJsonlRuntime>(
     adapter: DirectJsonlFamilyAdapter<R>,
     source: &SourceKey,
@@ -783,23 +1029,9 @@ fn project_event<R: NativeJsonlRuntime>(
                 TypedKey::utf8(tool_use_id)?,
             )?)
         }
-        Some(DirectJsonlRetryDiscriminator::FactoryDroidRepeatedRecord {
-            parent_id,
-            occurrence,
-        }) => {
-            let parent_key = match parent_id {
-                Some(id) => TypedKey::utf8(id)?,
-                None => TypedKey::Null,
-            };
-            Some(SubrecordSelector::native_id(
-                "factory-ai-droid.repeated-record",
-                TypedKey::composite(vec![
-                    parent_key,
-                    TypedKey::U64(u64::from(event.sub_ordinal)),
-                    TypedKey::U64(u64::from(*occurrence)),
-                ])?,
-            )?)
-        }
+        Some(DirectJsonlRetryDiscriminator::FactoryDroidRepeatedRecord { parent_id }) => Some(
+            factory_repeated_record_selector(parent_id, event.sub_ordinal)?,
+        ),
         None if event.sub_ordinal != 0 => Some(SubrecordSelector::certified_position(
             "direct-jsonl-subrecord",
             TypedKey::U64(u64::from(event.sub_ordinal)),
@@ -840,19 +1072,11 @@ fn project_event<R: NativeJsonlRuntime>(
                 TypedKey::utf8(tool_use_id)?,
             ])?
         }
-        Some(DirectJsonlRetryDiscriminator::FactoryDroidRepeatedRecord {
-            parent_id,
-            occurrence,
-        }) => {
-            let parent_key = match parent_id {
-                Some(id) => TypedKey::utf8(id)?,
-                None => TypedKey::Null,
-            };
+        Some(DirectJsonlRetryDiscriminator::FactoryDroidRepeatedRecord { parent_id }) => {
             TypedKey::composite(vec![
                 TypedKey::utf8("factory-ai-droid.repeated-record")?,
-                parent_key,
+                TypedKey::utf8(parent_id)?,
                 TypedKey::U64(u64::from(event.sub_ordinal)),
-                TypedKey::U64(u64::from(*occurrence)),
             ])?
         }
         None => TypedKey::U64(u64::from(event.sub_ordinal)),
