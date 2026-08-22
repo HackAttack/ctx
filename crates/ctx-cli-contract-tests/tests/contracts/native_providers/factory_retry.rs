@@ -577,6 +577,10 @@ fn factory_droid_repeated_record_append_preserves_existing_base_identity() {
         Some("parent-b"),
         &[("call_A", "shared append output")],
     );
+    // This singleton is the last good generation an older release can have
+    // before Factory appends the first duplicate. The provider keeps the prior
+    // identity revision so this checkpoint remains a certified append prefix
+    // after upgrade.
     write_jsonl(&session_file, &[header.clone(), first.clone()]);
     let _daemon = start_isolated_provider_daemon(&temp);
 

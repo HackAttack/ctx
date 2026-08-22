@@ -68,7 +68,7 @@ fn fallback_identities(
         session_id,
         "direct-jsonl-event",
         format!("{}.direct-jsonl-fallback", adapter.provider.as_str()),
-        DIRECT_JSONL_FALLBACK_EVENT_IDENTITY_REVISION,
+        DIRECT_JSONL_EVENT_IDENTITY_REVISION,
         JsonlFamilyProjectionMode::Cold.into(),
         None,
     )
@@ -343,13 +343,9 @@ fn direct_provider_revision_matrix_matches_the_neutral_projection_and_identity_i
     for (provider, parser_revision) in parser_cases {
         let adapter = adapter(provider);
         assert_eq!(adapter.parser_revision(), parser_revision, "{provider:?}");
-        let identity_revision = match provider {
-            CaptureProvider::FactoryAiDroid => FACTORY_DROID_EVENT_IDENTITY_REVISION,
-            _ => DIRECT_JSONL_FALLBACK_EVENT_IDENTITY_REVISION,
-        };
         assert_eq!(
             adapter.event_identity_revision(),
-            identity_revision,
+            "direct-jsonl-content-occurrence-v2",
             "{provider:?}"
         );
     }

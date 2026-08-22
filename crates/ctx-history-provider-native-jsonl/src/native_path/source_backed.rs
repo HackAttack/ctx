@@ -47,9 +47,7 @@ use factory_repeated_records::{
 
 const DIRECT_JSONL_SOURCE_IDENTITY_VERSION: u32 = 1;
 const DIRECT_JSONL_MAX_DIRECTORY_DEPTH: usize = 128;
-const DIRECT_JSONL_FALLBACK_EVENT_IDENTITY_REVISION: &str = "direct-jsonl-content-occurrence-v2";
-const FACTORY_DROID_EVENT_IDENTITY_REVISION: &str =
-    "direct-jsonl-content-occurrence-v2+factory-parent-replay-v1";
+const DIRECT_JSONL_EVENT_IDENTITY_REVISION: &str = "direct-jsonl-content-occurrence-v2";
 
 #[derive(Debug, Error)]
 enum DirectJsonlAdapterError {
@@ -255,10 +253,12 @@ impl<R: NativeJsonlRuntime> JsonlFamilyAdapter for DirectJsonlFamilyAdapter<R> {
     }
 
     fn event_identity_revision(&self) -> &'static str {
-        match self.provider {
-            CaptureProvider::FactoryAiDroid => FACTORY_DROID_EVENT_IDENTITY_REVISION,
-            _ => DIRECT_JSONL_FALLBACK_EVENT_IDENTITY_REVISION,
-        }
+        // Repeated Factory records were not publishable under this revision, so
+        // accepting them does not invalidate any admitted event identity. Keep
+        // the prior checkpoint valid: its certified prefix is the authority for
+        // assigning an existing singleton's base identity when a duplicate is
+        // appended after upgrade.
+        DIRECT_JSONL_EVENT_IDENTITY_REVISION
     }
 
     fn append_mode(&self) -> JsonlFamilyAppendMode {
@@ -603,7 +603,7 @@ impl<R: NativeJsonlRuntime> DirectJsonlFamilyProjector<R> {
             session_id,
             "direct-jsonl-event",
             format!("{}.direct-jsonl-fallback", adapter.provider.as_str()),
-            DIRECT_JSONL_FALLBACK_EVENT_IDENTITY_REVISION,
+            DIRECT_JSONL_EVENT_IDENTITY_REVISION,
             mode.into(),
             base_event_lookup.clone(),
         )?;
