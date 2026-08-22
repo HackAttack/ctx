@@ -492,6 +492,9 @@ fn nanoclaw_route_error(error: NanoClawSourceBackedError) -> SourceBackedRouteEr
         {
             SourceBackedRouteErrorKind::Unavailable
         }
+        NanoClawSourceBackedError::SqliteStaging(error) if error.is_snapshot_capacity_failure() => {
+            SourceBackedRouteErrorKind::Unavailable
+        }
         NanoClawSourceBackedError::SqliteStaging(error) if error.is_systemic_resource_failure() => {
             SourceBackedRouteErrorKind::ResourceUnavailable
         }

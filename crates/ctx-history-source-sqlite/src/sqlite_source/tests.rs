@@ -30,9 +30,8 @@ use super::snapshot::{
     open_root_handle_sqlite_source_snapshot_with_limit_for_test,
     open_root_handle_sqlite_source_stable_snapshot_after_database_copy_for_test,
     open_root_handle_sqlite_source_stable_snapshot_before_revalidation_for_test,
+    planned_snapshot_copy_bytes_for_test,
 };
-#[cfg(target_os = "linux")]
-use super::SQLITE_SNAPSHOT_MAX_TOTAL_BYTES;
 use super::{
     fail_next_private_sqlite_staging_operation_for_test, map_revalidation_error,
     map_revalidation_io_error, open_private_sqlite_staging_file,
@@ -40,7 +39,7 @@ use super::{
     SqliteArtifactKind, SqliteCleanupStatus, SqliteFailurePhase, SqliteSourceAccessError,
     SqliteSourceComponent, SqliteSourceDirectoryAuthority, SqliteSourceFamily,
     SqliteSourceProgressError, SqliteSourceProgressStage, SqliteSourceReadSnapshot,
-    SqliteSourceSnapshotStrategy, SqliteSourceStagingOperationForTest,
+    SqliteSourceSnapshotLimits, SqliteSourceSnapshotStrategy, SqliteSourceStagingOperationForTest,
     SQLITE_SNAPSHOT_FREE_HEADROOM_BYTES,
 };
 
@@ -272,7 +271,6 @@ fn active_wal_retains_one_family_copy_under_one_aggregate_limit() {
     assert_eq!(counters.copied_snapshot_opens(), 1);
     assert_eq!(counters.max_active_snapshots(), 1);
     assert!(counters.max_route_scratch_bytes() >= snapshot.copied_bytes());
-    assert!(counters.max_route_scratch_bytes() <= SQLITE_SNAPSHOT_MAX_TOTAL_BYTES);
     snapshot.finish().unwrap();
 
     assert_eq!(staging_entries(data_root.path()), 0);
@@ -546,8 +544,63 @@ fn near_limit_rejection_happens_before_any_scratch_write() {
     .unwrap_err();
 
     assert!(error.is_systemic_resource_failure());
+    assert!(error.is_snapshot_capacity_failure());
     assert_eq!(staging_entries(data_root.path()), 0);
     assert_eq!(authority.snapshot_counters().source_bytes_copied(), 0);
+}
+
+#[test]
+fn production_snapshot_admission_has_no_fixed_source_size_ceiling() {
+    const TEN_GIB: u64 = 10 * 1024 * 1024 * 1024;
+
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = tempfile::tempdir().unwrap();
+    let database = temp.path().join("provider.sqlite");
+    create_database(&database, "capacity");
+    let authority = retain_parent_in_data_root(data_root.path(), temp.path());
+    let limits = SqliteSourceSnapshotLimits::default();
+    assert_eq!(limits.maximum_scratch_bytes(), u64::MAX);
+
+    super::override_next_scratch_available_space_for_test(
+        TEN_GIB + super::sqlite_snapshot_free_headroom_bytes(TEN_GIB),
+    );
+    let scratch = super::SqliteRouteScratch::new(&authority.snapshot_context, None);
+    scratch.admit_capacity(TEN_GIB).unwrap();
+
+    assert_eq!(authority.snapshot_counters().scratch_admissions(), 1);
+
+    super::override_next_scratch_available_space_for_test(
+        TEN_GIB + super::sqlite_snapshot_free_headroom_bytes(TEN_GIB) - 1,
+    );
+    let error = scratch.admit_capacity(TEN_GIB).unwrap_err();
+    assert!(matches!(
+        error,
+        SqliteSourceAccessError::InsufficientScratchSpace {
+            required,
+            available,
+            ..
+        } if required == TEN_GIB + super::sqlite_snapshot_free_headroom_bytes(TEN_GIB)
+            && available + 1 == required
+    ));
+    assert_eq!(staging_entries(data_root.path()), 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn multi_gibibyte_sparse_source_produces_an_available_disk_copy_plan() {
+    const FIVE_GIB: u64 = 5 * 1024 * 1024 * 1024;
+
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = tempfile::tempdir().unwrap();
+    let database = temp.path().join("provider.sqlite");
+    File::create(&database).unwrap().set_len(FIVE_GIB).unwrap();
+    let authority = retain_parent_in_data_root(data_root.path(), temp.path());
+
+    assert_eq!(
+        planned_snapshot_copy_bytes_for_test(&authority, OsStr::new("provider.sqlite")).unwrap(),
+        FIVE_GIB
+    );
+    assert_eq!(staging_entries(data_root.path()), 0);
 }
 
 #[test]
@@ -571,6 +624,7 @@ fn free_space_headroom_rejection_happens_before_any_scratch_write() {
         SqliteSourceAccessError::InsufficientScratchSpace { .. }
             | SqliteSourceAccessError::Diagnosed { .. }
     ));
+    assert!(error.is_snapshot_capacity_failure());
     assert_eq!(staging_entries(data_root.path()), 0);
 }
 

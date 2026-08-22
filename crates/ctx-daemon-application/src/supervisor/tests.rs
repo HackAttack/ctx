@@ -542,8 +542,7 @@ fn windows_task_xml_registers_with_task_scheduler() -> Result<()> {
         }
     }
 
-    let manager_environment = supervisor_manager_environment(&TestHost)?;
-    let sid = current_windows_user_sid(&manager_environment)?;
+    let sid = current_windows_user_sid()?;
     let task_name = format!(r"\ctx-test-daemon-xml-{}", std::process::id());
     let temp = tempfile::tempdir()?;
     let path = temp.path().join("windows-task.xml");

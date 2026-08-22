@@ -188,28 +188,79 @@ fn assert_mode(path: &Path, expected: u32) {
 }
 
 #[test]
-fn windows_runtime_extractor_keeps_external_source_contract() {
+fn windows_zip_extractors_share_with_the_retained_parent_writer_but_not_deleters() {
+    fn embedded_script<'a>(source: &'a str, declaration: &str) -> &'a str {
+        assert_eq!(
+            source.matches(declaration).count(),
+            1,
+            "expected exactly one embedded extractor declared as {declaration:?}"
+        );
+        source
+            .split_once(declaration)
+            .unwrap()
+            .1
+            .split_once("\n\"#;")
+            .unwrap()
+            .0
+    }
+
+    fn assert_archive_open_contract(extractor: &str) {
+        assert!(extractor.contains("Add-Type -AssemblyName System.IO.Compression\n"));
+        assert!(extractor.contains("Add-Type -AssemblyName System.IO.Compression.FileSystem"));
+        let stream_open = extractor
+            .find("$archiveStream = [System.IO.FileStream]::new(")
+            .unwrap();
+        let file_mode = extractor.find("[System.IO.FileMode]::Open").unwrap();
+        let file_access = extractor.find("[System.IO.FileAccess]::Read").unwrap();
+        let file_share = extractor.find("[System.IO.FileShare]::ReadWrite").unwrap();
+        let zip_archive = extractor
+            .find("$archive = [System.IO.Compression.ZipArchive]::new(")
+            .unwrap();
+        let zip_mode = extractor
+            .find("[System.IO.Compression.ZipArchiveMode]::Read")
+            .unwrap();
+        let archive_dispose = extractor.rfind("$archive.Dispose()").unwrap();
+        let stream_dispose = extractor.rfind("$archiveStream.Dispose()").unwrap();
+        assert!(
+            stream_open < file_mode
+                && file_mode < file_access
+                && file_access < file_share
+                && file_share < zip_archive
+                && zip_archive < zip_mode
+                && zip_mode < archive_dispose
+                && archive_dispose < stream_dispose
+        );
+        assert!(!extractor.contains("[System.IO.Compression.ZipFile]::OpenRead"));
+        assert!(!extractor.contains("[System.IO.FileShare]::Delete"));
+    }
+
     let installer_source = include_str!("../../src/upgrade/install.rs");
     let declaration = "const EXTRACT_SCRIPT: &str = r#\"\n";
-    assert_eq!(
-        installer_source.matches(declaration).count(),
-        1,
-        "the external PowerShell test expects one embedded extractor at upgrade/install.rs"
-    );
-    let extractor = installer_source
-        .split_once(declaration)
-        .unwrap()
-        .1
-        .split_once("\n\"#;")
-        .unwrap()
-        .0;
-    assert!(extractor.contains("[System.IO.Compression.ZipFile]::OpenRead($ArchivePath)"));
-    assert!(extractor.contains("$targetStream.Flush($true)"));
+    let runtime_extractor = embedded_script(installer_source, declaration);
+    assert_archive_open_contract(runtime_extractor);
+    assert!(runtime_extractor.contains("$targetStream.Flush($true)"));
+
+    let archive_source = include_str!("../../src/upgrade/install/archive.rs");
+    let semantic_declaration = "const WINDOWS_SEMANTIC_ZIP_EXTRACT_SCRIPT: &str = r#\"\n";
+    let semantic_extractor = embedded_script(archive_source, semantic_declaration);
+    assert_archive_open_contract(semantic_extractor);
+    assert!(semantic_extractor.contains("$output.Flush($true)"));
 
     let external_contract =
         include_str!("../../../../scripts/test-windows-runtime-upgrade-extractor.ps1");
-    assert!(external_contract.contains(r#"..\crates\ctx-cli\src\upgrade\install.rs"#));
-    assert!(external_contract.contains("const EXTRACT_SCRIPT: &str = r#"));
+    assert!(external_contract.contains(r#"..\crates\ctx-upgrade-engine\src\upgrade\install.rs"#));
+    assert!(external_contract
+        .contains(r#"..\crates\ctx-upgrade-engine\src\upgrade\install\archive.rs"#));
+    assert!(external_contract
+        .contains("$runtimeScript = Get-EmbeddedScript $installerSource \"EXTRACT_SCRIPT\""));
+    assert!(external_contract.contains(
+        "$semanticScript = Get-EmbeddedScript $archiveSource \"WINDOWS_SEMANTIC_ZIP_EXTRACT_SCRIPT\""
+    ));
+    assert!(external_contract.contains("$PSVersionTable.PSVersion.Major -ne 5"));
+    assert!(external_contract.contains("Semantic zip file verification failed"));
+    assert!(external_contract.contains("unexpected or non-regular Semantic zip file"));
+    assert!(external_contract.contains("[System.IO.FileAccess]::ReadWrite"));
+    assert!(external_contract.contains("[System.IO.FileShare]::Read"));
 }
 
 #[test]
@@ -271,32 +322,68 @@ fn upgrade_enable_and_disable_persist_private_config_with_analytics_disabled() {
 
 #[cfg(unix)]
 #[test]
-fn upgrade_enable_and_disable_reject_insecure_config_without_repair() {
+fn upgrade_enable_and_disable_repair_legacy_config_permissions() {
     use std::os::unix::fs::PermissionsExt as _;
+
+    for (command_name, expected_mode) in [("enable", "apply"), ("disable", "off")] {
+        for legacy_permissions in [0o400, 0o444, 0o644, 0o664] {
+            let temp = tempdir();
+            let data_root = temp
+                .path()
+                .join(format!("{command_name}-{legacy_permissions:o}-state"));
+            let config = data_root.join("config.toml");
+            fs::create_dir(&data_root).unwrap();
+            fs::set_permissions(&data_root, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::write(&config, "[search]\nsemantic = true\n").unwrap();
+            fs::set_permissions(&config, fs::Permissions::from_mode(legacy_permissions)).unwrap();
+
+            ctx(&temp)
+                .args(["upgrade", command_name])
+                .env("CTX_DATA_ROOT", &data_root)
+                .env("CTX_ANALYTICS_ENABLED", "false")
+                .assert()
+                .success();
+
+            assert_eq!(
+                fs::read_to_string(&config).unwrap(),
+                format!("[search]\nsemantic = true\n\n[upgrade]\nauto = \"{expected_mode}\"\n"),
+                "{command_name} legacy mode {legacy_permissions:o}"
+            );
+            assert_mode(&config, 0o600);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn upgrade_enable_and_disable_reject_symlinked_config_without_changing_target() {
+    use std::os::unix::fs::{symlink, PermissionsExt as _};
 
     for command_name in ["enable", "disable"] {
         let temp = tempdir();
         let data_root = temp.path().join(format!("{command_name}-state"));
+        let target = temp.path().join(format!("{command_name}-outside.toml"));
         let config = data_root.join("config.toml");
         let original = b"[search]\nsemantic = true\n";
         fs::create_dir(&data_root).unwrap();
         fs::set_permissions(&data_root, fs::Permissions::from_mode(0o700)).unwrap();
-        fs::write(&config, original).unwrap();
-        fs::set_permissions(&config, fs::Permissions::from_mode(0o666)).unwrap();
+        fs::write(&target, original).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+        symlink(&target, &config).unwrap();
 
-        let stderr = failure_stderr(
-            ctx(&temp)
-                .args(["upgrade", command_name])
-                .env("CTX_DATA_ROOT", &data_root)
-                .env("CTX_ANALYTICS_ENABLED", "false"),
-        );
+        ctx(&temp)
+            .args(["upgrade", command_name])
+            .env("CTX_DATA_ROOT", &data_root)
+            .env("CTX_ANALYTICS_ENABLED", "false")
+            .assert()
+            .failure();
 
-        assert!(
-            stderr.contains("private state path is not owner-only"),
-            "{command_name}: {stderr}"
-        );
-        assert_eq!(fs::read(&config).unwrap(), original, "{command_name}");
-        assert_mode(&config, 0o666);
+        assert_eq!(fs::read(&target).unwrap(), original, "{command_name}");
+        assert_mode(&target, 0o644);
+        assert!(fs::symlink_metadata(&config)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 }
 

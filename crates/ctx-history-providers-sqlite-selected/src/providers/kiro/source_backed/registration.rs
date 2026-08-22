@@ -432,6 +432,9 @@ pub(crate) fn kiro_scan_error(error: KiroSourceBackedErrorV0) -> SourceBackedRou
         KiroSourceBackedErrorV0::SqliteSource(error) if error.is_source_changed() => {
             SourceBackedRouteErrorKind::SourceChanged
         }
+        KiroSourceBackedErrorV0::SqliteSource(error) if error.is_snapshot_capacity_failure() => {
+            SourceBackedRouteErrorKind::Unavailable
+        }
         KiroSourceBackedErrorV0::SqliteSource(error) if error.is_systemic_resource_failure() => {
             SourceBackedRouteErrorKind::ResourceUnavailable
         }

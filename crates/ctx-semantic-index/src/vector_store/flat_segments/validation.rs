@@ -336,9 +336,12 @@ pub(super) fn validate_manifest(
             ));
         }
         if let Some(receipt) = &snapshot.receipt {
+            let accounted_events = receipt
+                .owned_event_count
+                .checked_add(receipt.filtered_event_count);
             if receipt.source_identity_digest != snapshot.source_identity_digest
                 || receipt.source_reconciliation_id.is_empty()
-                || receipt.owned_event_count > receipt.semantic_eligible_documents
+                || accounted_events != Some(receipt.semantic_eligible_documents)
                 || decode_sha256(&receipt.core_record_accumulator).is_none()
                 || decode_sha256(&receipt.contract_fingerprint).is_none()
                 || decode_sha256(&receipt.semantic_policy_fingerprint).is_none()

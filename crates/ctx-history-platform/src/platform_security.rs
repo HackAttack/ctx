@@ -156,9 +156,49 @@ pub fn restrict_private_file(path: &Path) -> io::Result<()> {
 /// the current user owns it. Symlinks, reparse points, unsafe ownership, and
 /// non-regular files fail closed.
 pub fn ensure_private_file(path: &Path) -> io::Result<()> {
-    match verify_private_file(path) {
-        Ok(()) => Ok(()),
-        Err(_) => restrict_private_file(path),
+    #[cfg(unix)]
+    {
+        let file = open_regular_file_nofollow(path)?;
+        ensure_private_file_handle(&file)
+    }
+    #[cfg(windows)]
+    {
+        windows_acl::ensure_private_file(path)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = path;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "private file establishment is unavailable on this platform",
+        ))
+    }
+}
+
+/// Verifies an already-open regular file and repairs its owner-only policy
+/// through that same handle when the current user owns it.
+///
+/// Callers opening by pathname must use platform no-follow semantics. Unsafe
+/// ownership and non-regular handles fail closed, as do unsuccessful repairs.
+pub fn ensure_private_file_handle(handle: &std::fs::File) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        match verify_private_file_handle(handle) {
+            Ok(()) => Ok(()),
+            Err(_) => restrict_private_file_handle(handle),
+        }
+    }
+    #[cfg(windows)]
+    {
+        windows_acl::ensure_private_file_handle(handle)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = handle;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "private file establishment is unavailable on this platform",
+        ))
     }
 }
 
@@ -386,6 +426,48 @@ mod unix_tests {
         ensure_private_directory(&target)?;
 
         assert_eq!(fs::metadata(target)?.permissions().mode() & 0o777, 0o500);
+        Ok(())
+    }
+
+    #[test]
+    fn ensure_private_file_handle_repairs_legacy_owner_owned_modes() -> io::Result<()> {
+        let parent = tempfile::tempdir()?;
+        for (mode, expected) in [
+            (0o400, 0o400),
+            (0o444, 0o600),
+            (0o644, 0o600),
+            (0o664, 0o600),
+        ] {
+            let target = parent.path().join(format!("private-state-{mode:o}"));
+            fs::write(&target, b"state")?;
+            fs::set_permissions(&target, fs::Permissions::from_mode(mode))?;
+            let file = fs::OpenOptions::new().read(true).open(&target)?;
+
+            ensure_private_file_handle(&file)?;
+
+            assert_eq!(file.metadata()?.permissions().mode() & 0o777, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn ensure_private_file_rejects_links_and_non_regular_files() -> io::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let parent = tempfile::tempdir()?;
+        let target = parent.path().join("target");
+        let link = parent.path().join("link");
+        fs::write(&target, b"state")?;
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644))?;
+        symlink(&target, &link)?;
+
+        assert!(ensure_private_file(&link).is_err());
+        assert_eq!(fs::metadata(&target)?.permissions().mode() & 0o777, 0o644);
+
+        let directory = parent.path().join("directory");
+        fs::create_dir(&directory)?;
+        let handle = fs::File::open(directory)?;
+        assert!(ensure_private_file_handle(&handle).is_err());
         Ok(())
     }
 

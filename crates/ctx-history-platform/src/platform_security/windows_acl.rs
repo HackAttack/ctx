@@ -28,8 +28,8 @@ use windows_sys::Win32::{
         GetTokenInformation, InitializeAcl, InitializeSecurityDescriptor, IsValidSid,
         SetSecurityDescriptorControl, SetSecurityDescriptorDacl, TokenUser, WinLocalSystemSid,
         ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, DACL_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR,
-        SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES,
+        SECURITY_DESCRIPTOR, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
     },
     Storage::FileSystem::{
         CreateDirectoryW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -159,6 +159,21 @@ pub(super) fn restrict_private_file_handle(handle: &File) -> io::Result<()> {
     restrict_handle(handle, ObjectKind::File)
 }
 
+pub(super) fn ensure_private_file(path: &Path) -> io::Result<()> {
+    let object = OpenedPrivateObject::open(path, ObjectKind::File, true)?;
+    ensure_private_file_handle(object.file())
+}
+
+pub(super) fn ensure_private_file_handle(handle: &File) -> io::Result<()> {
+    let identities = PrivateIdentities::current()?;
+    validate_handle_type(handle, ObjectKind::File)?;
+    verify_handle_owner(handle, identities.user_sid())?;
+    match verify_handle_with_identities(handle, ObjectKind::File, &identities) {
+        Ok(()) => Ok(()),
+        Err(_) => restrict_handle_with_identities(handle, ObjectKind::File, &identities),
+    }
+}
+
 pub(super) fn verify_private_directory(path: &Path) -> io::Result<()> {
     verify(path, ObjectKind::Directory)
 }
@@ -198,7 +213,15 @@ fn restrict(path: &Path, kind: ObjectKind) -> io::Result<()> {
 fn restrict_handle(handle: &File, kind: ObjectKind) -> io::Result<()> {
     validate_handle_type(handle, kind)?;
     let identities = PrivateIdentities::current()?;
-    let mut acl = private_acl(&identities, kind)?;
+    restrict_handle_with_identities(handle, kind, &identities)
+}
+
+fn restrict_handle_with_identities(
+    handle: &File,
+    kind: ObjectKind,
+    identities: &PrivateIdentities,
+) -> io::Result<()> {
+    let mut acl = private_acl(identities, kind)?;
     // SAFETY: the file owns a live handle with WRITE_DAC and the ACL remains
     // live for this synchronous call.
     let result = unsafe {
@@ -215,7 +238,37 @@ fn restrict_handle(handle: &File, kind: ObjectKind) -> io::Result<()> {
     if result != ERROR_SUCCESS {
         return Err(win32_error(result));
     }
-    verify_handle_with_identities(handle, kind, &identities)
+    verify_handle_with_identities(handle, kind, identities)
+}
+
+fn verify_handle_owner(handle: &File, expected_owner: PSID) -> io::Result<()> {
+    let mut owner = null_mut();
+    let mut descriptor = null_mut();
+    // SAFETY: all out pointers are valid and the returned descriptor is guarded.
+    let result = unsafe {
+        GetSecurityInfo(
+            handle.as_raw_handle().cast(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &raw mut owner,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &raw mut descriptor,
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(win32_error(result));
+    }
+    let _descriptor = LocalAllocation(descriptor);
+    if owner.is_null() || unsafe { EqualSid(owner, expected_owner) } == 0 {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "private state path is not owned by the current user",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn verify(path: &Path, kind: ObjectKind) -> io::Result<()> {
@@ -609,6 +662,106 @@ fn win32_error(code: u32) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn set_permissive_null_dacl(handle: &File) -> io::Result<()> {
+        // SAFETY: the file owns a live handle with WRITE_DAC. A null DACL is an
+        // intentionally permissive fixture that ensure_private_file_handle
+        // must replace before the file is used as private state.
+        let result = unsafe {
+            SetSecurityInfo(
+                handle.as_raw_handle().cast(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            )
+        };
+        if result == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(win32_error(result))
+        }
+    }
+
+    fn world_sid() -> io::Result<AlignedBuffer> {
+        use windows_sys::Win32::Security::WinWorldSid;
+
+        let mut sid = AlignedBuffer::new(SECURITY_MAX_SID_SIZE)?;
+        let mut size = u32::try_from(sid.byte_len()).map_err(|_| invalid_acl())?;
+        // SAFETY: sid is aligned and has SECURITY_MAX_SID_SIZE capacity.
+        if unsafe {
+            CreateWellKnownSid(
+                WinWorldSid,
+                null_mut(),
+                sid.as_mut_ptr().cast(),
+                &raw mut size,
+            )
+        } == 0
+        {
+            Err(last_error())
+        } else {
+            Ok(sid)
+        }
+    }
+
+    #[test]
+    fn permissive_file_dacl_is_repaired_on_the_open_handle(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempfile::tempdir()?;
+        let path = parent.path().join("legacy-config.toml");
+        fs::write(&path, b"legacy")?;
+        let object = OpenedPrivateObject::open(&path, ObjectKind::File, true)?;
+        set_permissive_null_dacl(object.file())?;
+        assert!(verify_handle(object.file(), ObjectKind::File).is_err());
+
+        ensure_private_file_handle(object.file())?;
+
+        verify_handle(object.file(), ObjectKind::File)?;
+        Ok(())
+    }
+
+    #[test]
+    fn wrong_owner_is_rejected_before_acl_repair() -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempfile::tempdir()?;
+        let path = parent.path().join("wrong-owner.toml");
+        fs::write(&path, b"legacy")?;
+        let object = OpenedPrivateObject::open(&path, ObjectKind::File, true)?;
+        set_permissive_null_dacl(object.file())?;
+        let world = world_sid()?;
+
+        let error =
+            verify_handle_owner(object.file(), world.as_ptr().cast_mut().cast()).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("not owned by the current user"));
+        assert!(verify_handle(object.file(), ObjectKind::File).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn reparse_handle_is_rejected_before_acl_repair() -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempfile::tempdir()?;
+        let target = parent.path().join("target");
+        let junction = parent.path().join("junction");
+        fs::create_dir(&target)?;
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .status()?;
+        if !status.success() {
+            return Err("failed to create junction fixture".into());
+        }
+        let handle = open_handle(&junction, ObjectKind::Directory, READ_CONTROL | WRITE_DAC)?;
+
+        let error = ensure_private_file_handle(&handle).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("reparse point"));
+        Ok(())
+    }
 
     #[test]
     fn pathname_swap_cannot_redirect_handle_bound_acl_steps(

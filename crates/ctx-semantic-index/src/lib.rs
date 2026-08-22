@@ -17,9 +17,10 @@ mod vector_store_state;
 pub use document::SemanticEventDocument;
 pub use query_index::{SemanticNotReady, SemanticQueryPin};
 pub use vector_store::{
-    semantic_core_content_is_control, source_backed_semantic_vector_path, PinnedFlatGeneration,
-    SemanticBatchEmbedder, SemanticChunkDocument, SemanticDocumentBuilder, SemanticVectorStore,
-    SourceBackedGenerationPin, SourceBackedSemanticOutcome,
+    semantic_core_content_is_control, source_backed_semantic_contract_fingerprint,
+    source_backed_semantic_vector_path, PinnedFlatGeneration, SemanticBatchEmbedder,
+    SemanticChunkDocument, SemanticDocumentBuilder, SemanticVectorStore, SourceBackedGenerationPin,
+    SourceBackedSemanticOutcome,
 };
 pub use vector_store_schema::{semantic_vector_failure_kind, SemanticVectorFailureKind};
 
@@ -95,6 +96,10 @@ pub mod test_support {
 
     pub fn semantic_vector_schema_version() -> i64 {
         super::vector_store_schema::SEMANTIC_VECTOR_SCHEMA_VERSION
+    }
+
+    pub fn seed_filter_unaware_derived_state(root: &std::path::Path) -> Result<()> {
+        super::vector_store::seed_filter_unaware_derived_state(root)
     }
 }
 

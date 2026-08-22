@@ -120,7 +120,7 @@ fn control_reset_retires_unowned_flat_vectors_before_rebuild() -> Result<()> {
 
     drop(store);
     let control = rusqlite::Connection::open(fixture.semantic_path.join("state.sqlite"))?;
-    control.pragma_update(None, "user_version", 2)?;
+    control.pragma_update(None, "user_version", 5)?;
     drop(control);
     let mut store = SemanticVectorStore::open(&fixture.semantic_path)?;
     builder.calls.clear();

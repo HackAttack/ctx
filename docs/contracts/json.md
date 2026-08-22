@@ -153,7 +153,7 @@ Wait returns one object with `schema_version`, `status` (`ready`, `blocked`, or
 including daemon and supervisor diagnostics.
 
 Index snapshots expose the reduced
-`semantic.{status,reason,enabled,coverage.{searchable_items,embedded_items,embedded_chunks}}`
+`semantic.{status,reason,enabled,coverage.{candidate_items,searchable_items,embedded_items,filtered_items,embedded_chunks}}`
 shape and `daemon.{status,running,jobs.semantic_index}`. The complete semantic
 and daemon fields below describe `ctx status --format json`, not index
 snapshots.
@@ -161,9 +161,17 @@ snapshots.
 `semantic.status` is `disabled`, `pending`, `ready`, or `unavailable`.
 `semantic.flat_f32` reports the source-backed projection and can include its
 `status`, `reason`, `path`, Core and flat generation identity, semantic document
-count, active event/chunk/vector-byte counts, and `last_error`. Optional
-`semantic.catch_up` retains the latest semantic-index job receipt. Live worker
-state and coverage are reported under `daemon.jobs.semantic_index` below.
+count, projected and intentionally filtered document counts, active
+event/chunk/vector-byte counts, and `last_error`. For a ready generation,
+`semantic_documents = projected_documents + filtered_documents` and
+`projected_documents = active_events`. These document counters, and the index
+snapshot candidate/searchable/embedded/filtered counters derived from them,
+are integers in the exact inclusive range `0..9007199254740991`; a larger
+internal count makes semantic status unavailable instead of emitting an unsafe
+JSON number. Optional `semantic.catch_up` retains the latest semantic-index job
+receipt, including its `source_contract_fingerprint` when produced by current
+daemon maintenance. Live worker state and coverage are reported under
+`daemon.jobs.semantic_index` below.
 
 `daemon` reports the ctx-owned background coordinator state. Fields listed as
 nullable may be omitted when unavailable:
@@ -842,6 +850,13 @@ Semantic-only unavailability is a typed command error, not a successful
 `searchable_items`, `indexed_now`, and `dirty_items` when known. Coverage counts
 are numbers when present; null count fields are pruned from public SDK fixtures
 and typed SDK shapes.
+
+Index readiness coverage uses `candidate_items` for the pre-content-filter Core
+population, `filtered_items` for intentional semantic content filtering, and
+`searchable_items`/`embedded_items` for acknowledged active flat-F32 events.
+Ready coverage therefore satisfies
+`candidate_items = searchable_items + filtered_items` and
+`searchable_items = embedded_items`.
 
 The SDK `agent-history-v1` contract keeps schema version 1 and normalizes the
 resolved filter as `search.filters.contentScope`, with the same exact four

@@ -592,6 +592,9 @@ pub(super) fn route_error(error: OpenCodeSourceBackedError) -> SourceBackedRoute
         OpenCodeSourceBackedError::SqliteSource(error) if error.is_ctx_owned_corruption() => {
             SourceBackedRouteErrorKind::Internal
         }
+        OpenCodeSourceBackedError::SqliteSource(error) if error.is_snapshot_capacity_failure() => {
+            SourceBackedRouteErrorKind::Unavailable
+        }
         OpenCodeSourceBackedError::SqliteSource(SqliteSourceAccessError::ResourceUnavailable {
             ..
         }) => SourceBackedRouteErrorKind::ResourceUnavailable,

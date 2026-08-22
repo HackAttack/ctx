@@ -58,6 +58,41 @@ fn visible_chunks(pinned: &PinnedFlatGeneration) -> Vec<(Uuid, u64, u32, Vec<f32
 }
 
 #[test]
+fn filter_unaware_manifest_schema_is_rebuilt_as_empty_derived_state() -> FlatResult<()> {
+    let temporary = tempfile::tempdir()
+        .map_err(|source| io_error("create test directory", Path::new("."), source))?;
+    let store = FlatSegmentStore::open(temporary.path(), contract())?;
+    store.publish_replacement_event_chunks(
+        &[replacement(
+            Uuid::from_u128(1),
+            1,
+            1,
+            vec![chunk(0, [1.0, 0.0, 0.0, 0.0])],
+        )],
+        &[],
+    )?;
+    let selected = select_manifest_any(temporary.path())?
+        .ok_or_else(|| FlatStoreError::Corrupt("test manifest is missing".to_owned()))?;
+    let mut legacy = selected.envelope;
+    legacy.manifest.schema_version = 3;
+    fs::write(
+        &selected.path,
+        serde_json::to_vec(&legacy).map_err(FlatStoreError::Serialize)?,
+    )
+    .map_err(|source| io_error("write legacy test manifest", &selected.path, source))?;
+    drop(store);
+
+    let rebuilt = FlatSegmentStore::open(temporary.path(), contract())?;
+    assert!(rebuilt.recovery_report().model_contract_reset);
+    let pin = rebuilt
+        .pin_generation()?
+        .ok_or_else(|| FlatStoreError::Corrupt("rebuilt empty manifest is missing".to_owned()))?;
+    assert_eq!(pin.stats().active_events, 0);
+    assert_eq!(pin.stats().active_chunks, 0);
+    Ok(())
+}
+
+#[test]
 fn replacement_tombstone_and_read_only_enumeration_are_exact() -> FlatResult<()> {
     let temporary = tempfile::tempdir()
         .map_err(|source| io_error("create test directory", Path::new("."), source))?;

@@ -295,8 +295,10 @@ impl DashboardStatus {
                 reason: Some("semantic_disabled"),
                 enabled: false,
                 coverage: SemanticCoverage {
+                    candidate_items: INDEXED_ITEMS,
                     embedded_items: 0,
-                    searchable_items: INDEXED_ITEMS,
+                    searchable_items: 0,
+                    filtered_items: 0,
                 },
             },
             daemon: DaemonStatus {
@@ -344,6 +346,7 @@ impl DashboardStatus {
         self.semantic.reason = reason;
         self.semantic.enabled = true;
         self.semantic.coverage.embedded_items = embedded_items;
+        self.semantic.coverage.searchable_items = embedded_items;
         self.daemon.jobs.semantic_index.status = state;
         self.daemon.jobs.semantic_index.reason = reason;
     }
@@ -411,8 +414,10 @@ struct SemanticStatus {
 
 #[derive(Debug, Serialize)]
 struct SemanticCoverage {
+    candidate_items: u64,
     embedded_items: u64,
     searchable_items: u64,
+    filtered_items: u64,
 }
 
 #[derive(Debug, Serialize)]

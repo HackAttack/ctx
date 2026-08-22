@@ -15,7 +15,7 @@ use crate::{
 
 pub(super) const SOURCE_FRONTIER_STATE: &str = "core_semantic_frontier_v1";
 pub(super) const SOURCE_ACKNOWLEDGEMENT_STATE: &str = "core_semantic_acknowledgement_v1";
-pub(super) const SOURCE_CONTRACT_VERSION: u16 = 12;
+pub(super) const SOURCE_CONTRACT_VERSION: u16 = 13;
 const SOURCE_CONTRACT_DOMAIN: &[u8] = b"ctx-source-backed-semantic-contract-v1\0";
 const SOURCE_BUILD_DOMAIN: &[u8] = b"ctx-source-backed-semantic-build-v1\0";
 pub(super) const SOURCE_INPUT_LEXICAL_SCHEMA_VERSION: u32 = 22;
@@ -35,6 +35,7 @@ pub(super) struct SourceProjectionFrontier {
     pub(super) active_source_indexed_documents: u64,
     pub(super) processed_source_documents: u64,
     pub(super) processed_source_semantic_documents: u64,
+    pub(super) processed_source_filtered_documents: u64,
     pub(super) after_identity: Option<Vec<u8>>,
     pub(super) source_scan_complete: bool,
     pub(super) removing_source: bool,
@@ -64,6 +65,7 @@ pub(super) struct SourceProjectionAcknowledgement {
     pub(super) consumer_build_id: String,
     pub(super) semantic_documents: u64,
     pub(super) projected_documents: u64,
+    pub(super) filtered_documents: u64,
     pub(super) source_receipt_count: u64,
     pub(super) source_receipts_hash: String,
     #[serde(default)]

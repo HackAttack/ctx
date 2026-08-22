@@ -198,6 +198,13 @@ fn quiesce_daemon_roots(roots: &BTreeSet<PathBuf>, expected_executable: &Path) -
                 },
             )?;
         }
+        #[cfg(windows)]
+        wait_for_released_residual_daemon(root, expected_executable).with_context(|| {
+            format!(
+                "wait for released residual ctx daemon for {} before uninstall",
+                root.display()
+            )
+        })?;
         wait_for_daemon_lifecycle_release(root)?;
     }
     Ok(())

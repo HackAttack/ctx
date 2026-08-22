@@ -43,13 +43,15 @@ use ctx_history_source_io::{
 use crate::{SqliteSourceProgress, SqliteSourceProgressStage};
 
 const EVIDENCE_DOMAIN: &[u8] = b"ctx-stock-sqlite-snapshot-v2\0";
-// Admit an approximately 1 GiB provider database together with an active WAL
-// of comparable size while retaining one finite cumulative copy bound.
-const SQLITE_SNAPSHOT_MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const SQLITE_SNAPSHOT_FREE_HEADROOM_BYTES: u64 = 16 * 1024 * 1024;
+const SQLITE_SNAPSHOT_FREE_HEADROOM_DIVISOR: u64 = 20;
 const SQLITE_COPY_BUFFER_BYTES: usize = 64 * 1024;
 const SQLITE_REVISION_TOKEN_BYTES: usize = 64;
 const SQLITE_SHM_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+fn sqlite_snapshot_free_headroom_bytes(capacity_bytes: u64) -> u64 {
+    SQLITE_SNAPSHOT_FREE_HEADROOM_BYTES.max(capacity_bytes / SQLITE_SNAPSHOT_FREE_HEADROOM_DIVISOR)
+}
 
 mod diagnostics;
 mod resources;

@@ -1,4 +1,5 @@
 use super::*;
+use fs2::FileExt as _;
 
 const SQLITE_SOURCE_FAMILY_COPY_PROGRESS_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -36,6 +37,15 @@ pub(super) fn copy_sqlite_member_with_progress<E>(
             path: destination.to_path_buf(),
             source,
         })?;
+    if expected_length != 0 {
+        destination_file
+            .allocate(expected_length)
+            .map_err(|source| SqliteSourceAccessError::ScratchIoUnavailable {
+                operation: "reserving space for a ctx-owned SQLite snapshot component",
+                path: destination.to_path_buf(),
+                source,
+            })?;
+    }
     let mut remaining = expected_length;
     let mut buffer = [0_u8; SQLITE_COPY_BUFFER_BYTES];
     while remaining > 0 {

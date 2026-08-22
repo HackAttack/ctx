@@ -184,7 +184,11 @@ events.
 `search/semantic`. Semantic projection enumerates eligible imported Core
 records, filters control messages, then chunks and embeds them. The semantic
 generation stores vectors, hashes, offsets, and generation binding rather than
-plaintext transcript chunks.
+plaintext transcript chunks. Readiness accounts for all pre-content-filter Core
+candidates: each candidate is either an acknowledged active flat-F32 event or
+an intentionally filtered event. Metadata filters are then applied to the
+acknowledged active flat-F32 events; a query does not require intentionally
+filtered Core matches to have vectors.
 
 `--backend hybrid` blends lexical and semantic evidence with reciprocal-rank
 fusion. `--semantic-weight` controls the semantic contribution and defaults to

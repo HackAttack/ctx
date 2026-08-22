@@ -19,6 +19,8 @@ use uuid::Uuid;
 
 mod artifacts;
 mod catalog;
+#[cfg(any(test, feature = "test-support"))]
+mod legacy_fixture;
 mod manifest;
 mod pinned;
 mod recovery;
@@ -27,6 +29,8 @@ mod source_reconciliation;
 mod source_stage_log;
 mod source_staging;
 mod validation;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use legacy_fixture::seed_filter_unaware_manifest;
 
 use artifacts::*;
 use catalog::*;
@@ -142,6 +146,8 @@ pub(crate) struct FlatSourceReceipt {
     pub(crate) contract_fingerprint: String,
     pub(crate) semantic_policy_fingerprint: String,
     pub(crate) owned_event_count: u64,
+    #[serde(default)]
+    pub(crate) filtered_event_count: u64,
     pub(crate) owned_event_ids_hash: String,
 }
 
@@ -154,6 +160,7 @@ pub(crate) struct FlatSourceReceiptInput {
     pub(crate) core_record_accumulator: String,
     pub(crate) contract_fingerprint: String,
     pub(crate) semantic_policy_fingerprint: String,
+    pub(crate) filtered_event_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

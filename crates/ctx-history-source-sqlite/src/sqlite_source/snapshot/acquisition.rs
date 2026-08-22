@@ -136,8 +136,8 @@ pub(super) fn acquire_sqlite_connection_with_progress<E>(
     after_database_copy: impl FnOnce(),
     report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
 ) -> Result<AcquiredSqliteConnection, SqliteSourceProgressError<E>> {
-    let source_limit = options.limits.maximum_source_bytes;
-    let scratch_limit = options.limits.maximum_scratch_bytes;
+    let source_limit = options.limits.maximum_source_bytes();
+    let scratch_limit = options.limits.maximum_scratch_limit();
     let scratch = SqliteRouteScratch::new(snapshot_context, scratch_limit);
     if options.policy == SqliteSourceSnapshotPolicy::PinnedReadOnlyWal {
         #[cfg(any(test, feature = "test-support"))]
@@ -192,10 +192,8 @@ pub(super) fn acquire_sqlite_connection_with_progress<E>(
     };
     let admitted_capacity = copied_bytes
         .checked_add(coordination_reserve)
-        .ok_or_else(|| SqliteSourceAccessError::SnapshotTooLarge {
-            path: family.database.path.clone(),
-            length: u64::MAX,
-            maximum: scratch_limit,
+        .ok_or_else(|| SqliteSourceAccessError::SnapshotUnavailable {
+            reason: "SQLite source-copy capacity accounting overflowed".to_owned(),
         })?;
     scratch.admit_capacity(admitted_capacity)?;
     let (snapshot_directory, snapshot_path) = copy_sqlite_family_to_ctx_with_progress(
@@ -390,28 +388,28 @@ pub(super) fn open_immutable_main(
 pub(super) fn enforce_snapshot_copy_bounds_with_limit(
     family: &SqliteSourceFamily,
     evidence: &SqliteFamilyEvidence,
-    scratch_limit: u64,
+    scratch_limit: Option<u64>,
 ) -> SqliteSourceAccessResult<u64> {
     let mut total = evidence.database.length;
     match (family.wal.as_ref(), evidence.wal.as_ref()) {
         (Some(_), Some(state)) => {
             total = total.checked_add(state.length).ok_or_else(|| {
-                SqliteSourceAccessError::SnapshotTooLarge {
-                    path: family.database.path.clone(),
-                    length: u64::MAX,
-                    maximum: scratch_limit,
+                SqliteSourceAccessError::SnapshotUnavailable {
+                    reason: "SQLite source-family length accounting overflowed".to_owned(),
                 }
             })?;
         }
         (None, None) => {}
         _ => return Err(SqliteSourceAccessError::SourceChanged),
     }
-    if total > scratch_limit {
-        return Err(SqliteSourceAccessError::SnapshotTooLarge {
-            path: family.database.path.clone(),
-            length: total,
-            maximum: scratch_limit,
-        });
+    if let Some(maximum) = scratch_limit {
+        if total > maximum {
+            return Err(SqliteSourceAccessError::SnapshotTooLarge {
+                path: family.database.path.clone(),
+                length: total,
+                maximum,
+            });
+        }
     }
     Ok(total)
 }
@@ -420,7 +418,7 @@ pub(super) fn copy_sqlite_family_to_ctx_with_progress<E>(
     data_root: &Path,
     family: &SqliteSourceFamily,
     evidence: &SqliteFamilyEvidence,
-    scratch_limit: u64,
+    scratch_limit: Option<u64>,
     after_database_copy: impl FnOnce(),
     report_progress: &mut impl FnMut(SqliteSourceProgress) -> Result<(), E>,
 ) -> Result<(TempDir, PathBuf), SqliteSourceProgressError<E>> {
@@ -489,7 +487,10 @@ fn injected_storage_full_error() -> std::io::Error {
     std::io::Error::from(std::io::ErrorKind::StorageFull)
 }
 
-fn measure_private_snapshot_bytes(directory: &Path, maximum: u64) -> SqliteSourceAccessResult<u64> {
+fn measure_private_snapshot_bytes(
+    directory: &Path,
+    maximum: Option<u64>,
+) -> SqliteSourceAccessResult<u64> {
     let mut total = 0_u64;
     for name in [
         "source.sqlite",
@@ -516,22 +517,21 @@ fn measure_private_snapshot_bytes(directory: &Path, maximum: u64) -> SqliteSourc
             });
         }
         total = total.checked_add(metadata.len()).ok_or_else(|| {
-            SqliteSourceAccessError::SnapshotTooLarge {
-                path: directory.to_path_buf(),
-                length: u64::MAX,
-                maximum,
+            SqliteSourceAccessError::SnapshotUnavailable {
+                reason: "SQLite private snapshot measurement overflowed".to_owned(),
             }
         })?;
     }
-    if total > maximum {
-        Err(SqliteSourceAccessError::SnapshotTooLarge {
-            path: directory.to_path_buf(),
-            length: total,
-            maximum,
-        })
-    } else {
-        Ok(total)
+    if let Some(maximum) = maximum {
+        if total > maximum {
+            return Err(SqliteSourceAccessError::SnapshotTooLarge {
+                path: directory.to_path_buf(),
+                length: total,
+                maximum,
+            });
+        }
     }
+    Ok(total)
 }
 
 pub(super) fn create_snapshot_directory(

@@ -32,6 +32,10 @@ use crate::{
         SourceBackedRefreshRouteResult, SourceBackedRefreshSourceFailure,
         SourceBackedRefreshTimings,
     },
+    test_support::{
+        current_semantic_vector_schema_version, seed_filter_unaware_semantic_state,
+        semantic_contract_fingerprint, semantic_generation_is_ready_empty, semantic_vector_path,
+    },
     CoreGenerationPublished, CoreGenerationPublishedPort, DaemonRunArgs,
 };
 
@@ -676,6 +680,93 @@ fn one_core_cycle_then_scheduler_drains_semantic_consumer() {
     )
     .unwrap();
     assert!(!drained.continue_immediately);
+}
+
+#[test]
+fn automatic_scheduler_restart_migrates_legacy_semantic_state_despite_ready_job() {
+    let temp = tempfile::tempdir().unwrap();
+    let generation = publish_empty_core_generation(temp.path());
+    let vector_path = semantic_vector_path(temp.path());
+    let contract_fingerprint = semantic_contract_fingerprint().unwrap();
+
+    let mut initial_runtime = DaemonRuntime::default();
+    let initial = run_daemon_scheduler_cycle_with_activity(
+        &daemon_args(),
+        temp.path(),
+        &mut initial_runtime,
+        None,
+        true,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(initial.continue_immediately);
+    let initial_job = read_daemon_job_status(&daemon_semantic_job_path(temp.path())).unwrap();
+    assert_eq!(initial_job["status"], "ready");
+    assert_eq!(initial_job["core_generation_id"], generation);
+    assert_eq!(
+        initial_job["source_contract_fingerprint"],
+        contract_fingerprint
+    );
+
+    seed_filter_unaware_semantic_state(&vector_path).unwrap();
+    let control = rusqlite::Connection::open(vector_path.join("state.sqlite")).unwrap();
+    let seeded_version = control
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    assert_eq!(seeded_version, 5);
+    drop(control);
+    write_daemon_job_status(
+        &daemon_semantic_job_path(temp.path()),
+        &json!({
+            "schema_version": 1,
+            "status": "ready",
+            "core_generation_id": generation,
+            "source_generation_ready": true,
+            "source_work_remaining": false,
+        }),
+    )
+    .unwrap();
+
+    let mut restarted_runtime = DaemonRuntime::default();
+    assert!(super::semantic_generation_needs_catch_up(
+        temp.path(),
+        &generation
+    ));
+    for _ in 0..8 {
+        run_daemon_scheduler_cycle_with_activity(
+            &daemon_args(),
+            temp.path(),
+            &mut restarted_runtime,
+            None,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
+        if !super::semantic_generation_needs_catch_up(temp.path(), &generation) {
+            break;
+        }
+    }
+
+    assert!(!super::semantic_generation_needs_catch_up(
+        temp.path(),
+        &generation
+    ));
+    let migrated_job = read_daemon_job_status(&daemon_semantic_job_path(temp.path())).unwrap();
+    assert_eq!(migrated_job["status"], "ready");
+    assert_eq!(migrated_job["core_generation_id"], generation);
+    assert_eq!(
+        migrated_job["source_contract_fingerprint"],
+        contract_fingerprint
+    );
+    let control = rusqlite::Connection::open(vector_path.join("state.sqlite")).unwrap();
+    let migrated_version = control
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .unwrap();
+    assert_eq!(migrated_version, current_semantic_vector_schema_version());
+    drop(control);
+    assert!(semantic_generation_is_ready_empty(&vector_path, &generation).unwrap());
 }
 
 #[test]
