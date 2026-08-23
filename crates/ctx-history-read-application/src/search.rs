@@ -267,7 +267,7 @@ fn validate_provider_root_selectors(values: &[String], kind: &str) -> Result<()>
     if values.len() > 64 {
         return Err(anyhow!("{kind} selectors exceed the maximum of 64"));
     }
-    if let Some(value) = values.iter().find(|value| {
+    if values.iter().any(|value| {
         value.is_empty()
             || value.len() > 64
             || !value
@@ -275,7 +275,7 @@ fn validate_provider_root_selectors(values: &[String], kind: &str) -> Result<()>
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     }) {
         return Err(anyhow!(
-            "invalid {kind} selector `{value}`; expected 1..=64 ASCII letters, digits, hyphens, or underscores"
+            "invalid {kind} selector; expected 1..=64 ASCII letters, digits, hyphens, or underscores"
         ));
     }
     Ok(())

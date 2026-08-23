@@ -130,6 +130,7 @@ impl DiscoveryPlatformDirs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryContext {
     home: PathBuf,
+    home_directory_available: bool,
     cwd: Option<PathBuf>,
     data_root: Option<PathBuf>,
     effective_uid: Option<u32>,
@@ -148,6 +149,7 @@ impl DiscoveryContext {
             .collect();
         Self {
             home: home.into(),
+            home_directory_available: true,
             cwd: env::current_dir().ok(),
             data_root: None,
             effective_uid: process_effective_uid(),
@@ -167,6 +169,7 @@ impl DiscoveryContext {
     ) -> Self {
         Self {
             home: home.into(),
+            home_directory_available: true,
             cwd: Some(cwd.into()),
             data_root: None,
             effective_uid: None,
@@ -185,6 +188,7 @@ impl DiscoveryContext {
     ) -> Self {
         Self {
             home: home.into(),
+            home_directory_available: true,
             cwd: None,
             data_root: None,
             effective_uid: None,
@@ -198,6 +202,20 @@ impl DiscoveryContext {
 
     pub fn home(&self) -> &Path {
         &self.home
+    }
+
+    /// Marks the supplied home path as a non-discoverable placeholder.
+    ///
+    /// Absolute configured provider roots remain usable when the process has
+    /// no resolvable home directory, while home- and environment-derived
+    /// automatic discovery stays conservatively disabled.
+    pub fn with_home_directory_available(mut self, available: bool) -> Self {
+        self.home_directory_available = available;
+        self
+    }
+
+    pub const fn home_directory_available(&self) -> bool {
+        self.home_directory_available
     }
 
     pub fn cwd(&self) -> Option<&Path> {
@@ -278,6 +296,10 @@ impl DiscoveryContext {
 
     pub const fn automatic_provider_discovery_enabled(&self) -> bool {
         self.automatic_provider_discovery
+    }
+
+    pub const fn automatic_provider_inference_enabled(&self) -> bool {
+        self.automatic_provider_discovery && self.home_directory_available
     }
 }
 

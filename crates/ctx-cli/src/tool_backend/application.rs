@@ -96,9 +96,22 @@ impl LocalToolBackend {
     }
 
     fn sources(&self) -> Result<SourceCatalog, ToolBackendError> {
-        let report = crate::provider_sources::discovered_sources_report(&self.data_root)
-            .map_err(classify_application_error)?;
+        let config =
+            config::AppConfig::load(&self.data_root).map_err(classify_application_error)?;
+        let automatic_discovery = config.automatic_source_discovery_enabled();
+        let provider_roots = config.provider_root_definitions();
+        let report = ctx_history_cli::discovered_sources_report_with_data_root_and_provider_roots(
+            crate::identity::home_dir().as_deref(),
+            &self.data_root,
+            automatic_discovery,
+            &provider_roots,
+        );
         let mut source_values = crate::sources_json(&report.sources);
+        crate::provider_sources::enrich_sources_json_with_selection(
+            &mut source_values,
+            &report.sources,
+            &provider_roots,
+        );
         source_values.extend(
             crate::discovered_plugin_sources_json(&self.data_root)
                 .map_err(classify_application_error)?,
@@ -106,6 +119,7 @@ impl LocalToolBackend {
         let (issues, issues_truncated) =
             crate::provider_sources::discovery_report_issues_json(&report);
         Ok(SourceCatalog {
+            automatic_discovery,
             sources: source_values,
             issues,
             issues_truncated,
@@ -371,7 +385,23 @@ fn classify_mcp_search_error(
             })
         }
         crate::commands::source_index::McpSearchError::Application { detail } => {
-            ToolBackendError::internal(detail)
+            if detail.contains("unknown provider root selector in the pinned generation")
+                || detail.contains("unknown provider root selector `")
+                || detail.contains("invalid source root selector `")
+            {
+                ToolBackendError::invalid_request(
+                    "source_roots contains an invalid or unavailable selector",
+                )
+            } else if detail.contains("unknown provider root scope in the pinned generation")
+                || detail.contains("unknown provider root scope `")
+                || detail.contains("invalid source scope selector `")
+            {
+                ToolBackendError::invalid_request(
+                    "scopes contains an invalid or unavailable selector",
+                )
+            } else {
+                ToolBackendError::internal(detail)
+            }
         }
     }
 }
@@ -553,6 +583,30 @@ mod tests {
 
         assert!(matches!(result, Err(ToolBackendError::SourceUnavailable)));
         assert_eq!(config_loads, 1);
+    }
+
+    #[test]
+    fn mcp_selector_errors_are_typed_and_do_not_echo_selector_contents() {
+        let rejected = "Private_Selector_7f98";
+        for (detail, expected) in [
+            (
+                format!("unknown provider root selector `{rejected}` in the pinned generation"),
+                "source_roots contains an invalid or unavailable selector",
+            ),
+            (
+                format!("unknown provider root scope `{rejected}` in the pinned generation"),
+                "scopes contains an invalid or unavailable selector",
+            ),
+        ] {
+            let error = classify_mcp_search_error(
+                crate::commands::source_index::McpSearchError::Application { detail },
+            );
+            assert!(matches!(
+                error,
+                ToolBackendError::InvalidRequest { detail }
+                    if detail == expected && !detail.contains(rejected)
+            ));
+        }
     }
 
     #[test]

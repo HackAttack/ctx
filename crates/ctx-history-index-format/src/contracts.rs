@@ -1,10 +1,10 @@
 use ctx_history_capture_model::{
-    provider_source_config_digest, ProviderRootDefinition, SourceRouteIdentity,
-    SourceRouteIdentityError, MAX_CONFIGURED_PROVIDER_ROOTS, MAX_PROVIDER_ROOT_SELECTOR_BYTES,
+    provider_source_config_digest, SourceRouteIdentity, SourceRouteIdentityError,
+    MAX_CONFIGURED_PROVIDER_ROOTS,
 };
 use ctx_history_core::{
-    CaptureProvider, CertifiedSource, CoreRecordError, ProjectionContractError, SourceKey,
-    CORE_RECORD_VERSION, IDENTITY_VERSION,
+    CertifiedSource, CoreRecordError, ProjectionContractError, SourceKey, CORE_RECORD_VERSION,
+    IDENTITY_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -19,7 +19,9 @@ use crate::{
 };
 
 mod digest;
+mod provider_root;
 use digest::{decode_sha256_hex, is_sha256_hex};
+pub use provider_root::AppliedProviderRoot;
 
 pub const GENERATION_MANIFEST_VERSION: u32 = 9;
 pub const LEXICAL_SCHEMA_VERSION: u32 = LEXICAL_SCHEMA_REVISION;
@@ -198,9 +200,9 @@ pub enum IndexError {
     ProviderRootRouteNotRetained { root_id: String, route_id: String },
     #[error("source route {route_id} belongs to more than one provider root")]
     SourceRouteOwnedByMultipleProviderRoots { route_id: String },
-    #[error("unknown provider root selector `{0}` in the pinned generation")]
+    #[error("unknown provider root selector in the pinned generation")]
     UnknownProviderRootSelector(String),
-    #[error("unknown provider root scope `{0}` in the pinned generation")]
+    #[error("unknown provider root scope in the pinned generation")]
     UnknownProviderRootScope(String),
     #[error(
         "generation manifest totals do not match its source certificates: \
@@ -714,52 +716,6 @@ pub struct SourceRouteSnapshot {
     missing: Option<SourceRouteMissingState>,
 }
 
-/// Generation-authoritative expansion of one configured provider home.
-///
-/// The human-facing id and scope are aliases only. Search resolves them to
-/// exact physical route identities from the same pinned generation; neither
-/// value participates in source, session, or event identity.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AppliedProviderRoot {
-    definition: ProviderRootDefinition,
-    routes: Vec<SourceRouteIdentity>,
-}
-
-impl AppliedProviderRoot {
-    pub fn new(
-        definition: ProviderRootDefinition,
-        mut routes: Vec<SourceRouteIdentity>,
-    ) -> Result<Self> {
-        routes.sort();
-        let root = Self { definition, routes };
-        root.validate_contract()?;
-        Ok(root)
-    }
-
-    pub fn definition(&self) -> &ProviderRootDefinition {
-        &self.definition
-    }
-
-    pub fn routes(&self) -> &[SourceRouteIdentity] {
-        &self.routes
-    }
-
-    fn validate_contract(&self) -> Result<()> {
-        validate_provider_root_definition(&self.definition)?;
-        if self.routes.windows(2).any(|pair| pair[0] >= pair[1]) {
-            return Err(IndexError::InvalidProviderRoots(format!(
-                "root {} routes are not strictly sorted and unique",
-                self.definition.id
-            )));
-        }
-        for route in &self.routes {
-            route.validate().map_err(IndexError::from)?;
-        }
-        Ok(())
-    }
-}
-
 impl SourceRouteSnapshot {
     pub fn present(route_identity: SourceRouteIdentity, sources: Vec<SourceKey>) -> Result<Self> {
         Self::new(route_identity, sources, None)
@@ -850,57 +806,6 @@ pub struct GenerationManifest {
     automatic_provider_discovery: bool,
     provider_root_config_digest: String,
     provider_roots: Vec<AppliedProviderRoot>,
-}
-
-fn validate_provider_root_definition(root: &ProviderRootDefinition) -> Result<()> {
-    let valid_selector = |value: &str| {
-        !value.is_empty()
-            && value.len() <= MAX_PROVIDER_ROOT_SELECTOR_BYTES
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    };
-    if !valid_selector(&root.id) {
-        return Err(IndexError::InvalidProviderRoots(format!(
-            "root id {:?} is invalid",
-            root.id
-        )));
-    }
-    if root
-        .scope
-        .as_deref()
-        .is_some_and(|scope| !valid_selector(scope))
-    {
-        return Err(IndexError::InvalidProviderRoots(format!(
-            "root {} has invalid scope",
-            root.id
-        )));
-    }
-    if !matches!(
-        root.provider,
-        CaptureProvider::Claude | CaptureProvider::Codex
-    ) {
-        return Err(IndexError::InvalidProviderRoots(format!(
-            "root {} has unsupported provider {}",
-            root.id,
-            root.provider.as_str()
-        )));
-    }
-    if !root.path.is_absolute()
-        || root.path.to_str().is_none()
-        || root.path.components().any(|component| {
-            matches!(
-                component,
-                std::path::Component::CurDir | std::path::Component::ParentDir
-            )
-        })
-    {
-        return Err(IndexError::InvalidProviderRoots(format!(
-            "root {} path is not normalized absolute UTF-8",
-            root.id
-        )));
-    }
-    Ok(())
 }
 
 /// Incrementally composable commitment to one source's exact stored Core

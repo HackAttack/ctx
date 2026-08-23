@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 
 impl GenerationManifest {
     #[cfg(any(test, feature = "test-support"))]
@@ -51,6 +52,24 @@ impl GenerationManifest {
             return Err(IndexError::NonCanonicalManifestSources);
         }
         source_routes.sort_by(|left, right| left.route_identity.cmp(&right.route_identity));
+        let retained_route_ids = source_routes
+            .iter()
+            .map(|route| route.route_identity().clone())
+            .collect::<BTreeSet<_>>();
+        provider_roots = provider_roots
+            .into_iter()
+            .map(|root| {
+                AppliedProviderRoot::with_source_identity(
+                    root.definition().clone(),
+                    root.source_identity(),
+                    root.routes()
+                        .iter()
+                        .filter(|route| retained_route_ids.contains(*route))
+                        .cloned()
+                        .collect(),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
         provider_roots.sort_by(|left, right| left.definition.id.cmp(&right.definition.id));
         core_record_aggregates.sort_by(|left, right| {
             left.source_identity_digest

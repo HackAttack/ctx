@@ -440,31 +440,49 @@ fn manual_session_exclusions_request_retained_peer_and_render_original_selectors
 #[test]
 fn search_rejects_root_and_scope_selectors_absent_from_the_pinned_generation() {
     let temp = tempdir().unwrap();
-    let (index, _) = publish(temp.path());
-    let mut request = lexical_request();
-    request.source_roots = vec!["personal".to_owned()];
-    request.scopes = vec!["work".to_owned()];
-    let plan = plan_search(
-        request,
-        SearchPolicy::lexical_only(SemanticReason::PolicyDisabled),
-    )
-    .unwrap();
-    let mut generation = RecordingGenerationPort::new(index);
-    let error = match execute_search(
-        SearchApplicationRequest {
-            plan,
-            generation_target: GenerationReadTarget::Active,
-            compact_projection: false,
-            active_session: None,
-        },
-        &mut generation,
-        &UnusedSemanticPort,
-    ) {
-        Err(SearchApplicationError::Query(error)) => error,
-        Err(other) => panic!("expected query error, got {other:?}"),
-        Ok(_) => panic!("expected unknown provider-root selector to fail"),
-    };
-    assert!(error.to_string().contains("unknown provider root selector"));
+    let (_index, _) = publish(temp.path());
+    for (roots, scopes, expected, secret) in [
+        (
+            vec!["personal".to_owned()],
+            Vec::new(),
+            "unknown provider root",
+            "personal",
+        ),
+        (
+            Vec::new(),
+            vec!["work".to_owned()],
+            "unknown provider root scope",
+            "work",
+        ),
+    ] {
+        let mut request = lexical_request();
+        request.source_roots = roots;
+        request.scopes = scopes;
+        let plan = plan_search(
+            request,
+            SearchPolicy::lexical_only(SemanticReason::PolicyDisabled),
+        )
+        .unwrap();
+        let mut generation =
+            RecordingGenerationPort::new(VerifiedIndex::open_pinned(temp.path()).unwrap());
+        let error = match execute_search(
+            SearchApplicationRequest {
+                plan,
+                generation_target: GenerationReadTarget::Active,
+                compact_projection: false,
+                active_session: None,
+            },
+            &mut generation,
+            &UnusedSemanticPort,
+        ) {
+            Err(SearchApplicationError::Query(error)) => error,
+            Err(other) => panic!("expected query error, got {other:?}"),
+            Ok(_) => panic!("expected unknown provider-root selector to fail"),
+        };
+        let error = error.to_string();
+        assert!(error.contains(expected));
+        assert!(!error.contains(secret));
+    }
 }
 
 #[test]

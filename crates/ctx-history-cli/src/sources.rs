@@ -6,11 +6,12 @@ use serde_json::json;
 use ctx_history_capture::{DiscoveryIssue, DiscoveryIssueKind, ProviderSourceStatus};
 use ctx_history_core::CaptureProvider;
 
+use crate::provider_sources::{configured_root_for_source, sources_json_with_selection};
 use crate::{
     discovery_report_issues_json, history_source_plugin_report, manual_path_guidance,
-    plugin_manifest_failures_json, plugin_sources_json, provider_cli_name, sources_json,
-    CliSourceDiscoveryPort, HistorySourcePluginManifestFailure, HistorySourcePluginSource,
-    OutputFormat, SourceInfo, SourcesRequest, DEFAULT_VISIBLE_SOURCE_PROVIDERS,
+    plugin_manifest_failures_json, plugin_sources_json, provider_cli_name, CliSourceDiscoveryPort,
+    HistorySourcePluginManifestFailure, HistorySourcePluginSource, OutputFormat, SourceInfo,
+    SourcesRequest, DEFAULT_VISIBLE_SOURCE_PROVIDERS,
 };
 use ctx_terminal::{
     canonical_human_output_bytes, diagnostic, empty_state, hint, outcome, section, table, Action,
@@ -90,22 +91,7 @@ where
         providers_importable: importable.saturating_add(existing_plugin_sources) as u64,
     });
     let hidden_missing_sources = listing.hidden_missing_sources;
-    let mut canonical_entries = sources_json(sources);
-    for (entry, source) in canonical_entries.iter_mut().zip(sources) {
-        let configured = configured_root_for_source(&provider_roots, source);
-        entry["selection"] = match configured {
-            Some(root) => json!({
-                "kind": "configured",
-                "root": root.id,
-                "scope": root.scope,
-            }),
-            None => json!({
-                "kind": "automatic",
-                "root": null,
-                "scope": null,
-            }),
-        };
-    }
+    let mut canonical_entries = sources_json_with_selection(sources, &provider_roots);
     canonical_entries.extend(plugin_sources_json(&plugin_sources));
     canonical_entries.extend(plugin_manifest_failures_json(&plugin_failures));
     let result_count = canonical_entries.len();
@@ -163,26 +149,6 @@ where
 
 #[cfg(test)]
 use ctx_history_ingest_application::{merge_sources, source_identity, source_is_visible};
-
-fn configured_root_for_source<'a>(
-    roots: &'a [ctx_history_capture::ProviderRootDefinition],
-    source: &SourceInfo,
-) -> Option<&'a ctx_history_capture::ProviderRootDefinition> {
-    roots.iter().find(|root| match root.provider {
-        CaptureProvider::Claude => {
-            source.provider == CaptureProvider::Claude && source.path == root.path.join("projects")
-        }
-        CaptureProvider::Codex => {
-            source.provider == CaptureProvider::Codex
-                && matches!(
-                    source.path.file_name().and_then(std::ffi::OsStr::to_str),
-                    Some("sessions" | "archived_sessions" | "history.jsonl")
-                )
-                && source.path.parent() == Some(root.path.as_path())
-        }
-        _ => false,
-    })
-}
 
 fn render_sources_human(
     context: &RenderContext,
@@ -592,6 +558,36 @@ mod ui_tests {
         assert!(
             rendered.contains("Automatic discovery is disabled"),
             "{rendered}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_source_selection_recognizes_physical_path_aliases() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let physical = temp.path().join("claude-physical");
+        std::fs::create_dir_all(physical.join("projects")).unwrap();
+        let alias = temp.path().join("claude-alias");
+        symlink(&physical, &alias).unwrap();
+        let mut source = source(
+            ProviderSourceStatus::Available,
+            &physical.join("projects").to_string_lossy(),
+        );
+        source.provider = CaptureProvider::Claude;
+        source.source_format = "claude_projects_jsonl_tree";
+        let root = ctx_history_capture::ProviderRootDefinition {
+            id: "personal-claude".to_owned(),
+            provider: CaptureProvider::Claude,
+            path: alias,
+            scope: Some("personal".to_owned()),
+        };
+
+        assert_eq!(
+            configured_root_for_source(std::slice::from_ref(&root), &source)
+                .map(|root| root.id.as_str()),
+            Some("personal-claude")
         );
     }
 

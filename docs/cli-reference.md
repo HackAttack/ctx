@@ -271,10 +271,25 @@ scope = "work"
 Names and scopes use up to 64 ASCII letters, digits, hyphens, or underscores;
 paths are normalized absolute paths. At most 64 homes may be configured. A
 scope is an optional label shared by any number of homes and is used only when
-a search explicitly supplies `--scope`. In automatic indexing mode the daemon
+a search explicitly supplies `--scope`. For an additional home, the name is
+also its stable local source identity: updating only its path preserves ctx
+session IDs and citations after a move, while removing it and adding a
+different name creates a new logical home. Naming the currently inferred home
+keeps its existing released identities. In automatic indexing mode the daemon
 reloads a valid source change as one full refresh. In manual mode, or when
 immediate publication is desired, run `ctx import --all` or search with
 `--refresh wait`.
+
+Treat the name as a durable local mount key rather than a display label.
+Removing and later reusing the same name intentionally reuses that logical
+namespace, including reconciliation of matching provider-native session ids;
+use a new name for an unrelated home. Editing `path` under the same name is the
+move operation, editing `scope` only changes filtering metadata, and changing
+the table name creates new logical identities.
+
+Names and scopes are local provenance and query selectors. They are not upload
+consent, access-control boundaries, tenant assignment, or retention policy; a
+future sync product must ask for those decisions separately.
 
 Advanced users can disable all automatic provider discovery while keeping named
 Claude/Codex homes active:

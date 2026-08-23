@@ -629,7 +629,7 @@ impl<B: ProviderRuntimeBinding> JsonlFamilyAdapter for CodexSessionJsonlFamilyAd
         }
         let plan = match super::catalog::bind_codex_partial_member_v0(
             member,
-            self.generation.qualifies_source_root(),
+            self.generation.source_root_lineage(),
         ) {
             Ok(plan) => plan,
             Err(_) => return Ok(None),
@@ -677,11 +677,7 @@ impl<B: ProviderRuntimeBinding> JsonlFamilyAdapter for CodexSessionJsonlFamilyAd
                         &authority_path,
                     )?
                 {
-                    let source_root_lineage = self
-                        .generation
-                        .qualifies_source_root()
-                        .then(|| codex_session_tree_source_root_lineage(authority.named_path()))
-                        .transpose()?;
+                    let source_root_lineage = self.generation.source_root_lineage();
                     observation.bind_source_hint(
                         path,
                         codex_source_key_in_root(source_root_lineage, &native_session_id)?,

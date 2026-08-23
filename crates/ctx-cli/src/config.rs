@@ -6,14 +6,15 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use ctx_history_capture::{
-    ProviderRootDefinition, MAX_CONFIGURED_PROVIDER_ROOTS, MAX_PROVIDER_ROOT_SELECTOR_BYTES,
-};
+use ctx_history_capture::{ProviderRootDefinition, MAX_CONFIGURED_PROVIDER_ROOTS};
 use ctx_history_core::CaptureProvider;
-use ctx_history_platform::platform_security::establish_private_data_root;
+use ctx_history_platform::platform_security::{
+    establish_private_data_root, validate_provider_source_outside_data_root,
+};
 
 mod durable_write;
 mod mutation;
+mod provider_roots;
 mod toml_subset;
 
 pub(crate) use mutation::{
@@ -23,6 +24,9 @@ pub(crate) use mutation::{
 
 use crate::deprecated_controls::DeprecatedControls;
 use durable_write::{write_config_durably, ConfigMutationLock};
+use provider_roots::{
+    validate_provider_root_path, validate_provider_root_support, validate_root_selector,
+};
 use toml_subset::*;
 
 pub const CONFIG_FILE: &str = "config.toml";
@@ -385,6 +389,9 @@ impl AppConfig {
                 config
                     .apply_values(&parsed)
                     .with_context(|| format!("load {}", path.display()))?;
+                config
+                    .validate_provider_root_data_root(data_root)
+                    .with_context(|| format!("load {}", path.display()))?;
             }
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
@@ -603,48 +610,20 @@ impl AppConfig {
     pub fn provider_root_definitions(&self) -> Vec<ProviderRootDefinition> {
         self.provider_roots.values().cloned().collect()
     }
-}
 
-fn validate_provider_root_support(provider: CaptureProvider) -> Result<()> {
-    if matches!(provider, CaptureProvider::Claude | CaptureProvider::Codex) {
-        return Ok(());
+    fn validate_provider_root_data_root(&self, data_root: &Path) -> Result<()> {
+        for root in self.provider_roots.values() {
+            validate_provider_source_outside_data_root(data_root, &root.path).with_context(
+                || {
+                    format!(
+                        "configured provider root `{}` must not overlap the ctx data root",
+                        root.id
+                    )
+                },
+            )?;
+        }
+        Ok(())
     }
-    bail!(
-        "configured provider homes currently support only claude and codex, not {}",
-        provider.as_str()
-    )
-}
-
-fn validate_root_selector(kind: &str, value: &str) -> Result<()> {
-    let valid = !value.is_empty()
-        && value.len() <= MAX_PROVIDER_ROOT_SELECTOR_BYTES
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
-    if valid {
-        return Ok(());
-    }
-    bail!(
-        "{kind} `{value}` must be 1..={MAX_PROVIDER_ROOT_SELECTOR_BYTES} ASCII letters, digits, hyphens, or underscores"
-    )
-}
-
-fn validate_provider_root_path(path: &Path) -> Result<()> {
-    if !path.is_absolute()
-        || path.to_str().is_none()
-        || path.components().any(|component| {
-            matches!(
-                component,
-                std::path::Component::CurDir | std::path::Component::ParentDir
-            )
-        })
-    {
-        bail!(
-            "configured provider home must be a normalized absolute UTF-8 path: {}",
-            path.display()
-        );
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -923,12 +902,18 @@ fn set_config_bool(data_root: &Path, section: &str, key: &str, enabled: bool) ->
     config
         .apply_values(&parsed)
         .with_context(|| format!("load {}", path.display()))?;
+    config
+        .validate_provider_root_data_root(data_root)
+        .with_context(|| format!("load {}", path.display()))?;
     let updated = set_toml_bool(&text, section, key, enabled);
     let parsed =
         parse_toml_subset(&updated).with_context(|| format!("parse updated {}", path.display()))?;
     let mut config = AppConfig::default();
     config
         .apply_values(&parsed)
+        .with_context(|| format!("load updated {}", path.display()))?;
+    config
+        .validate_provider_root_data_root(data_root)
         .with_context(|| format!("load updated {}", path.display()))?;
     if updated == text {
         return Ok(());

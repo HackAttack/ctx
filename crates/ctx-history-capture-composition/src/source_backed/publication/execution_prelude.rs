@@ -20,32 +20,14 @@ pub(super) fn configured_provider_root_route_ids(
 
 pub(super) fn provider_roots_for_publication(
     registry: &SourceBackedProviderRegistry,
-    base_route_ids: &BTreeSet<SourceRouteIdentity>,
 ) -> ctx_history_index::Result<Option<(bool, String, Vec<AppliedProviderRoot>)>> {
     let Some((automatic, digest, roots)) = registry.applied_provider_roots.as_ref() else {
         return Ok(None);
     };
-    let roots = roots
-        .iter()
-        .map(|root| {
-            let routes = root
-                .routes()
-                .iter()
-                .filter(|route_id| {
-                    base_route_ids.contains(*route_id)
-                        || !registry.routes.iter().any(|route| {
-                            route.metadata.route_identity.as_ref() == Some(*route_id)
-                                && route.metadata.source.status == ProviderSourceStatus::Unknown
-                                && route.driver.is_none()
-                                && route.certified_missing_paths.is_empty()
-                        })
-                })
-                .cloned()
-                .collect();
-            AppliedProviderRoot::new(root.definition().clone(), routes)
-        })
-        .collect::<ctx_history_index::Result<Vec<_>>>()?;
-    Ok(Some((*automatic, digest.clone(), roots)))
+    // This is the requested topology. Generation construction intersects its
+    // route memberships with the exact final source-route snapshot, after
+    // cold scan and terminal-revalidation failures are known.
+    Ok(Some((*automatic, digest.clone(), roots.clone())))
 }
 
 pub(super) fn publication_selected_route_ids(

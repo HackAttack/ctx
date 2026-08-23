@@ -64,10 +64,11 @@ pub(crate) use ctx_history_index_format::{
 };
 pub use ctx_history_index_format::{
     AppliedProviderRoot, CommittedPredecessorMigrationRecovery, ConsecutiveSourceMissingCount,
-    GenerationManifest, IndexError, ProviderRootDefinition, Result, SourceCoreRecordAggregate,
-    SourceMissingObservationPoint, SourceRouteIdentity, SourceRouteMissingState,
-    SourceRouteSnapshot, GENERATION_MANIFEST_VERSION, LEXICAL_ANALYZER_VERSION,
-    LEXICAL_SCHEMA_VERSION, LEXICAL_SEGMENT_MERGE_FAN_IN, MAX_PUBLICATION_METADATA_BYTES,
+    GenerationManifest, IndexError, ProviderRootDefinition, ProviderRootSourceIdentity, Result,
+    SourceCoreRecordAggregate, SourceMissingObservationPoint, SourceRouteIdentity,
+    SourceRouteMissingState, SourceRouteSnapshot, GENERATION_MANIFEST_VERSION,
+    LEXICAL_ANALYZER_VERSION, LEXICAL_SCHEMA_VERSION, LEXICAL_SEGMENT_MERGE_FAN_IN,
+    MAX_PUBLICATION_METADATA_BYTES,
 };
 #[cfg(test)]
 pub(crate) use ctx_history_index_generation::sha256_hex;

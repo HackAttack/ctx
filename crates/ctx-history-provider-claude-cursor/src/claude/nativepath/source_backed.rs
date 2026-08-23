@@ -28,6 +28,7 @@ use super::{
 use crate::CLAUDE_PROJECTS_SOURCE_FORMAT;
 use ctx_history_jsonl::{
     fit_jsonl_activity, selected_content_fits, JsonlActivityObservedBytes, JsonlFamilyAdapter,
+    JsonlFamilyBaseScope,
 };
 use ctx_history_provider_runtime::{
     observe_opened_file,
@@ -44,7 +45,6 @@ type JsonlReader = ProviderJsonlReader;
 type JsonlFamilyWorkerContext<B> = ProviderJsonlWorkerContext<B>;
 
 const SOURCE_ANCHOR_NAMESPACE: &str = "claude.session-leaf";
-const SOURCE_ROOT_LINEAGE_DOMAIN: &[u8] = b"ctx-claude-source-root-lineage-v1\0";
 const SESSION_KEY_NAMESPACE: &str = "claude.session";
 const NATIVE_EVENT_KEY_NAMESPACE: &str = "claude.event";
 const FALLBACK_EVENT_ID_VERSION: &str = "claude.fallback-event.v1";
@@ -61,14 +61,31 @@ use binding::*;
 use normalized_body::{event_kind, lexical_body};
 
 #[derive(Debug, Default)]
-struct ClaudeJsonlAdapter<B>(std::marker::PhantomData<fn() -> B>);
+struct ClaudeJsonlAdapter<B> {
+    source_root_lineage: Option<[u8; 32]>,
+    binding: std::marker::PhantomData<fn() -> B>,
+}
 
 pub(crate) fn claude_jsonl_adapter<B>(
 ) -> Arc<dyn JsonlFamilyAdapter<Runtime = ProviderJsonlRuntime<B>>>
 where
     B: ProviderRuntimeBinding,
 {
-    Arc::new(ClaudeJsonlAdapter(std::marker::PhantomData))
+    // Automatic Claude routes retain the released unqualified source identity
+    // so existing manifests remain refreshable across the 1.1 upgrade.
+    claude_jsonl_adapter_with_source_root_lineage(None)
+}
+
+pub(crate) fn claude_jsonl_adapter_with_source_root_lineage<B>(
+    source_root_lineage: Option<[u8; 32]>,
+) -> Arc<dyn JsonlFamilyAdapter<Runtime = ProviderJsonlRuntime<B>>>
+where
+    B: ProviderRuntimeBinding,
+{
+    Arc::new(ClaudeJsonlAdapter {
+        source_root_lineage,
+        binding: std::marker::PhantomData,
+    })
 }
 
 impl<B> JsonlFamilyAdapter for ClaudeJsonlAdapter<B>
@@ -97,6 +114,14 @@ where
         JsonlFamilyAppendMode::ProjectorPreflight(true)
     }
 
+    fn base_scope(&self) -> JsonlFamilyBaseScope {
+        // Automatic and named routes can alternate ownership of the same
+        // physical home. Reuse only the exact route's prior sources so either
+        // transition cold-scans the new owner while topology retirement drops
+        // the old route atomically.
+        JsonlFamilyBaseScope::Route
+    }
+
     fn discover(&self, root: &Path) -> Result<ProviderJsonlInventory> {
         match fs::symlink_metadata(root) {
             Ok(metadata) if metadata.is_dir() => {}
@@ -113,7 +138,7 @@ where
         }
         let canonical_root = fs::canonicalize(root)?;
         let projects_root = claude_projects_root(&canonical_root);
-        let source_root_lineage = source_root_lineage(&canonical_root)?;
+        let source_root_lineage = self.source_root_lineage;
         let authority = Arc::new(ProviderSourceRoot::open(&canonical_root)?);
         let mut paths = BTreeSet::new();
         visit_bounded_tree_files::<CaptureError, _>(
@@ -612,27 +637,22 @@ fn session_typed_key(key: &ClaudeSessionKey) -> Result<TypedKey> {
     .map_err(contract)
 }
 
-fn source_root_lineage(root: &Path) -> Result<[u8; 32]> {
-    let identity = ctx_history_source_io::provider_path_identity(root).map_err(contract)?;
-    let mut digest = Sha256::new();
-    digest.update(SOURCE_ROOT_LINEAGE_DOMAIN);
-    digest.update((identity.len() as u64).to_be_bytes());
-    digest.update(identity.as_bytes());
-    Ok(digest.finalize().into())
-}
-
-fn source_key(source_root_lineage: [u8; 32], key: &ClaudeSessionKey) -> Result<SourceKey> {
+fn source_key(source_root_lineage: Option<[u8; 32]>, key: &ClaudeSessionKey) -> Result<SourceKey> {
+    let native_key = match source_root_lineage {
+        Some(source_root_lineage) => TypedKey::composite(vec![
+            TypedKey::bytes(source_root_lineage.to_vec()).map_err(contract)?,
+            session_typed_key(key)?,
+        ])
+        .map_err(contract)?,
+        None => session_typed_key(key)?,
+    };
     SourceKey::derive_provider_native(
         CaptureProvider::Claude.as_str(),
         CLAUDE_PROJECTS_SOURCE_FORMAT,
         SOURCE_SCHEMA_VARIANT,
         1,
         SOURCE_ANCHOR_NAMESPACE,
-        TypedKey::composite(vec![
-            TypedKey::bytes(source_root_lineage.to_vec()).map_err(contract)?,
-            session_typed_key(key)?,
-        ])
-        .map_err(contract)?,
+        native_key,
     )
     .map_err(contract)
 }
@@ -788,20 +808,40 @@ mod tests {
     }
 
     #[test]
-    fn identical_native_sessions_under_distinct_roots_have_distinct_sources() {
+    fn identical_native_sessions_under_distinct_logical_roots_have_distinct_sources() {
         let key = ClaudeSessionKey {
             root_session_id: "shared-session".to_owned(),
             workflow_run_id: None,
             agent_id: None,
         };
-        let personal = source_root_lineage(Path::new("/tmp/claude-personal/projects")).unwrap();
-        let work = source_root_lineage(Path::new("/tmp/claude-work/projects")).unwrap();
+        let personal = [1; 32];
+        let work = [2; 32];
 
-        let personal_source = source_key(personal, &key).unwrap();
-        let work_source = source_key(work, &key).unwrap();
+        let personal_source = source_key(Some(personal), &key).unwrap();
+        let work_source = source_key(Some(work), &key).unwrap();
 
         assert!(!personal_source.exact_descriptor_eq(&work_source));
-        assert!(personal_source.exact_descriptor_eq(&source_key(personal, &key).unwrap()));
+        assert!(personal_source.exact_descriptor_eq(&source_key(Some(personal), &key).unwrap()));
+    }
+
+    #[test]
+    fn automatic_source_identity_keeps_the_released_unqualified_lineage() {
+        let key = ClaudeSessionKey {
+            root_session_id: "released-session".to_owned(),
+            workflow_run_id: None,
+            agent_id: None,
+        };
+        let released = SourceKey::derive_provider_native(
+            CaptureProvider::Claude.as_str(),
+            CLAUDE_PROJECTS_SOURCE_FORMAT,
+            SOURCE_SCHEMA_VARIANT,
+            1,
+            SOURCE_ANCHOR_NAMESPACE,
+            session_typed_key(&key).unwrap(),
+        )
+        .unwrap();
+
+        assert!(released.exact_descriptor_eq(&source_key(None, &key).unwrap()));
     }
 
     #[test]

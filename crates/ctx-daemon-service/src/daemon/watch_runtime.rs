@@ -214,7 +214,9 @@ impl DaemonWatchRuntime {
                     }
                 }
             });
-            if published_matches {
+            let refresh_pending =
+                source_refresh.is_some_and(CoreRefreshEngine::has_pending_request);
+            if published_matches && !refresh_pending {
                 self.provider_root_refresh_pending = false;
             } else if let Some(source_refresh) = source_refresh {
                 if let Err(error) = source_refresh.enqueue_periodic(data_root) {

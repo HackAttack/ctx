@@ -30,6 +30,9 @@ pub fn set_indexing_mode(data_root: &Path, mode: IndexingMode) -> Result<()> {
     config
         .apply_values(&parsed)
         .with_context(|| format!("load {}", path.display()))?;
+    config
+        .validate_provider_root_data_root(data_root)
+        .with_context(|| format!("load {}", path.display()))?;
 
     let mut document = text
         .parse::<toml_edit::DocumentMut>()
@@ -58,6 +61,9 @@ pub fn set_indexing_mode(data_root: &Path, mode: IndexingMode) -> Result<()> {
     let mut config = AppConfig::default();
     config
         .apply_values(&parsed)
+        .with_context(|| format!("load updated {}", path.display()))?;
+    config
+        .validate_provider_root_data_root(data_root)
         .with_context(|| format!("load updated {}", path.display()))?;
     if updated != text {
         write_config_durably(&path, updated.as_bytes())?;
@@ -99,6 +105,12 @@ pub fn add_provider_root(
     let root = fs::canonicalize(root)
         .with_context(|| format!("canonicalize provider home {}", root.display()))?;
     validate_provider_root_path(&root)?;
+    validate_provider_source_outside_data_root(data_root, &root).with_context(|| {
+        format!(
+            "provider home {} must not overlap the ctx data root",
+            root.display()
+        )
+    })?;
     let desired = ProviderRootDefinition {
         id: id.to_owned(),
         provider,
@@ -184,6 +196,12 @@ fn validated_persisted_config(path: &Path, text: &str) -> Result<AppConfig> {
     let mut config = AppConfig::default();
     config
         .apply_values(&parsed)
+        .with_context(|| format!("load {}", path.display()))?;
+    let data_root = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("config path has no data-root parent"))?;
+    config
+        .validate_provider_root_data_root(data_root)
         .with_context(|| format!("load {}", path.display()))?;
     Ok(config)
 }

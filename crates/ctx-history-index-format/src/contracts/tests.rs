@@ -1,4 +1,6 @@
 use super::*;
+use ctx_history_capture_model::ProviderRootDefinition;
+use ctx_history_core::CaptureProvider;
 
 #[test]
 fn source_route_snapshot_and_generation_wire_contract_remain_stable() {
@@ -26,11 +28,12 @@ fn source_route_snapshot_and_generation_wire_contract_remain_stable() {
 
 #[test]
 fn provider_root_aliases_are_bounded_and_generation_local() {
+    let temp = tempfile::tempdir().unwrap();
     let route_identity = SourceRouteIdentity::from_sha256("cd".repeat(32)).unwrap();
     let definition = ProviderRootDefinition {
         id: "personal".to_owned(),
         provider: CaptureProvider::Claude,
-        path: std::path::PathBuf::from("/home/example/.claude-personal"),
+        path: temp.path().join("claude-personal"),
         scope: Some("personal".to_owned()),
     };
     let manifest = GenerationManifest::from_parts_with_record_aggregates_and_provider_roots(
@@ -61,24 +64,32 @@ fn provider_root_aliases_are_bounded_and_generation_local() {
 }
 
 #[test]
-fn provider_root_manifest_rejects_dangling_or_shared_routes() {
+fn provider_root_manifest_prunes_unretained_routes_and_rejects_shared_routes() {
+    let temp = tempfile::tempdir().unwrap();
     let route_identity = SourceRouteIdentity::from_sha256("ef".repeat(32)).unwrap();
     let definition = |id: &str| ProviderRootDefinition {
         id: id.to_owned(),
         provider: CaptureProvider::Codex,
-        path: std::path::PathBuf::from(format!("/home/example/.codex-{id}")),
+        path: temp.path().join(format!("codex-{id}")),
         scope: None,
     };
     let first = definition("first");
+    let pruned = GenerationManifest::from_parts_with_record_aggregates_and_provider_roots(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        true,
+        provider_source_config_digest(true, std::slice::from_ref(&first)),
+        vec![AppliedProviderRoot::new(first, vec![route_identity.clone()]).unwrap()],
+    )
+    .unwrap();
+    assert!(pruned.provider_roots()[0].routes().is_empty());
+
+    let mut persisted = serde_json::to_value(&pruned).unwrap();
+    persisted["provider_roots"][0]["routes"] = serde_json::json!([route_identity.as_str()]);
+    let dangling: GenerationManifest = serde_json::from_value(persisted).unwrap();
     assert!(matches!(
-        GenerationManifest::from_parts_with_record_aggregates_and_provider_roots(
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            true,
-            provider_source_config_digest(true, std::slice::from_ref(&first)),
-            vec![AppliedProviderRoot::new(first, vec![route_identity.clone()]).unwrap()],
-        ),
+        dangling.validate_contract(),
         Err(IndexError::ProviderRootRouteNotRetained { .. })
     ));
 

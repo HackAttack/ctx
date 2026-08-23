@@ -270,6 +270,21 @@ fn provider_root_config_reload_enqueues_one_full_refresh_even_when_routes_are_un
         Some(&coordinator),
         WatchCatalogReconcileTrigger::CatalogControl(EventWatermark::new(2, 2)),
         false,
+        |_| Ok(personal.clone()),
+        |_, _, _| -> Result<DaemonFileWatcher> {
+            panic!("A→B→A config churn must retain the active watcher owner")
+        },
+    );
+    assert!(
+        watch_runtime.provider_root_refresh_pending_for_test(),
+        "matching the published A digest cannot consume demand while an admitted B refresh remains pending"
+    );
+
+    watch_runtime.reconcile_catalog_and_route_authority_with(
+        &data_root,
+        Some(&coordinator),
+        WatchCatalogReconcileTrigger::CatalogControl(EventWatermark::new(3, 3)),
+        false,
         |_| Ok(work.clone()),
         |_, _, _| -> Result<DaemonFileWatcher> {
             panic!("a repeated config reconciliation must retain the active watcher owner")
@@ -288,10 +303,14 @@ fn provider_root_config_reload_enqueues_one_full_refresh_even_when_routes_are_un
         false,
         Some("work"),
     )?;
+    // The fixture publishes the completed successor directly instead of
+    // running the queued engine request. Observe it with an idle engine to
+    // model the real post-completion state.
+    let completed_coordinator = CoreRefreshEngine::new();
     watch_runtime.reconcile_catalog_and_route_authority_with(
         &data_root,
-        Some(&coordinator),
-        WatchCatalogReconcileTrigger::CatalogControl(EventWatermark::new(3, 3)),
+        Some(&completed_coordinator),
+        WatchCatalogReconcileTrigger::CatalogControl(EventWatermark::new(4, 4)),
         false,
         |_| Ok(work.clone()),
         |_, _, _| -> Result<DaemonFileWatcher> {

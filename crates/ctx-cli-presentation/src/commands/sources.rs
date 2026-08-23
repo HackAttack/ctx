@@ -10,11 +10,10 @@ use crate::{
 };
 
 #[derive(Debug, Args, Clone)]
-#[command(args_conflicts_with_subcommands = true)]
 pub struct SourcesArgs {
     #[command(subcommand)]
     pub command: Option<SourcesCommand>,
-    #[arg(long, value_enum, default_value_t = JsonOutputFormat::Text)]
+    #[arg(long, global = true, value_enum, default_value_t = JsonOutputFormat::Text)]
     pub format: JsonOutputFormat,
     #[arg(
         long,

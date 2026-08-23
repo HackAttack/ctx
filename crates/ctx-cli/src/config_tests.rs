@@ -918,22 +918,28 @@ fn rejects_unknown_search_config_keys() {
 #[test]
 fn parses_multiple_named_provider_roots_and_global_automatic_disable() {
     let temp = tempfile::tempdir().unwrap();
+    let claude_home = tempfile::tempdir().unwrap();
+    let codex_home = tempfile::tempdir().unwrap();
     fs::write(
         temp.path().join(CONFIG_FILE),
-        r#"
+        format!(
+            r#"
 [sources]
 automatic = false
 
 [sources.roots.claude-personal]
 provider = "claude"
-path = "/home/example/.claude-personal"
+path = {:?}
 scope = "personal"
 
 [sources.roots.codex-work]
 provider = "codex"
-path = "/home/example/.codex-work"
+path = {:?}
 scope = "work"
 "#,
+            claude_home.path().display().to_string(),
+            codex_home.path().display().to_string(),
+        ),
     )
     .unwrap();
 
@@ -949,13 +955,13 @@ scope = "work"
             (
                 "claude-personal".to_owned(),
                 CaptureProvider::Claude,
-                PathBuf::from("/home/example/.claude-personal"),
+                fs::canonicalize(claude_home.path()).unwrap(),
                 Some("personal".to_owned()),
             ),
             (
                 "codex-work".to_owned(),
                 CaptureProvider::Codex,
-                PathBuf::from("/home/example/.codex-work"),
+                fs::canonicalize(codex_home.path()).unwrap(),
                 Some("work".to_owned()),
             ),
         ]
@@ -964,20 +970,31 @@ scope = "work"
 
 #[test]
 fn rejects_invalid_provider_root_config_as_one_atomic_config() {
+    let provider_home = tempfile::tempdir().unwrap();
+    let provider_path = provider_home.path().display().to_string();
     let cases = [
         (
-            "[sources.roots.work]\nprovider = \"cursor\"\npath = \"/tmp/work\"\n",
+            format!(
+                "[sources.roots.work]\nprovider = \"cursor\"\npath = {:?}\n",
+                provider_path
+            ),
             "currently support only claude and codex",
         ),
         (
-            "[sources.roots.work]\nprovider = \"claude\"\npath = \"relative\"\n",
+            "[sources.roots.work]\nprovider = \"claude\"\npath = \"relative\"\n".to_owned(),
             "normalized absolute UTF-8 path",
         ),
         (
-            "[sources.roots.bad.name]\nprovider = \"claude\"\npath = \"/tmp/work\"\n",
+            format!(
+                "[sources.roots.bad.name]\nprovider = \"claude\"\npath = {:?}\n",
+                provider_path
+            ),
             "provider root name",
         ),
-        ("[search]\ndefault_scope = \"work\"\n", "unknown config key"),
+        (
+            "[search]\ndefault_scope = \"work\"\n".to_owned(),
+            "unknown config key",
+        ),
     ];
     for (text, expected) in cases {
         let temp = tempfile::tempdir().unwrap();
@@ -987,13 +1004,51 @@ fn rejects_invalid_provider_root_config_as_one_atomic_config() {
     }
 
     let temp = tempfile::tempdir().unwrap();
+    let duplicate_home = tempfile::tempdir().unwrap();
     fs::write(
         temp.path().join(CONFIG_FILE),
-        "[sources.roots.first]\nprovider = \"claude\"\npath = \"/tmp/same\"\n\n[sources.roots.second]\nprovider = \"claude\"\npath = \"/tmp/same\"\n",
+        format!(
+            "[sources.roots.first]\nprovider = \"claude\"\npath = {:?}\n\n[sources.roots.second]\nprovider = \"claude\"\npath = {:?}\n",
+            duplicate_home.path().display().to_string(),
+            duplicate_home.path().display().to_string()
+        ),
     )
     .unwrap();
     let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
     assert!(error.contains("select the same claude home"), "{error}");
+}
+
+#[test]
+fn hand_edited_provider_roots_reject_data_root_overlap() {
+    for relationship in ["equal", "ancestor", "descendant"] {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_root = fixture.path().join("ctx-data");
+        fs::create_dir(&data_root).unwrap();
+        let provider_root = match relationship {
+            "equal" => data_root.clone(),
+            "ancestor" => fixture.path().to_path_buf(),
+            "descendant" => {
+                let nested = data_root.join("provider-home");
+                fs::create_dir(&nested).unwrap();
+                nested
+            }
+            _ => unreachable!(),
+        };
+        fs::write(
+            data_root.join(CONFIG_FILE),
+            format!(
+                "[sources.roots.work]\nprovider = \"claude\"\npath = {:?}\n",
+                provider_root.display().to_string()
+            ),
+        )
+        .unwrap();
+
+        let error = format!("{:#}", AppConfig::load(&data_root).unwrap_err());
+        assert!(
+            error.contains("must not overlap the ctx data root"),
+            "{error}"
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -1001,13 +1056,14 @@ fn rejects_invalid_provider_root_config_as_one_atomic_config() {
 fn hand_edited_provider_root_symlink_is_canonicalized() {
     use std::os::unix::fs::symlink;
 
-    let temp = tempfile::tempdir().unwrap();
-    let home = temp.path().join("claude-home");
-    let alias = temp.path().join("alias");
+    let data_root = tempfile::tempdir().unwrap();
+    let provider_parent = tempfile::tempdir().unwrap();
+    let home = provider_parent.path().join("claude-home");
+    let alias = provider_parent.path().join("alias");
     fs::create_dir(&home).unwrap();
     symlink(&home, &alias).unwrap();
     fs::write(
-        temp.path().join(CONFIG_FILE),
+        data_root.path().join(CONFIG_FILE),
         format!(
             "[sources.roots.personal]\nprovider = \"claude\"\npath = {:?}\nscope = \"personal\"\n",
             alias.display().to_string(),
@@ -1015,8 +1071,11 @@ fn hand_edited_provider_root_symlink_is_canonicalized() {
     )
     .unwrap();
 
-    let config = AppConfig::load(temp.path()).unwrap();
-    assert_eq!(config.provider_roots["personal"].path, home);
+    let config = AppConfig::load(data_root.path()).unwrap();
+    assert_eq!(
+        config.provider_roots["personal"].path,
+        fs::canonicalize(home).unwrap()
+    );
 }
 
 #[cfg(unix)]
@@ -1024,15 +1083,16 @@ fn hand_edited_provider_root_symlink_is_canonicalized() {
 fn hand_edited_provider_roots_reject_distinct_symlinks_to_one_physical_home() {
     use std::os::unix::fs::symlink;
 
-    let temp = tempfile::tempdir().unwrap();
-    let home = temp.path().join("claude-home");
-    let first = temp.path().join("first-alias");
-    let second = temp.path().join("second-alias");
+    let data_root = tempfile::tempdir().unwrap();
+    let provider_parent = tempfile::tempdir().unwrap();
+    let home = provider_parent.path().join("claude-home");
+    let first = provider_parent.path().join("first-alias");
+    let second = provider_parent.path().join("second-alias");
     fs::create_dir(&home).unwrap();
     symlink(&home, &first).unwrap();
     symlink(&home, &second).unwrap();
     fs::write(
-        temp.path().join(CONFIG_FILE),
+        data_root.path().join(CONFIG_FILE),
         format!(
             "[sources.roots.first]\nprovider = \"claude\"\npath = {:?}\n\n[sources.roots.second]\nprovider = \"claude\"\npath = {:?}\n",
             first.display().to_string(),
@@ -1041,17 +1101,23 @@ fn hand_edited_provider_roots_reject_distinct_symlinks_to_one_physical_home() {
     )
     .unwrap();
 
-    let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
+    let error = format!("{:#}", AppConfig::load(data_root.path()).unwrap_err());
     assert!(error.contains("select the same claude home"), "{error}");
 }
 
 #[test]
 fn provider_root_count_is_bounded() {
     let temp = tempfile::tempdir().unwrap();
+    let provider_parent = tempfile::tempdir().unwrap();
     let text = (0..=MAX_CONFIGURED_PROVIDER_ROOTS)
         .map(|index| {
             format!(
-                "[sources.roots.root{index}]\nprovider = \"claude\"\npath = \"/tmp/claude-{index}\"\n"
+                "[sources.roots.root{index}]\nprovider = \"claude\"\npath = {:?}\n",
+                provider_parent
+                    .path()
+                    .join(format!("claude-{index}"))
+                    .display()
+                    .to_string()
             )
         })
         .collect::<Vec<_>>()
@@ -1106,6 +1172,42 @@ fn provider_root_cli_mutations_are_durable_and_preserve_other_config() {
 }
 
 #[test]
+fn provider_root_cli_mutation_rejects_data_root_overlap_before_writing() {
+    for relationship in ["equal", "ancestor", "descendant"] {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_root = fixture.path().join("ctx-data");
+        fs::create_dir(&data_root).unwrap();
+        let provider_root = match relationship {
+            "equal" => data_root.clone(),
+            "ancestor" => fixture.path().to_path_buf(),
+            "descendant" => {
+                let nested = data_root.join("provider-home");
+                fs::create_dir(&nested).unwrap();
+                nested
+            }
+            _ => unreachable!(),
+        };
+
+        let error = format!(
+            "{:#}",
+            add_provider_root(
+                &data_root,
+                "work",
+                CaptureProvider::Claude,
+                &provider_root,
+                Some("work"),
+            )
+            .unwrap_err()
+        );
+        assert!(
+            error.contains("must not overlap the ctx data root"),
+            "{error}"
+        );
+        assert!(!data_root.join(CONFIG_FILE).exists());
+    }
+}
+
+#[test]
 fn provider_root_mutation_waits_for_the_shared_config_transaction_lock() {
     let data_root = tempfile::tempdir().unwrap();
     let provider_parent = tempfile::tempdir().unwrap();
@@ -1146,9 +1248,15 @@ fn provider_root_mutation_waits_for_the_shared_config_transaction_lock() {
 #[test]
 fn removing_the_last_member_of_a_scope_is_allowed() {
     let data_root = tempfile::tempdir().unwrap();
+    let provider_parent = tempfile::tempdir().unwrap();
+    let provider_home = provider_parent.path().join("claude-personal");
+    fs::create_dir(&provider_home).unwrap();
     fs::write(
         data_root.path().join(CONFIG_FILE),
-        "[sources.roots.personal]\nprovider = \"claude\"\npath = \"/tmp/claude-personal\"\nscope = \"personal\"\n",
+        format!(
+            "[sources.roots.personal]\nprovider = \"claude\"\npath = {:?}\nscope = \"personal\"\n",
+            provider_home.display().to_string()
+        ),
     )
     .unwrap();
 

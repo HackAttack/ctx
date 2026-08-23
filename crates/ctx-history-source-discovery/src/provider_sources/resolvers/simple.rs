@@ -117,7 +117,7 @@ fn resolve_codex(
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
 ) -> DiscoveryReport {
-    let mut report = if context.automatic_provider_discovery_enabled() {
+    let mut report = if context.automatic_provider_inference_enabled() {
         resolve_inferred_codex(probes, context, spec)
     } else {
         DiscoveryReport::default()
@@ -176,6 +176,38 @@ fn resolve_inferred_codex(
     report
 }
 
+pub fn released_provider_home(
+    context: &DiscoveryContext,
+    provider: CaptureProvider,
+) -> Option<PathBuf> {
+    match provider {
+        CaptureProvider::Claude => match context.env("CLAUDE_CONFIG_DIR") {
+            Some(value) if !value.is_empty() => {
+                let path = PathBuf::from(value);
+                path.is_absolute().then_some(path)
+            }
+            _ if context.home_directory_available()
+                && context.platform() != DiscoveryPlatform::OtherUnix =>
+            {
+                Some(context.home().join(".claude"))
+            }
+            _ => None,
+        },
+        CaptureProvider::Codex => match context.env("CODEX_HOME").and_then(OsStr::to_str) {
+            Some("") | None
+                if context.home_directory_available()
+                    && context.platform() != DiscoveryPlatform::OtherUnix =>
+            {
+                Some(context.home().join(".codex"))
+            }
+            Some(value) => resolve_from_cwd(context, PathBuf::from(value))
+                .filter(|path| matches!(source_path_kind(path), Ok(SourcePathKind::Directory))),
+            None => None,
+        },
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SourceSelectionAuthority {
     Inferred,
@@ -214,7 +246,7 @@ fn resolve_claude(
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
 ) -> DiscoveryReport {
-    let mut report = if context.automatic_provider_discovery_enabled() {
+    let mut report = if context.automatic_provider_inference_enabled() {
         resolve_inferred_claude(probes, context, spec)
     } else {
         DiscoveryReport::default()

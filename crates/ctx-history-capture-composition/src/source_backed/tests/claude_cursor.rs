@@ -296,8 +296,8 @@ fn claude_roots_with_the_same_relative_session_path_publish_independent_sources(
         )],
     );
     let mut registry = SourceBackedProviderRegistry::new();
-    for root in [&personal, &work] {
-        register_landed_source_backed_route(
+    for (root, lineage) in [(&personal, [7; 32]), (&work, [8; 32])] {
+        register_configured_claude_source_backed_route(
             &mut registry,
             ProviderSource {
                 provider: CaptureProvider::Claude,
@@ -311,6 +311,7 @@ fn claude_roots_with_the_same_relative_session_path_publish_independent_sources(
                 unsupported_reason: None,
             },
             SourceBackedRouteSelection::ExplicitManual,
+            Some(lineage),
         )
         .unwrap();
     }

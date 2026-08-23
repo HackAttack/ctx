@@ -73,6 +73,12 @@ Set `[sources] automatic = false` only when all automatic provider discovery
 should stop and every active Claude/Codex home should come from named
 configuration; this does not delete already indexed history.
 
+The configured name is the durable local identity of an additional home, not
+only a label. Keep the name and update its path when the same home moves; choose
+a new name for an unrelated home. Reusing a removed name intentionally reuses
+its logical namespace, while changing only its scope does not rotate source or
+citation identities.
+
 One-shot flags, API constructor paths, old launch directories, container host
 mounts, copies, and unreconstructible selectors are not automatic. Import one
 with `ctx import --provider <provider> --path <path>`. That path bypasses

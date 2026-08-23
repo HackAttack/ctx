@@ -10,7 +10,7 @@ use super::*;
 enum CodexGenerationParticipantAuthorityV0 {
     SessionTree {
         roots: Box<[PathBuf]>,
-        qualify_source_root: bool,
+        source_root_lineage: Option<[u8; 32]>,
     },
     ExplicitSession {
         input: Box<CodexExplicitSessionSourceBackedInputV0>,
@@ -56,14 +56,14 @@ impl CodexGenerationRouteV0 {
         }
     }
 
-    pub(super) fn qualifies_source_root(&self) -> bool {
-        matches!(
-            &self.participant.authority,
+    pub(super) fn source_root_lineage(&self) -> Option<[u8; 32]> {
+        match &self.participant.authority {
             CodexGenerationParticipantAuthorityV0::SessionTree {
-                qualify_source_root: true,
+                source_root_lineage,
                 ..
-            }
-        )
+            } => *source_root_lineage,
+            CodexGenerationParticipantAuthorityV0::ExplicitSession { .. } => None,
+        }
     }
 
     pub(super) fn explicit_session_input(
@@ -143,11 +143,11 @@ impl CodexGenerationNormalizationCoordinatorV0 {
     pub fn register_session_tree(
         self: &Arc<Self>,
         roots: Vec<PathBuf>,
-        qualify_source_root: bool,
+        source_root_lineage: Option<[u8; 32]>,
     ) -> CodexSourceBackedResultV0<CodexGenerationRouteV0> {
         self.register(CodexGenerationParticipantAuthorityV0::SessionTree {
             roots: roots.into_boxed_slice(),
-            qualify_source_root,
+            source_root_lineage,
         })
     }
 
@@ -209,10 +209,13 @@ impl CodexGenerationNormalizationCoordinatorV0 {
                 .flat_map(|participant| match &participant.authority {
                     CodexGenerationParticipantAuthorityV0::SessionTree {
                         roots,
-                        qualify_source_root: true,
-                    } => roots.iter().cloned().collect::<Vec<_>>(),
-                    CodexGenerationParticipantAuthorityV0::SessionTree { .. }
-                    | CodexGenerationParticipantAuthorityV0::ExplicitSession { .. } => Vec::new(),
+                        source_root_lineage,
+                    } => roots
+                        .iter()
+                        .cloned()
+                        .map(|root| (root, *source_root_lineage))
+                        .collect::<Vec<_>>(),
+                    CodexGenerationParticipantAuthorityV0::ExplicitSession { .. } => Vec::new(),
                 })
                 .collect::<Vec<_>>();
             (participants, session_tree_roots)
@@ -226,33 +229,31 @@ impl CodexGenerationNormalizationCoordinatorV0 {
             let (missing, discovered, rejected_leaves) = match &participant.authority {
                 CodexGenerationParticipantAuthorityV0::SessionTree {
                     roots,
-                    qualify_source_root,
+                    source_root_lineage,
                 } => {
                     let mut inventory =
                         super::catalog::discover_codex_deferred_session_tree_inventory_v0(roots)?;
-                    if !qualify_source_root {
-                        for (source, source_key, native_session_id) in &mut inventory.sources {
-                            source.source_root_lineage = None;
-                            *source_key = codex_source_key_in_root(None, native_session_id)?;
-                        }
-                        for rejected in &mut inventory.rejected_leaves {
-                            rejected.source_root_lineage = None;
-                        }
+                    for (source, source_key, native_session_id) in &mut inventory.sources {
+                        source.source_root_lineage = *source_root_lineage;
+                        *source_key =
+                            codex_source_key_in_root(*source_root_lineage, native_session_id)?;
+                    }
+                    for rejected in &mut inventory.rejected_leaves {
+                        rejected.source_root_lineage = *source_root_lineage;
                     }
                     (false, inventory.sources, inventory.rejected_leaves)
                 }
                 CodexGenerationParticipantAuthorityV0::ExplicitSession { input } => {
                     let mut plan = observe_codex_explicit_session_source_backed_v0(input)?;
                     if let Some((source, source_key, native_session_id)) = plan.as_mut() {
-                        if let Some(root) = session_tree_roots
+                        if let Some((_, source_root_lineage)) = session_tree_roots
                             .iter()
-                            .filter(|root| source.source_path.starts_with(root))
-                            .max_by_key(|root| root.components().count())
+                            .filter(|(root, _)| source.source_path.starts_with(root))
+                            .max_by_key(|(root, _)| root.components().count())
                         {
-                            let lineage = codex_session_tree_source_root_lineage(root)?;
-                            source.source_root_lineage = Some(lineage);
+                            source.source_root_lineage = *source_root_lineage;
                             *source_key =
-                                codex_source_key_in_root(Some(lineage), native_session_id)?;
+                                codex_source_key_in_root(*source_root_lineage, native_session_id)?;
                         }
                     }
                     (plan.is_none(), plan.into_iter().collect(), Vec::new())

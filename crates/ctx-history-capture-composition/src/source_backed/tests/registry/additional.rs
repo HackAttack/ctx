@@ -344,6 +344,85 @@ fn logical_all_publication_retires_removed_root_during_exact_physical_execution(
 }
 
 #[test]
+fn cold_configured_root_scan_failure_does_not_block_healthy_peer_publication() {
+    let temp = tempdir().unwrap();
+    let personal = explicit_route_at(
+        fixture_route_with_body(
+            CaptureProvider::Claude,
+            "claude_projects_jsonl_tree",
+            80,
+            "healthyconfiguredroot".to_owned(),
+        ),
+        temp.path().join("claude-personal/projects"),
+    );
+    let work = fail_route_before_scan(
+        explicit_route_at(
+            fixture_route_with_body(
+                CaptureProvider::Claude,
+                "claude_projects_jsonl_tree",
+                81,
+                "failedconfiguredroot".to_owned(),
+            ),
+            temp.path().join("claude-work/projects"),
+        ),
+        SourceBackedRouteErrorKind::SourceChanged,
+    );
+    let personal_id = personal.metadata.route_identity.clone().unwrap();
+    let work_id = work.metadata.route_identity.clone().unwrap();
+    let definitions = vec![
+        ctx_history_capture_model::ProviderRootDefinition {
+            id: "personal".to_owned(),
+            provider: CaptureProvider::Claude,
+            path: temp.path().join("claude-personal"),
+            scope: Some("personal".to_owned()),
+        },
+        ctx_history_capture_model::ProviderRootDefinition {
+            id: "work".to_owned(),
+            provider: CaptureProvider::Claude,
+            path: temp.path().join("claude-work"),
+            scope: Some("work".to_owned()),
+        },
+    ];
+    let mut registry = SourceBackedProviderRegistry::new();
+    registry.register(personal);
+    registry.register(work);
+    registry
+        .set_applied_provider_roots(
+            false,
+            provider_source_config_digest(false, &definitions),
+            vec![
+                AppliedProviderRoot::new(definitions[0].clone(), vec![personal_id.clone()])
+                    .unwrap(),
+                AppliedProviderRoot::new(definitions[1].clone(), vec![work_id.clone()]).unwrap(),
+            ],
+        )
+        .unwrap();
+
+    let receipt =
+        refresh_source_backed_generation(temp.path(), &registry, WriterOptions::default()).unwrap();
+
+    assert_eq!(receipt.successful_route_ids, vec![personal_id.clone()]);
+    assert!(matches!(
+        receipt.failed_routes.as_slice(),
+        [failure]
+            if failure.route_identity == work_id
+                && failure.class == SourceBackedSourceFailureClass::SourceChanged
+                && !failure.carried_forward
+    ));
+    assert!(receipt
+        .commit
+        .manifest()
+        .source_route(&personal_id)
+        .is_some());
+    assert!(receipt.commit.manifest().source_route(&work_id).is_none());
+    let personal_root = receipt.commit.manifest().provider_root("personal").unwrap();
+    let work_root = receipt.commit.manifest().provider_root("work").unwrap();
+    assert_eq!(personal_root.routes(), std::slice::from_ref(&personal_id));
+    assert!(work_root.routes().is_empty());
+    assert_eq!(receipt.commit.indexed_documents, 1);
+}
+
+#[test]
 fn empty_replacement_cannot_hide_a_cold_route_failure_behind_retired_content() {
     let temp = tempdir().unwrap();
     let retired = explicit_route_at(

@@ -149,18 +149,11 @@ where
     ) -> Result<SourceBackedRefreshPublication>,
 {
     let mut discovery = discovery.clone().with_data_root(execution.data_root);
-    if let Some(roots) = execution
-        .admitted_refresh()
-        .discovery()
-        .configured_provider_roots()
-    {
+    let admitted_discovery = execution.admitted_refresh().discovery();
+    if let Some(roots) = admitted_discovery.configured_provider_roots() {
         discovery = discovery.with_configured_provider_roots(roots.to_vec());
     }
-    if let Some(enabled) = execution
-        .admitted_refresh()
-        .discovery()
-        .automatic_provider_discovery()
-    {
+    if let Some(enabled) = admitted_discovery.automatic_provider_discovery() {
         discovery = discovery.with_automatic_provider_discovery(enabled);
     }
     if source_backed_index_state_exists(execution.index_root)? {

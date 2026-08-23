@@ -87,9 +87,7 @@ pub(super) fn refresh_source_backed_generation_with_detailed_progress_and_discov
         if matches!(&plan.publication_scope, SourceBackedRefreshScope::All)
             || lifecycle.base_snapshot().is_none()
         {
-            if let Some((automatic, digest, roots)) =
-                provider_roots_for_publication(registry, &base_route_ids)?
-            {
+            if let Some((automatic, digest, roots)) = provider_roots_for_publication(registry)? {
                 lifecycle.set_applied_provider_roots(automatic, digest, roots)?;
             }
         }

@@ -341,12 +341,13 @@ Returns:
 
 - `schema_version`;
 - `scope`, either `default` or `all`;
+- `automatic_discovery`, whether inferred provider homes are enabled;
 - `hidden_missing_sources`;
 - `sources[]`;
 - `issues[]`;
 - `issues_truncated`.
 
-Each source includes:
+Each built-in provider source includes:
 
 - `provider`;
 - `path`;
@@ -356,7 +357,14 @@ Each source includes:
 - `import_support`;
 - `native_import`;
 - `importable`;
-- `unsupported_reason`.
+- `unsupported_reason`;
+- `selection`, with `kind` (`automatic` or `configured`), configured `root`,
+  and configured `scope`.
+
+For a configured row, `selection.root` is the exact case-sensitive configured
+name and `selection.scope` is its configured scope or null. For an automatic
+row, both values are null. History-source plugin rows retain their plugin
+identity fields and do not have configured provider-root selection metadata.
 
 `status` is `available`, `empty`, `unknown`, `missing`, or `unsupported`.
 `import_support` is `native`, `explicit`, or `unsupported`. `native_import`
@@ -377,6 +385,23 @@ codes are `no_disk_history`, `selector_unreconstructible`, and
 `insufficient_official_evidence`. `issues_truncated` is true when additional
 issue rows were omitted. Invalid history-source plugin manifests remain
 non-importable rows in `sources[]`; they are not provider discovery issues.
+
+Named provider-root mutations have a separate schema-version-1 JSON result:
+
+```bash
+ctx sources add personal --provider claude --root /path/to/claude --scope work --format json
+ctx sources remove personal --format json
+```
+
+Both successful shapes contain exactly `schema_version`, `operation`,
+`changed`, and `root`. `operation` is `"add"` or `"remove"`; `root` contains
+`name`, `provider`, canonical absolute `path`, and nullable `scope`. Repeating
+an add with the same name and identical canonical settings is idempotent and
+returns `changed: false`. Reusing the name with different settings fails and
+requires an explicit remove first. A successful remove returns `changed: true`
+and the removed root; removing an absent name is an error, not a successful
+no-op. Root names and non-null scopes use 1 to 64 ASCII letters, digits,
+hyphens, or underscores and remain case-sensitive.
 
 ## Import
 
@@ -695,10 +720,13 @@ unconditionally.
 When supplied, repeatable CLI root selectors are echoed as `source_root` and
 scope selectors as `scope`, each an array of normalized names. MCP accepts the
 equivalent request arrays `source_roots` and `scopes`. Both selector families
-resolve against the pinned Core generation and form one union before
-intersecting with the other filters. Unknown selectors are typed request
-errors; they are never ignored or resolved from live config against an older
-generation.
+resolve against the pinned Core generation. Every root and scope value forms
+one OR selection set before that set intersects with independent filters using
+AND semantics. Names are case-sensitive, and unknown selectors are typed
+request errors; they are never ignored or resolved from live config against an
+older generation. Each selector is 1 to 64 ASCII letters, digits, hyphens, or
+underscores, and each MCP array contains at most 64 entries. Selector
+validation diagnostics remain generic and do not echo rejected contents.
 
 `result_window` has exactly `limit`, `returned`, and `more_available`.
 `returned` is at most `limit`. `more_available` is `true` only when the same
@@ -933,8 +961,13 @@ dedicated selector or SQL field. Paginated MCP callers filter each returned page
 client-side and continue with the existing opaque cursor; `show_session`
 requires `mode: "log"` for ordinary tool events.
 
-The MCP `sources` tool includes the same bounded `issues` and
-`issues_truncated` fields as `ctx sources --format json`.
+The MCP `sources` tool returns `schema_version`, `automatic_discovery`,
+`sources`, `issues`, `issues_truncated`, and `read_only: true`. Its built-in
+provider rows use the same `selection` objects as CLI JSON, so configured
+`root` values and non-null configured `scope` values enumerate candidates for
+MCP search `source_roots` and `scopes`. Automatic rows have null `root` and
+`scope`; plugin rows do not participate in configured provider-root selection.
+The bounded `issues` and `issues_truncated` fields retain the CLI contract.
 
 Tool-level argument validation failures set `isError: true`, preserve the
 diagnostic `error`, and add stable `error_code: "invalid_request"` in

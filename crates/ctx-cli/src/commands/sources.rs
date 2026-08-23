@@ -25,6 +25,9 @@ pub(crate) fn run_sources(
             ui,
         );
     };
+    if args.provider.is_some() || args.all || args.show_missing {
+        anyhow::bail!("source listing filters cannot be combined with add or remove");
+    }
     let operation = match &command {
         SourcesCommand::Add { .. } => "add",
         SourcesCommand::Remove { .. } => "remove",

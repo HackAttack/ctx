@@ -34,8 +34,14 @@ pub(super) fn build_merged_source_backed_registry_with_automatic_routes(
         catalog_route_bindings: previous_catalog_route_bindings,
         route_controls: previous_route_controls,
     } = published_state.open_published_state(data_root)?;
-    let mut build =
-        build_automatic_source_backed_registry_from_report(discovery, data_root, report);
+    let provider_root_identities =
+        configured_provider_root_identities(discovery, retained_generation.as_ref());
+    let mut build = build_automatic_source_backed_registry_from_report_with_root_identities(
+        discovery,
+        data_root,
+        report,
+        &provider_root_identities,
+    );
     build.discovery_duration = discovery_duration;
     let requested_catalog_route_bindings = explicit_source_catalog
         .map(|catalog| {
@@ -96,17 +102,6 @@ pub(super) fn build_merged_source_backed_registry_with_automatic_routes(
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
-    let base_route_ids = retained_generation
-        .as_ref()
-        .map(|generation| {
-            generation
-                .manifest()
-                .source_routes()
-                .iter()
-                .map(|route| route.route_identity().clone())
-                .collect::<BTreeSet<_>>()
-        })
-        .unwrap_or_default();
     let current_provider_root_routes = build
         .registry
         .applied_provider_roots()
@@ -117,39 +112,16 @@ pub(super) fn build_merged_source_backed_registry_with_automatic_routes(
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
-    let mut retired_provider_root_routes = previous_provider_root_routes
+    let current_executable_routes = build
+        .registry
+        .executable_route_identities()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let retired_provider_root_routes = previous_provider_root_routes
         .difference(&current_provider_root_routes)
+        .filter(|route| !current_executable_routes.contains(*route))
         .cloned()
         .collect::<BTreeSet<_>>();
-    // Naming an already automatic home changes that route from inferred to
-    // configured authority without duplicating its physical source. Retire
-    // only an automatic predecessor that is no longer executable in the
-    // additive registry; distinct automatic peers remain selected.
-    if !discovery.configured_provider_roots().is_empty() {
-        let current_executable_routes = build
-            .registry
-            .executable_route_identities()
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        let configured_providers = discovery
-            .configured_provider_roots()
-            .iter()
-            .map(|root| root.provider)
-            .collect::<Vec<_>>();
-        for route in build
-            .registry
-            .routes()
-            .filter(|route| configured_providers.contains(&route.source.provider))
-        {
-            if let Ok(automatic) = automatic_source_backed_route_identity(&route.source) {
-                if base_route_ids.contains(&automatic)
-                    && !current_executable_routes.contains(&automatic)
-                {
-                    retired_provider_root_routes.insert(automatic);
-                }
-            }
-        }
-    }
     build
         .registry
         .set_provider_root_route_retirements(retired_provider_root_routes);

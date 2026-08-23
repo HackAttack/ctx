@@ -212,12 +212,14 @@ fn provider_root_and_scope_selectors_are_normalized_and_bounded() {
     assert_eq!(request.scopes, vec!["personal", "work"]);
 
     request.source_roots = vec!["bad.root".to_owned()];
+    let error = normalize_search_request(&mut request)
+        .unwrap_err()
+        .to_string();
     assert_eq!(
-        normalize_search_request(&mut request)
-            .unwrap_err()
-            .to_string(),
-        "invalid source root selector `bad.root`; expected 1..=64 ASCII letters, digits, hyphens, or underscores"
+        error,
+        "invalid source root selector; expected 1..=64 ASCII letters, digits, hyphens, or underscores"
     );
+    assert!(!error.contains("bad.root"));
 }
 
 #[test]

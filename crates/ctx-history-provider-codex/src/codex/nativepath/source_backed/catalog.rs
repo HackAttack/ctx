@@ -173,7 +173,7 @@ pub(crate) fn discover_codex_deferred_session_tree_inventory_v0(
 /// and publication proof.
 pub(super) fn bind_codex_partial_member_v0(
     member: &JsonlFamilyOpenedMember<'_>,
-    qualify_source_root: bool,
+    source_root_lineage: Option<[u8; 32]>,
 ) -> CodexSourceBackedResultV0<(CodexCatalogSource, SourceKey, String)> {
     if !crate::provider::codex::catalog::is_codex_session_rollout_path(member.source_path()) {
         return Err(CodexSourceBackedErrorV0::IncompleteCatalog {
@@ -206,9 +206,7 @@ pub(super) fn bind_codex_partial_member_v0(
     member.opened().revalidate_same_object()?;
     let source = CodexCatalogSource {
         source_path: member.source_path().to_path_buf(),
-        source_root_lineage: qualify_source_root
-            .then(|| codex_session_tree_source_root_lineage(member.authority().named_path()))
-            .transpose()?,
+        source_root_lineage,
         catalog_observation: observation,
         carried_jsonl_observation: Some(member.observation().clone()),
         catalog_prefix_sha256: None,

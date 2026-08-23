@@ -329,9 +329,10 @@ fn add_explicit_route(registry: &mut SourceBackedProviderRegistry, path: &Path) 
 #[test]
 fn configured_codex_homes_with_the_same_native_session_publish_independent_sources() {
     let temp = tempdir().unwrap();
-    let personal = temp.path().join("personal/sessions");
-    let personal_archive = temp.path().join("personal/archived_sessions");
-    let work = temp.path().join("work/sessions");
+    let fixture = fs::canonicalize(temp.path()).unwrap();
+    let personal = fixture.join("personal/sessions");
+    let personal_archive = fixture.join("personal/archived_sessions");
+    let work = fixture.join("work/sessions");
     fs::create_dir_all(&personal).unwrap();
     fs::create_dir_all(&personal_archive).unwrap();
     fs::create_dir_all(&work).unwrap();
@@ -358,7 +359,11 @@ fn configured_codex_homes_with_the_same_native_session_publish_independent_sourc
         [message("personal archived duplicate should coalesce")],
     );
     let mut registry = SourceBackedProviderRegistry::new();
-    for root in [&personal, &personal_archive, &work] {
+    for (root, lineage) in [
+        (&personal, [8; 32]),
+        (&personal_archive, [8; 32]),
+        (&work, [9; 32]),
+    ] {
         super::super::register_configured_codex_session_tree_route(
             &mut registry,
             fixture_provider_source_at(
@@ -368,11 +373,12 @@ fn configured_codex_homes_with_the_same_native_session_publish_independent_sourc
                 root,
             ),
             SourceBackedRouteSelection::ExplicitManual,
+            Some(lineage),
         )
         .unwrap();
     }
 
-    let index_root = temp.path().join("index");
+    let index_root = fixture.join("index");
     let receipt =
         refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
     assert!(
@@ -427,8 +433,9 @@ fn configured_codex_homes_with_the_same_native_session_publish_independent_sourc
 #[test]
 fn unavailable_configured_codex_home_carries_only_itself_while_peer_refreshes() {
     let temp = tempdir().unwrap();
-    let personal_home = temp.path().join("personal-codex-home");
-    let work_home = temp.path().join("work-codex-home");
+    let fixture = fs::canonicalize(temp.path()).unwrap();
+    let personal_home = fixture.join("personal-codex-home");
+    let work_home = fixture.join("work-codex-home");
     let personal_sessions = personal_home.join("sessions");
     let work_sessions = work_home.join("sessions");
     fs::create_dir_all(&personal_sessions).unwrap();
@@ -450,8 +457,8 @@ fn unavailable_configured_codex_home_carries_only_itself_while_peer_refreshes() 
         [message("configured Codex work retained")],
     );
     let context = DiscoveryContext::new(
-        temp.path(),
-        temp.path(),
+        &fixture,
+        &fixture,
         DiscoveryPlatform::Linux,
         crate::DiscoveryPlatformDirs::default(),
     )
@@ -469,10 +476,10 @@ fn unavailable_configured_codex_home_carries_only_itself_while_peer_refreshes() 
             scope: Some("work".to_owned()),
         },
     ]);
-    let data_root = temp.path().join("data");
+    let data_root = fixture.join("data");
     let initial = build_discovered_codex_registry(&context, &data_root);
     assert!(initial.issues.is_empty(), "{:?}", initial.issues);
-    let index_root = temp.path().join("index");
+    let index_root = fixture.join("index");
     let initial_receipt =
         refresh_source_backed_generation(&index_root, &initial.registry, writer_options()).unwrap();
     assert!(initial_receipt.failed_routes.is_empty());
@@ -481,7 +488,7 @@ fn unavailable_configured_codex_home_carries_only_itself_while_peer_refreshes() 
         &session_path(&personal_sessions, personal_session_id),
         message("configured Codex personal refreshed"),
     );
-    let displaced_work_home = temp.path().join("work-codex-displaced");
+    let displaced_work_home = fixture.join("work-codex-displaced");
     fs::rename(&work_home, &displaced_work_home).unwrap();
     fs::write(&work_home, b"temporarily not a directory").unwrap();
     let current = build_discovered_codex_registry(&context, &data_root);
@@ -526,8 +533,9 @@ fn unavailable_configured_codex_home_carries_only_itself_while_peer_refreshes() 
 #[test]
 fn cold_unavailable_configured_codex_home_does_not_block_healthy_peer() {
     let temp = tempdir().unwrap();
-    let personal_home = temp.path().join("personal-codex-cold");
-    let work_home = temp.path().join("work-codex-cold");
+    let fixture = fs::canonicalize(temp.path()).unwrap();
+    let personal_home = fixture.join("personal-codex-cold");
+    let work_home = fixture.join("work-codex-cold");
     let personal_sessions = personal_home.join("sessions");
     fs::create_dir_all(&personal_sessions).unwrap();
     fs::write(&work_home, b"temporarily not a directory").unwrap();
@@ -540,8 +548,8 @@ fn cold_unavailable_configured_codex_home_does_not_block_healthy_peer() {
         [message("configured Codex personal cold")],
     );
     let context = DiscoveryContext::new(
-        temp.path(),
-        temp.path(),
+        &fixture,
+        &fixture,
         DiscoveryPlatform::Linux,
         crate::DiscoveryPlatformDirs::default(),
     )
@@ -559,8 +567,8 @@ fn cold_unavailable_configured_codex_home_does_not_block_healthy_peer() {
             scope: Some("work".to_owned()),
         },
     ]);
-    let build = build_discovered_codex_registry(&context, &temp.path().join("data"));
-    let index_root = temp.path().join("index");
+    let build = build_discovered_codex_registry(&context, &fixture.join("data"));
+    let index_root = fixture.join("index");
     let receipt =
         refresh_source_backed_generation(&index_root, &build.registry, writer_options()).unwrap();
     assert_eq!(receipt.failed_routes.len(), 3);

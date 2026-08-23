@@ -228,11 +228,12 @@ configuration digest, optional scope, and exact source-route membership. Search
 resolves `--source-root` and `--scope` only through this pinned manifest and
 translates the result to exact indexed source keys. Live config is never mixed
 with an older generation, and all roots remain in one Core/Tantivy index.
-Claude and Codex session-tree source identity includes canonical physical-home
-lineage as well as native session lineage, so matching session names in work
-and personal homes remain independent sources. Codex `sessions` and
-`archived_sessions` under one home deliberately share that home lineage and
-coalesce duplicate representations of the same native session.
+The ordinary inferred home keeps its released source identities when it is
+given a name. Additional named homes use the provider plus stable root name as
+logical lineage, so matching native session ids in work and personal remain
+independent while moving a named home does not rotate citations. Codex
+`sessions`, `archived_sessions`, and prompt history under one home share that
+logical home lineage; active and archived duplicate representations coalesce.
 
 Lexical publication keeps the active generation and one previous generation
 for recovery and pinned readers; their manifests and integrity receipts use the
@@ -443,6 +444,19 @@ a valid entry retires history owned only by that entry at the next full refresh.
 Exact-path imports and plugin manifests remain one-shot authorities and are not
 promoted into named homes.
 
+For an independently configured home, `provider` plus the stable root name is
+its logical source namespace. Updating only `path` therefore preserves source,
+session, route, and citation identity across a move; changing the name creates
+a different logical home. A configured home that is physically the ordinary
+inferred home retains the released automatic namespace for compatibility.
+The name is a durable local mount key, not a cosmetic label: removing and later
+reusing it intentionally reuses that logical namespace. Use a new name when
+registering an unrelated home, even if the old definition was removed; matching
+provider-native session ids under a reused name reconcile as the same history.
+Scope changes do not change identity.
+Scopes and names remain local provenance/query metadata, not upload consent,
+an ACL, a tenant boundary, or a retention rule.
+
 Set `[sources] automatic = false` to stop all future automatic provider-root
 selection while retaining named Claude/Codex homes. This policy change does not
 erase already indexed automatic history. Searches remain unscoped by default;
@@ -569,7 +583,8 @@ records; human receipts summarize record-local rejections as `Skipped records`
 while JSON preserves rejection diagnostics. Sources with no usable imported content
 fail, as do unreadable or incompatible sources; ctx-owned generation failures
 abort the command. Native provider progress is scoped by provider, source format,
-and an opaque source identity derived from the configured source root.
+and an opaque source identity derived from the released provider namespace or
+the stable logical name of an independently configured provider root.
 
 Refresh builds a private immutable Core/Tantivy candidate containing complete
 normalized stored records from current provider sources, verifies its manifest

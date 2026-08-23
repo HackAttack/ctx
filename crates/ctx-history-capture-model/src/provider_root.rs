@@ -7,6 +7,42 @@ use sha2::{Digest, Sha256};
 pub const MAX_CONFIGURED_PROVIDER_ROOTS: usize = 64;
 pub const MAX_PROVIDER_ROOT_SELECTOR_BYTES: usize = 64;
 
+/// Source-identity namespace applied to one configured provider home.
+///
+/// Released homes retain the identity contract used by automatic discovery
+/// before named roots existed. Independently named homes use a logical
+/// provider/root-id namespace so duplicate native session IDs remain distinct
+/// without tying public identities to a machine-specific filesystem path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderRootSourceIdentity {
+    Released,
+    NamedV1,
+}
+
+impl Default for ProviderRootSourceIdentity {
+    fn default() -> Self {
+        Self::NamedV1
+    }
+}
+
+impl ProviderRootSourceIdentity {
+    pub fn lineage(self, root: &ProviderRootDefinition) -> Option<[u8; 32]> {
+        match self {
+            Self::Released => None,
+            Self::NamedV1 => {
+                let mut digest = Sha256::new();
+                digest.update(b"ctx-provider-root-source-identity-v1\0");
+                digest.update(root.provider.as_str().as_bytes());
+                digest.update([0]);
+                digest.update((root.id.len() as u64).to_be_bytes());
+                digest.update(root.id.as_bytes());
+                Some(digest.finalize().into())
+            }
+        }
+    }
+}
+
 /// Canonical desired/applied identity for one user-named provider home.
 ///
 /// A provider adapter expands the home into physical routes. Human scope
@@ -84,5 +120,21 @@ mod tests {
             provider_source_config_digest(true, &[root(0xfe)]),
             provider_source_config_digest(false, &[root(0xfe)])
         );
+    }
+
+    #[test]
+    fn named_source_identity_is_logical_and_path_independent() {
+        let mut root = ProviderRootDefinition {
+            id: "personal".to_owned(),
+            provider: CaptureProvider::Claude,
+            path: PathBuf::from("/old/claude"),
+            scope: None,
+        };
+        let original = ProviderRootSourceIdentity::NamedV1.lineage(&root);
+        root.path = PathBuf::from("/new/claude");
+        assert_eq!(original, ProviderRootSourceIdentity::NamedV1.lineage(&root));
+        root.id = "work".to_owned();
+        assert_ne!(original, ProviderRootSourceIdentity::NamedV1.lineage(&root));
+        assert_eq!(ProviderRootSourceIdentity::Released.lineage(&root), None);
     }
 }

@@ -36,6 +36,8 @@ UTC RFC 3339 millisecond timestamp; an indexed event without a timestamp says
 ```bash
 ctx search "build failure"
 ctx search "storage layout" --provider codex
+ctx search "release checklist" --source-root personal --source-root archive
+ctx search "deployment failure" --scope work
 ctx search "retry handling" --workspace checkout --since 60d
 ctx search "tool output" --event-type tool_output
 ctx search "permission denied" --content-scope outputs
@@ -84,6 +86,8 @@ Search filters narrow text and JSON output:
   identity;
 - `--provider-key <key>`, `--source-id <id>`, and
   `--source-format <format>`;
+- repeatable `--source-root <configured-name>`;
+- repeatable `--scope <configured-scope>`;
 - `--workspace <name-or-path>`;
 - `--since <rfc3339-or-days>d`;
 - `--event-type <event-type>`;
@@ -104,6 +108,19 @@ Search filters narrow text and JSON output:
 `--file` searches normalized touched-file metadata; it does not inspect the
 current filesystem. Repeatable `--term` values broaden the query with OR-style
 semantics rather than acting as required terms.
+
+Root and scope selectors use the exact case-sensitive names reported by
+`ctx sources`; each name is 1 to 64 ASCII letters, digits, hyphens, or
+underscores. Repeated root names, repeated scopes, and a request containing
+both kinds form one OR selection set. That set intersects with independent
+provider, source-identity, workspace, time, event, file, session, and agent
+filters, so those filter classes combine with AND semantics. Selectors resolve
+only against the pinned Core generation. An unknown root or scope fails the
+request instead of being ignored or resolved from newer live configuration;
+the rejection diagnostic does not echo the selector contents.
+Omitting both selector kinds searches every source in the generation,
+including automatic sources that have no configured root name.
+
 JSON `query` echoes the normalized positional query and repeatable-term
 alternatives, trimming surrounding whitespace and joining nonempty alternatives
 with ` OR ` in argument order. Suggested scoped-search commands preserve the

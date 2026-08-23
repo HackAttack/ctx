@@ -9,7 +9,8 @@ use ctx_history_source_discovery::{
 };
 
 pub use ctx_history_source_discovery::{
-    path_presence, CrushDiscoveredProjectInventory, CrushProjectInventorySelectorError,
+    path_presence, provider_paths_equivalent, provider_source_belongs_to_configured_root,
+    released_provider_home, CrushDiscoveredProjectInventory, CrushProjectInventorySelectorError,
 };
 pub use ctx_history_source_discovery::{
     validate_provider_source_roots_outside_data_root, DiscoveredLingmaDatabase,

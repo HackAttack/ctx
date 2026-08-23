@@ -3,6 +3,72 @@ use ctx_history_capture_model::ProviderRootDefinition;
 use std::str::FromStr;
 
 #[test]
+fn only_one_configured_root_per_provider_can_own_the_released_namespace() {
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    let first = temp.path().join("claude-first");
+    let second = temp.path().join("claude-second");
+    for path in [&home, &cwd, &first, &second] {
+        fs::create_dir_all(path).unwrap();
+    }
+    let roots = [(&first, "first"), (&second, "second")]
+        .into_iter()
+        .map(|(path, id)| ProviderRootDefinition {
+            id: id.to_owned(),
+            provider: CaptureProvider::Claude,
+            path: path.to_path_buf(),
+            scope: None,
+        })
+        .collect::<Vec<_>>();
+    let context = DiscoveryContext::new(
+        &home,
+        &cwd,
+        DiscoveryPlatform::Linux,
+        crate::DiscoveryPlatformDirs::default(),
+    )
+    .with_configured_provider_roots(roots.clone());
+    let report = DiscoveryReport {
+        sources: roots
+            .iter()
+            .map(|root| {
+                crate::provider_source_for_path(CaptureProvider::Claude, root.path.join("projects"))
+            })
+            .collect(),
+        issues: Vec::new(),
+    };
+    let retained = BTreeMap::from([
+        ("first".to_owned(), ProviderRootSourceIdentity::Released),
+        ("second".to_owned(), ProviderRootSourceIdentity::Released),
+    ]);
+
+    let build = build_automatic_source_backed_registry_from_report_with_probes_and_root_identities(
+        &crate::test_provider_probes(),
+        &context,
+        &temp.path().join("ctx-data"),
+        report,
+        &retained,
+    );
+
+    let applied = &build.registry.applied_provider_roots().unwrap().2;
+    assert_eq!(
+        applied
+            .iter()
+            .filter(|root| root.source_identity() == ProviderRootSourceIdentity::Released)
+            .count(),
+        1
+    );
+    assert_eq!(
+        applied[0].source_identity(),
+        ProviderRootSourceIdentity::Released
+    );
+    assert_eq!(
+        applied[1].source_identity(),
+        ProviderRootSourceIdentity::NamedV1
+    );
+}
+
+#[test]
 fn configured_claude_roots_register_as_independent_routes_and_aliases() {
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");
@@ -246,6 +312,80 @@ fn configured_codex_root_keeps_its_route_alias_for_a_present_session_tree() {
     assert_eq!(roots.len(), 1);
     assert_eq!(roots[0].definition(), &definition);
     assert_eq!(roots[0].routes().len(), 1);
+}
+
+#[test]
+fn naming_the_released_codex_home_preserves_the_compound_session_route() {
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    let root = temp.path().join("codex-released");
+    let sessions = root.join("sessions");
+    let archived = root.join("archived_sessions");
+    let history = root.join("history.jsonl");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    fs::create_dir_all(&sessions).unwrap();
+    fs::create_dir_all(&archived).unwrap();
+    fs::write(&history, b"").unwrap();
+    let definition = ProviderRootDefinition {
+        id: "released".to_owned(),
+        provider: CaptureProvider::Codex,
+        path: root.clone(),
+        scope: Some("released".to_owned()),
+    };
+    let context = DiscoveryContext::new(
+        &home,
+        &cwd,
+        DiscoveryPlatform::Linux,
+        crate::DiscoveryPlatformDirs::default(),
+    )
+    .with_env("CODEX_HOME", &root)
+    .with_configured_provider_roots(vec![definition.clone()]);
+    let session_source = fixture_provider_source_at(
+        CaptureProvider::Codex,
+        "codex_session_jsonl_tree",
+        ProviderImportSupport::Native,
+        sessions,
+    );
+    let archived_source = fixture_provider_source_at(
+        CaptureProvider::Codex,
+        "codex_session_jsonl_tree",
+        ProviderImportSupport::Native,
+        archived,
+    );
+    let history_source = fixture_provider_source_at(
+        CaptureProvider::Codex,
+        "codex_history_jsonl",
+        ProviderImportSupport::Native,
+        history,
+    );
+    let expected_session_route = automatic_source_backed_route_identity(&session_source).unwrap();
+
+    let build = build_automatic_source_backed_registry_from_parts(
+        &context,
+        &temp.path().join("ctx-data"),
+        vec![session_source, archived_source, history_source],
+        Vec::new(),
+    );
+
+    assert!(build.issues.is_empty(), "{:?}", build.issues);
+    assert_eq!(
+        build
+            .registry
+            .watch_catalog()
+            .catalog_coverage_route_registration_sources(&expected_session_route)
+            .unwrap()
+            .len(),
+        2
+    );
+    let (_, _, roots) = build.registry.applied_provider_roots().unwrap();
+    assert_eq!(roots.len(), 1);
+    assert_eq!(
+        roots[0].source_identity(),
+        ProviderRootSourceIdentity::Released
+    );
+    assert_eq!(roots[0].routes().len(), 2);
 }
 
 #[test]

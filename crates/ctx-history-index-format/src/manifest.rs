@@ -635,6 +635,9 @@ pub fn prepare_successor_manifest(
         || base.lexical_schema_version != manifest.lexical_schema_version
         || base.lexical_analyzer_version != manifest.lexical_analyzer_version
         || base.policy_schema_hash != manifest.policy_schema_hash
+        || base.automatic_provider_discovery() != manifest.automatic_provider_discovery()
+        || base.provider_root_config_digest() != manifest.provider_root_config_digest()
+        || base.provider_roots() != manifest.provider_roots()
     {
         return full();
     }

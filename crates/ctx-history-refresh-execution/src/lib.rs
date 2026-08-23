@@ -22,8 +22,10 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use ctx_history_capture::{
-    automatic_source_backed_route_identity, build_automatic_source_backed_registry_from_report,
-    discover_provider_sources_with_context_and_work_budget, source_backed_refresh_work_budget,
+    automatic_source_backed_route_identity,
+    build_automatic_source_backed_registry_from_report_with_root_identities,
+    discover_provider_sources_with_context_and_work_budget, provider_paths_equivalent,
+    released_provider_home, source_backed_refresh_work_budget,
     source_backed_refresh_writer_options, validate_provider_source_roots_outside_data_root,
     DiscoveryContext, SourceBackedAutomaticRegistryIssue, SourceBackedAutomaticUnavailableReason,
     SourceBackedCoordinatorError,
@@ -38,7 +40,8 @@ use ctx_history_capture::{
 #[cfg(test)]
 use ctx_history_capture_model::DiscoveryIssue;
 use ctx_history_capture_model::{
-    DiscoveryIssueKind, DiscoveryReport, ProviderSource, ProviderSourceStatus,
+    DiscoveryIssueKind, DiscoveryReport, ProviderRootSourceIdentity, ProviderSource,
+    ProviderSourceStatus,
 };
 use ctx_history_capture_runtime::{CapturePublicationDisposition, ImmutableCaptureSnapshot};
 use ctx_history_core::{CaptureProvider, CertifiedSource, ScannedSourceCounts};
@@ -256,10 +259,56 @@ pub fn source_backed_watch_catalog(
     let discovery_duration = discovery_started.elapsed();
     validate_provider_source_roots_outside_data_root(data_root, report.sources.iter())
         .context("validate provider roots before deriving source watch catalog")?;
-    let mut build =
-        build_automatic_source_backed_registry_from_report(&discovery, data_root, report);
+    let index_root = source_backed_index_root(data_root);
+    let retained_generation = match VerifiedIndex::open(&index_root) {
+        Ok(index) => Some(index),
+        Err(IndexError::MissingActiveGenerationPointer) => None,
+        Err(error) => return Err(error.into()),
+    };
+    let provider_root_identities =
+        configured_provider_root_identities(&discovery, retained_generation.as_ref());
+    let mut build = build_automatic_source_backed_registry_from_report_with_root_identities(
+        &discovery,
+        data_root,
+        report,
+        &provider_root_identities,
+    );
     build.discovery_duration = discovery_duration;
     Ok(build.registry.watch_catalog())
+}
+
+fn configured_provider_root_identities(
+    discovery: &DiscoveryContext,
+    retained_generation: Option<&VerifiedIndex>,
+) -> BTreeMap<String, ProviderRootSourceIdentity> {
+    discovery
+        .configured_provider_roots()
+        .iter()
+        .map(|root| {
+            let retained = retained_generation.and_then(|generation| {
+                generation
+                    .manifest()
+                    .provider_roots()
+                    .iter()
+                    .find(|applied| {
+                        applied.definition().id == root.id
+                            && applied.definition().provider == root.provider
+                    })
+                    .map(|applied| applied.source_identity())
+            });
+            let identity = retained.unwrap_or_else(|| {
+                if released_provider_home(discovery, root.provider)
+                    .as_deref()
+                    .is_some_and(|home| provider_paths_equivalent(home, &root.path))
+                {
+                    ProviderRootSourceIdentity::Released
+                } else {
+                    ProviderRootSourceIdentity::NamedV1
+                }
+            });
+            (root.id.clone(), identity)
+        })
+        .collect()
 }
 
 #[doc(hidden)]

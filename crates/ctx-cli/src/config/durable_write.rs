@@ -45,6 +45,26 @@ impl ConfigMutationLock {
                 .mode(0o600)
                 .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows_sys::Win32::{
+                Foundation::{GENERIC_READ, GENERIC_WRITE},
+                Storage::FileSystem::{
+                    FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
+                    WRITE_DAC,
+                },
+            };
+
+            // The ACL hardening call operates through this same handle and
+            // therefore needs WRITE_DAC. Sharing read/write lets contenders
+            // open the stable lock inode and block in fs2 while withholding
+            // delete sharing prevents replacement during the transaction.
+            options
+                .access_mode(GENERIC_READ | GENERIC_WRITE | READ_CONTROL | WRITE_DAC)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
         let file = options
             .open(&path)
             .with_context(|| format!("open config lock {}", path.display()))?;

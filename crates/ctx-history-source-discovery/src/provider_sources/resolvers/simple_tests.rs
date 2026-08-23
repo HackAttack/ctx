@@ -292,6 +292,7 @@ fn naming_the_automatic_home_through_a_symlink_deduplicates_the_physical_source(
     assert_eq!(paths(&report), vec![home.join("projects")]);
 }
 
+#[cfg(unix)]
 #[test]
 fn configured_roots_retain_unknown_physical_routes() {
     let temp = tempdir();

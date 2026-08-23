@@ -126,15 +126,16 @@ pub fn discovered_sources_report_with_data_root_and_provider_roots(
     automatic_provider_discovery: bool,
     provider_roots: &[ProviderRootDefinition],
 ) -> DiscoveryReport {
-    home.map(|home| {
-        let context = DiscoveryContext::from_process(home)
-            .with_data_root(data_root)
-            .with_automatic_provider_discovery(automatic_provider_discovery)
-            .with_configured_provider_roots(provider_roots.to_vec());
-        discover_provider_sources_with_context(&context)
-    })
-    .map(filter_cli_supported_report)
-    .unwrap_or_default()
+    if home.is_none() && provider_roots.is_empty() {
+        return DiscoveryReport::default();
+    }
+    let context = discovery_context_with_optional_home(
+        home,
+        data_root,
+        automatic_provider_discovery,
+        provider_roots,
+    );
+    filter_cli_supported_report(discover_provider_sources_with_context(&context))
 }
 
 pub fn discovered_sources_for_provider_report(
@@ -172,14 +173,30 @@ pub fn discovered_sources_for_provider_report_with_data_root_and_provider_roots(
     if !cli_supported_provider(provider) {
         return DiscoveryReport::default();
     }
-    home.map(|home| {
-        let context = DiscoveryContext::from_process(home)
-            .with_data_root(data_root)
-            .with_automatic_provider_discovery(automatic_provider_discovery)
-            .with_configured_provider_roots(provider_roots.to_vec());
-        discover_provider_sources_for_provider_with_context(&context, provider)
-    })
-    .unwrap_or_default()
+    if home.is_none() && provider_roots.is_empty() {
+        return DiscoveryReport::default();
+    }
+    let context = discovery_context_with_optional_home(
+        home,
+        data_root,
+        automatic_provider_discovery,
+        provider_roots,
+    );
+    discover_provider_sources_for_provider_with_context(&context, provider)
+}
+
+fn discovery_context_with_optional_home(
+    home: Option<&Path>,
+    data_root: &Path,
+    automatic_provider_discovery: bool,
+    provider_roots: &[ProviderRootDefinition],
+) -> DiscoveryContext {
+    let home_available = home.is_some();
+    DiscoveryContext::from_process(home.unwrap_or(data_root))
+        .with_home_directory_available(home_available)
+        .with_data_root(data_root)
+        .with_automatic_provider_discovery(automatic_provider_discovery)
+        .with_configured_provider_roots(provider_roots.to_vec())
 }
 
 pub fn filter_cli_supported_sources(sources: Vec<SourceInfo>) -> Vec<SourceInfo> {
@@ -223,6 +240,45 @@ pub fn sources_json(sources: &[SourceInfo]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+pub(crate) fn configured_root_for_source<'a>(
+    roots: &'a [ProviderRootDefinition],
+    source: &SourceInfo,
+) -> Option<&'a ProviderRootDefinition> {
+    roots
+        .iter()
+        .find(|root| ctx_history_capture::provider_source_belongs_to_configured_root(root, source))
+}
+
+pub(crate) fn sources_json_with_selection(
+    sources: &[SourceInfo],
+    roots: &[ProviderRootDefinition],
+) -> Vec<Value> {
+    let mut entries = sources_json(sources);
+    enrich_sources_json_with_selection(&mut entries, sources, roots);
+    entries
+}
+
+pub fn enrich_sources_json_with_selection(
+    entries: &mut [Value],
+    sources: &[SourceInfo],
+    roots: &[ProviderRootDefinition],
+) {
+    for (entry, source) in entries.iter_mut().zip(sources) {
+        entry["selection"] = match configured_root_for_source(roots, source) {
+            Some(root) => json!({
+                "kind": "configured",
+                "root": root.id,
+                "scope": root.scope,
+            }),
+            None => json!({
+                "kind": "automatic",
+                "root": null,
+                "scope": null,
+            }),
+        };
+    }
 }
 
 pub fn discovery_report_issues_json(report: &DiscoveryReport) -> (Vec<Value>, bool) {
@@ -419,6 +475,34 @@ mod tests {
             .sources
             .iter()
             .all(|source| source.provider == CaptureProvider::Codex));
+    }
+
+    #[test]
+    fn absolute_configured_roots_work_without_a_process_home() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("ctx-data");
+        let claude_home = temp.path().join("claude-work");
+        std::fs::create_dir_all(claude_home.join("projects")).unwrap();
+        let roots = vec![ProviderRootDefinition {
+            id: "work".to_owned(),
+            provider: CaptureProvider::Claude,
+            path: claude_home.clone(),
+            scope: Some("work".to_owned()),
+        }];
+
+        for automatic_provider_discovery in [true, false] {
+            let report = discovered_sources_for_provider_report_with_data_root_and_provider_roots(
+                None,
+                &data_root,
+                CaptureProvider::Claude,
+                automatic_provider_discovery,
+                &roots,
+            );
+
+            assert_eq!(report.sources.len(), 1);
+            assert_eq!(report.sources[0].path, claude_home.join("projects"));
+            assert!(report.issues.is_empty());
+        }
     }
 
     #[test]
