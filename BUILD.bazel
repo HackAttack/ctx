@@ -613,9 +613,20 @@ sh_test(
     name = "assemble_github_release_assets_tests",
     srcs = ["scripts/tests/assemble-github-release-assets-test.sh"],
     data = [
+        "scripts/apple-developer-id-g2-ca.pem",
         "scripts/assemble-github-release-assets.sh",
+        "scripts/macos-release-publisher-policy.sh",
+        "scripts/macos-release-signing-evidence.py",
         "scripts/release/release_bundle.py",
+        "scripts/verify-macos-release-attestation.sh",
     ],
+    tags = ["release-gate"],
+)
+
+sh_test(
+    name = "authenticated_semantic_receipt_tests",
+    srcs = ["scripts/tests/download-authenticated-semantic-receipt-test.sh"],
+    data = ["scripts/buildkite/download-authenticated-semantic-receipt.sh"],
     tags = ["release-gate"],
 )
 
@@ -660,6 +671,7 @@ sh_test(
         "scripts/semantic_release_assets/common.py",
         "scripts/semantic_release_assets/contracts.py",
         "scripts/smoke-daemon-semantic-release.sh",
+        "scripts/write-semantic-execution-receipt.sh",
     ],
     tags = ["release-gate"],
     target_compatible_with = ["@platforms//os:linux"],

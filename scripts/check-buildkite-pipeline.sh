@@ -6,6 +6,7 @@ for required in \
   "${pipeline}" \
   scripts/buildkite-public-ci.sh \
   scripts/buildkite/download-linux-factory-artifacts.sh \
+  scripts/buildkite/download-authenticated-semantic-receipt.sh \
   scripts/release/build-public-candidate-on-linux.sh \
   scripts/validate-public-cli-factory-artifact.sh \
   scripts/stage-github-release-assets.sh \
@@ -69,6 +70,8 @@ required = {
     "public-cli-macos-x64-native-smoke",
     "public-cli-windows-x64-native-smoke",
     "github-release-candidate",
+    "github-macos-arm64-semantic-native-smoke",
+    "github-macos-x64-semantic-native-smoke",
     "github-release-assets",
     "semantic-model-archives",
     "semantic-coreml-archive",
@@ -399,12 +402,85 @@ if (
 if "download-linux-factory-artifacts.sh" in macos_x64_runtime.get("command", ""):
     fail("macos-x64 Semantic runtime producer must not consume Core artifacts")
 
+semantic_native = {
+    "github-macos-arm64-semantic-native-smoke": (
+        "macos-arm64",
+        "ctx-release-macos-arm64",
+        "arm64",
+        "semantic-runtime-portable",
+        "github-release-candidate",
+    ),
+    "github-macos-x64-semantic-native-smoke": (
+        "macos-x64",
+        "ctx-mac-gui-shared-x64",
+        "x86_64",
+        "public-cli-macos-x64-runtime-producer",
+        "github-release-candidate",
+    ),
+}
+for key, (platform, queue, arch, runtime_step, core_step) in semantic_native.items():
+    step = keyed[key]
+    if step.get("depends_on") != [core_step, runtime_step]:
+        fail(f"{key} must join only the exact native Core proof and runtime producer")
+    if step.get("if") != github_release_condition:
+        fail(f"{key} has the wrong complete GitHub release condition")
+    if step.get("allow_dependency_failure") or step.get("soft_fail") or step.get("skip"):
+        fail(f"{key} must fail closed")
+    agents = step.get("agents", {})
+    if (agents.get("queue"), agents.get("os"), agents.get("arch")) != (
+        queue,
+        "darwin",
+        arch,
+    ):
+        fail(f"{key} has the wrong native macOS runner")
+    command = step.get("command", "")
+    logical_command = re.sub(r"\\\n[ \t]*", " ", command)
+    if (
+        command.count("buildkite-agent artifact download") != 2
+        or command.count("--step github-release-candidate") != 1
+        or command.count(f"--step {runtime_step}") != 1
+        or f"target/github-core-release-assets/ctx-{platform}" not in command
+        or f"--ctx target/github-core-release-assets/ctx-{platform}" not in logical_command
+        or f"ctx-onnxruntime-{platform}*" not in command
+        or command.count("check-macos-release-signing.sh") != 1
+        or command.count("smoke-daemon-semantic-release.sh") != 1
+        or f"--runtime-platform {platform}" not in logical_command
+        or "--require-authoritative" not in command
+        or f"ctx-{platform}.semantic-execution.json" not in command
+        or "--receipt" not in command
+        or "download-linux-factory-artifacts.sh" in command
+        or "validate-public-cli-factory-artifact.sh" in command
+    ):
+        fail(f"{key} must execute the exact final signed CLI/runtime and emit one receipt")
+    for forbidden in (
+        "build-onnxruntime-sidecar.sh",
+        "run-macos-release-signing.sh",
+        "stage-github-release-assets.sh --transcode-runtime",
+        "cargo build",
+        "cargo zigbuild",
+    ):
+        if forbidden in command:
+            fail(f"{key} must never rebuild, re-sign, or transcode final bytes ({forbidden})")
+    if step.get("artifact_paths") != [
+        f"target/public-cli-semantic-native-smoke/{platform}/ctx-{platform}.semantic-execution.json"
+    ]:
+        fail(f"{key} must upload only its sanitized exact-byte semantic receipt")
+
+if keyed["github-macos-arm64-semantic-native-smoke"].get("env") is not None:
+    fail("macOS arm64 semantic execution must not claim the pinned x64 runner")
+if keyed["github-macos-x64-semantic-native-smoke"].get("env") != {
+    "CTX_RELEASE_MACOS_X64_KVM_RUNNER_ID": "ctx-mac-gui-shared-x64"
+}:
+    fail("macOS x64 semantic execution must bind the pinned untranslated x64 runner")
+
 github_release = keyed["github-release-assets"]
 expected_github_dependencies = [
     "github-release-candidate",
     "semantic-runtime-portable",
     "public-cli-macos-x64-runtime-producer",
     "semantic-runtime-windows-ml",
+    "github-macos-arm64-semantic-native-smoke",
+    "github-macos-x64-semantic-native-smoke",
 ]
 if github_release.get("depends_on") != expected_github_dependencies:
     fail("final GitHub assembly has the wrong independent producer set")
@@ -415,17 +491,32 @@ if github_release.get("allow_dependency_failure") or github_release.get("soft_fa
 github_release_command = github_release.get("command", "")
 if (
     github_release_command.count("assemble-github-release-assets.sh") != 1
+    or github_release_command.count("download-authenticated-semantic-receipt.sh") != 2
     or github_release_command.count("--step semantic-runtime-portable") != 3
     or github_release_command.count("--step public-cli-macos-x64-runtime-producer") != 1
     or github_release_command.count("--step semantic-runtime-windows-ml") != 1
-    or github_release_command.count("--step github-release-candidate") != 1
+    or github_release_command.count("--step github-release-candidate") != 2
+    or "ctx-onnxruntime-macos-arm64*" not in github_release_command
+    or "ctx-onnxruntime-macos-x64*" not in github_release_command
+    or "target/public-cli-semantic-native-smoke" not in github_release_command
+    or "download-authenticated-semantic-receipt.sh macos-arm64" not in github_release_command
+    or "download-authenticated-semantic-receipt.sh macos-x64" not in github_release_command
     or "target/github-core-release-assets" not in github_release_command
+    or "target/github-release-authority" not in github_release_command
     or "target/github-release-assets" not in github_release_command
 ):
     fail("final GitHub assembly must join the exact Core and five-runtime handoffs")
 for forbidden in ("multilingual-e5", "cuda12", "windowsml"):
     if forbidden in github_release_command.lower():
         fail(f"final GitHub assembly unexpectedly consumes {forbidden}")
+for forbidden in (
+    "CTX_PUBLIC_RELEASE_SOURCE_COMMIT",
+    "git rev-parse",
+    "--step github-macos-arm64-semantic-native-smoke",
+    "--step github-macos-x64-semantic-native-smoke",
+):
+    if forbidden in github_release_command:
+        fail(f"final GitHub assembly bypasses authenticated source/receipt authority ({forbidden})")
 if github_release.get("artifact_paths") != ["target/github-release-assets/*"]:
     fail("final GitHub assembly must upload only the complete public asset set")
 
@@ -469,6 +560,10 @@ for key in semantic_keys:
         dependencies = [dependencies]
     if set(dependencies) & (core_keys | {"sdk-swift-required"}):
         fail(f"{key} crosses from the Semantic graph into Core/SDK work")
+for key, (_, _, _, runtime_step, core_step) in semantic_native.items():
+    dependencies = keyed[key].get("depends_on", [])
+    if dependencies != [core_step, runtime_step]:
+        fail(f"{key} lost its single explicit Core/Semantic join boundary")
 
 for step in steps:
     command = str(step.get("command", ""))
@@ -480,7 +575,8 @@ for step in steps:
 
 print(
     "Buildkite release pipeline: independent Core/SDK/Semantic graphs, "
-    "five exact-byte Core validators"
+    "five exact-byte Core validators, source-bound Core authority, and two "
+    "authenticated final-byte macOS semantic receipts"
 )
 PY
 

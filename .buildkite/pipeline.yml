@@ -386,6 +386,76 @@ steps:
       - "target/public-cli-artifacts/ctx-onnxruntime-linux-aarch64*"
       - "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64*"
 
+  - label: ":test_tube: macOS arm64 final CLI/runtime semantic execution"
+    key: "github-macos-arm64-semantic-native-smoke"
+    depends_on:
+      - "github-release-candidate"
+      - "semantic-runtime-portable"
+    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.env("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") == "1" && build.env("CTX_PUBLIC_SEMANTIC_ASSET_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
+    command: |
+      mkdir -p target/public-cli-artifacts target/public-cli-semantic-native-smoke/macos-arm64
+      buildkite-agent artifact download \
+        "target/github-core-release-assets/ctx-macos-arm64" . \
+        --step github-release-candidate
+      buildkite-agent artifact download \
+        "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64*" . \
+        --step semantic-runtime-portable
+      scripts/check-macos-release-signing.sh \
+        macos-arm64 runtime \
+        target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.tar.gz
+      scripts/smoke-daemon-semantic-release.sh \
+        --runtime-archive target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.tar.gz \
+        --runtime-platform macos-arm64 \
+        --ctx target/github-core-release-assets/ctx-macos-arm64 \
+        --data-root target/public-cli-semantic-native-smoke/macos-arm64/runs \
+        --require-authoritative \
+        --receipt target/public-cli-semantic-native-smoke/macos-arm64/ctx-macos-arm64.semantic-execution.json
+    agents:
+      queue: "ctx-release-macos-arm64"
+      os: "darwin"
+      arch: "arm64"
+    concurrency: 1
+    concurrency_group: "ctx/github-macos-arm64-semantic-native"
+    timeout_in_minutes: 180
+    artifact_paths:
+      - "target/public-cli-semantic-native-smoke/macos-arm64/ctx-macos-arm64.semantic-execution.json"
+
+  - label: ":test_tube: macOS x64 final CLI/runtime semantic execution"
+    key: "github-macos-x64-semantic-native-smoke"
+    depends_on:
+      - "github-release-candidate"
+      - "public-cli-macos-x64-runtime-producer"
+    if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.env("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") == "1" && build.env("CTX_PUBLIC_SEMANTIC_ASSET_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
+    command: |
+      mkdir -p target/public-cli-artifacts target/public-cli-semantic-native-smoke/macos-x64
+      buildkite-agent artifact download \
+        "target/github-core-release-assets/ctx-macos-x64" . \
+        --step github-release-candidate
+      buildkite-agent artifact download \
+        "target/public-cli-artifacts/ctx-onnxruntime-macos-x64*" . \
+        --step public-cli-macos-x64-runtime-producer
+      scripts/check-macos-release-signing.sh \
+        macos-x64 runtime \
+        target/public-cli-artifacts/ctx-onnxruntime-macos-x64.tar.gz
+      scripts/smoke-daemon-semantic-release.sh \
+        --runtime-archive target/public-cli-artifacts/ctx-onnxruntime-macos-x64.tar.gz \
+        --runtime-platform macos-x64 \
+        --ctx target/github-core-release-assets/ctx-macos-x64 \
+        --data-root target/public-cli-semantic-native-smoke/macos-x64/runs \
+        --require-authoritative \
+        --receipt target/public-cli-semantic-native-smoke/macos-x64/ctx-macos-x64.semantic-execution.json
+    agents:
+      queue: "ctx-mac-gui-shared-x64"
+      os: "darwin"
+      arch: "x86_64"
+    env:
+      CTX_RELEASE_MACOS_X64_KVM_RUNNER_ID: "ctx-mac-gui-shared-x64"
+    concurrency: 1
+    concurrency_group: "ctx/github-macos-x64-semantic-native"
+    timeout_in_minutes: 240
+    artifact_paths:
+      - "target/public-cli-semantic-native-smoke/macos-x64/ctx-macos-x64.semantic-execution.json"
+
   - label: ":package: assemble complete GitHub release assets"
     key: "github-release-assets"
     depends_on:
@@ -393,11 +463,16 @@ steps:
       - "semantic-runtime-portable"
       - "public-cli-macos-x64-runtime-producer"
       - "semantic-runtime-windows-ml"
+      - "github-macos-arm64-semantic-native-smoke"
+      - "github-macos-x64-semantic-native-smoke"
     if: build.env("CTX_PUBLIC_CLI_ARTIFACT_MATRIX") == "1" && build.env("CTX_PUBLIC_CLI_NATIVE_SMOKE_MATRIX") == "1" && build.env("CTX_PUBLIC_SEMANTIC_ASSET_MATRIX") == "1" && build.branch == "main" && build.pull_request.id == null
     command: |
-      mkdir -p target/public-cli-artifacts
+      mkdir -p target/public-cli-artifacts target/public-cli-semantic-native-smoke
       buildkite-agent artifact download \
         "target/github-core-release-assets/*" . \
+        --step github-release-candidate
+      buildkite-agent artifact download \
+        "target/github-release-authority/*" . \
         --step github-release-candidate
       buildkite-agent artifact download \
         "target/public-cli-artifacts/ctx-onnxruntime-linux-x64.tar.gz*" . \
@@ -406,17 +481,21 @@ steps:
         "target/public-cli-artifacts/ctx-onnxruntime-linux-aarch64.tar.gz*" . \
         --step semantic-runtime-portable
       buildkite-agent artifact download \
-        "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64.tar.gz*" . \
+        "target/public-cli-artifacts/ctx-onnxruntime-macos-arm64*" . \
         --step semantic-runtime-portable
       buildkite-agent artifact download \
-        "target/public-cli-artifacts/ctx-onnxruntime-macos-x64.tar.gz*" . \
+        "target/public-cli-artifacts/ctx-onnxruntime-macos-x64*" . \
         --step public-cli-macos-x64-runtime-producer
       buildkite-agent artifact download \
         "*ctx-onnxruntime-windows-x64.zip*" . \
         --step semantic-runtime-windows-ml
+      scripts/buildkite/download-authenticated-semantic-receipt.sh macos-arm64
+      scripts/buildkite/download-authenticated-semantic-receipt.sh macos-x64
       scripts/assemble-github-release-assets.sh \
         target/github-core-release-assets \
+        target/github-release-authority \
         target/public-cli-artifacts \
+        target/public-cli-semantic-native-smoke \
         target/github-release-assets
     agents:
       queue: "release-linux-managed"

@@ -19,7 +19,8 @@ for release_script in \
   public-cli-host-runtime-evidence.sh \
   public-cli-runtime-authority.sh \
   semantic-release-assets.py \
-  smoke-daemon-semantic-release.sh; do
+  smoke-daemon-semantic-release.sh \
+  write-semantic-execution-receipt.sh; do
   cp -L "${repo_root}/scripts/${release_script}" \
     "${release_root}/scripts/${release_script}"
 done
@@ -147,6 +148,10 @@ if [[ "\${CTX_TEST_RUNTIME_EVIDENCE:-}" == "macos-arm64-native-virtualized" ]]; 
   printf 'Darwin\tarm64\tarm64\t0\tsysctl\tapple\tnone\tpresent\t1\n'
   exit 0
 fi
+if [[ "\${CTX_TEST_RUNTIME_EVIDENCE:-}" == "macos-arm64-physical" ]]; then
+  printf 'Darwin\tarm64\tarm64\t0\tsysctl\tapple\tnone\tabsent\t1\n'
+  exit 0
+fi
 if [[ "\${CTX_TEST_RUNTIME_EVIDENCE:-}" == "macos-arm64-generic-virtualized" ]]; then
   printf 'Darwin\tarm64\tarm64\t0\tsysctl\tgeneric\tnone\tpresent\t1\n'
   exit 0
@@ -172,7 +177,7 @@ expect_runtime_authority() {
 
 expect_runtime_authority macos_arm64_bare_metal authoritative \
   macos-arm64 Darwin arm64 passed arm64 0 apple none absent 1
-expect_runtime_authority macos_arm64_native_virtualized authoritative \
+expect_runtime_authority macos_arm64_native_virtualized non_authoritative \
   macos-arm64 Darwin arm64 passed arm64 0 apple none present 1
 expect_runtime_authority macos_arm64_rosetta non_authoritative \
   macos-arm64 Darwin arm64 passed arm64 1 apple rosetta-2 absent 1
@@ -408,6 +413,7 @@ expect_usage_failure() {
 grep -Fq -- '--coreml --runtime-platform macos-arm64|macos-x64' "${tmp}/help.out"
 grep -Fq -- '[--coreml-archive PATH]' "${tmp}/help.out"
 grep -Fq -- '--require-authoritative' "${tmp}/help.out"
+grep -Fq -- '--receipt PATH' "${tmp}/help.out"
 
 expect_usage_failure coreml_linux \
   '--coreml requires --runtime-platform macos-arm64 or macos-x64' \
@@ -431,6 +437,14 @@ expect_usage_failure retired_proof_output \
   'Usage:' \
   --coreml --runtime-platform macos-arm64 --proof-output "${tmp}/proof" \
   --ctx "${fake_ctx}"
+expect_usage_failure receipt_requires_runtime \
+  '--receipt requires --runtime-archive' \
+  --coreml --runtime-platform macos-arm64 --receipt "${tmp}/coreml-receipt.json" \
+  --ctx "${fake_ctx}" --require-authoritative
+expect_usage_failure receipt_requires_authority \
+  '--receipt requires --require-authoritative' \
+  --runtime-platform macos-arm64 --runtime-archive "${tmp}/unused" \
+  --receipt "${tmp}/non-authoritative-receipt.json" --ctx "${fake_ctx}"
 
 if CTX_TEST_RUNTIME_EVIDENCE=macos-arm64-generic-virtualized "${smoke}" \
   --coreml \
@@ -454,9 +468,24 @@ grep -Fq -- \
   'error: semantic smoke requires authoritative native macos-arm64 execution' \
   "${tmp}/non-authoritative.err"
 
+if CTX_TEST_RUNTIME_EVIDENCE=macos-arm64-native-virtualized "${smoke}" \
+  --coreml \
+  --runtime-platform macos-arm64 \
+  --ctx "${fake_ctx}" \
+  --data-root "${tmp}/virtualized-arm64-runs" \
+  --require-authoritative \
+  --timeout-seconds 30 \
+  > "${tmp}/virtualized-arm64.out" 2> "${tmp}/virtualized-arm64.err"; then
+  printf 'virtualized Apple macOS arm64 smoke unexpectedly passed\n' >&2
+  exit 1
+fi
+grep -Fq -- \
+  'error: semantic smoke requires authoritative native macos-arm64 execution' \
+  "${tmp}/virtualized-arm64.err"
+
 run_parent="${tmp}/runs"
 coreml_bind_log="${tmp}/coreml-bind.log"
-CTX_TEST_RUNTIME_EVIDENCE=macos-arm64-native-virtualized \
+CTX_TEST_RUNTIME_EVIDENCE=macos-arm64-physical \
 CTX_TEST_COREML_BIND_LOG="${coreml_bind_log}" "${smoke}" \
   --coreml \
   --runtime-platform macos-arm64 \
@@ -473,7 +502,7 @@ run_root="$(find "${run_parent}" -mindepth 1 -maxdepth 1 -type d -name 'ctx-sema
 test ! -e "${run_root}/data/packaged-runtime-proof.txt"
 grep -Fq 'ctx semantic smoke ok:' "${tmp}/coreml.out"
 grep -Fq \
-  'hardware_identity=apple emulation=none hypervisor=present evidence_complete=1' \
+  'hardware_identity=apple emulation=none hypervisor=absent evidence_complete=1' \
   "${tmp}/coreml.out"
 grep -Fq 'authority=authoritative' "${tmp}/coreml.out"
 grep -Fxq -- "archive=${coreml_archive}" "${coreml_bind_log}"
@@ -605,12 +634,28 @@ else
   shasum -a 256 "${runtime_archive}" | awk '{ print $1 }' > "${runtime_archive}.sha256"
 fi
 
-if ! "${smoke}" \
+onnx_receipt="${tmp}/onnx-receipt/ctx-linux-x64.semantic-execution.json"
+git -C "${release_root}" init -q
+git -C "${release_root}" config user.name 'ctx semantic receipt test'
+git -C "${release_root}" config user.email 'ctx-semantic-receipt@example.invalid'
+git -C "${release_root}" add .
+git -C "${release_root}" commit -qm 'seal semantic receipt fixture'
+receipt_source_commit="$(git -C "${release_root}" rev-parse --verify HEAD^{commit})"
+buildkite_build_id='11111111-1111-4111-8111-111111111111'
+buildkite_job_id='22222222-2222-4222-8222-222222222222'
+buildkite_step_key='semantic-linux-smoke'
+if ! BUILDKITE_BUILD_ID="${buildkite_build_id}" \
+  BUILDKITE_BUILD_NUMBER=42 \
+  BUILDKITE_JOB_ID="${buildkite_job_id}" \
+  BUILDKITE_RETRY_COUNT=2 \
+  BUILDKITE_STEP_KEY="${buildkite_step_key}" \
+  "${smoke}" \
   --runtime-archive "${runtime_archive}" \
   --runtime-platform linux-x64 \
   --ctx "${cpu_ctx}" \
   --data-root "${tmp}/onnx-runs" \
   --require-authoritative \
+  --receipt "${onnx_receipt}" \
   --timeout-seconds 30 \
   > "${tmp}/onnx.out" 2> "${tmp}/onnx.err"; then
   cat "${tmp}/onnx.out" >&2
@@ -618,6 +663,87 @@ if ! "${smoke}" \
   exit 1
 fi
 grep -Fq 'ctx semantic smoke ok:' "${tmp}/onnx.out"
+python3 -I - "${onnx_receipt}" "${cpu_ctx}" "${runtime_archive}" \
+  "${runtime_payload}/lib/libonnxruntime.so" "${receipt_source_commit}" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+receipt, cli, archive, nested = map(Path, sys.argv[1:5])
+
+
+def sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+value = json.loads(receipt.read_text(encoding="utf-8"))
+if (
+    value.get("schema_version") != 2
+    or value.get("kind") != "ctx-semantic-native-execution"
+    or value.get("platform") != "linux-x64"
+    or value.get("status") != "passed"
+    or value.get("authority") != "authoritative"
+    or value.get("backend") != "onnxruntime-cpu"
+    or value.get("provenance")
+    != {
+        "build_id": "11111111-1111-4111-8111-111111111111",
+        "build_number": 42,
+        "job_id": "22222222-2222-4222-8222-222222222222",
+        "retry_count": 2,
+        "source_commit": sys.argv[5],
+        "step_key": "semantic-linux-smoke",
+    }
+    or value.get("cli_artifact")
+    != {"name": "ctx-linux-x64", "sha256": sha256(cli)}
+    or value.get("runtime_archive")
+    != {
+        "name": archive.name,
+        "nested_artifact_name": "lib/libonnxruntime.so",
+        "nested_artifact_sha256": sha256(nested),
+        "sha256": sha256(archive),
+    }
+    or value.get("semantic")
+    != {
+        "effective_mode": "semantic",
+        "indexed_chunks_minimum": 1,
+        "model_key": "e5-small-v1:mean-pool:l2:query-passage",
+        "requested_mode": "semantic",
+        "status": "ready",
+    }
+):
+    raise SystemExit(f"unexpected native semantic receipt: {value!r}")
+host = value.get("host_evidence")
+if (
+    not isinstance(host, dict)
+    or host.get("system") != "Linux"
+    or host.get("arch") != "x86_64"
+    or host.get("native_arch") != "x86_64"
+    or host.get("process_translated") != 0
+    or host.get("evidence_complete") is not True
+):
+    raise SystemExit(f"receipt lost authoritative host evidence: {host!r}")
+if any("/" in str(value.get(key, "")) for key in ("authority", "platform", "status")):
+    raise SystemExit("receipt exposed a local path")
+PY
+if BUILDKITE_BUILD_ID="${buildkite_build_id}" \
+  BUILDKITE_BUILD_NUMBER=42 \
+  BUILDKITE_JOB_ID="${buildkite_job_id}" \
+  BUILDKITE_RETRY_COUNT=2 \
+  BUILDKITE_STEP_KEY="${buildkite_step_key}" \
+  "${smoke}" \
+  --runtime-archive "${runtime_archive}" \
+  --runtime-platform linux-x64 \
+  --ctx "${cpu_ctx}" \
+  --data-root "${tmp}/duplicate-receipt-runs" \
+  --require-authoritative \
+  --receipt "${onnx_receipt}" \
+  --timeout-seconds 30 \
+  > "${tmp}/duplicate-receipt.out" 2> "${tmp}/duplicate-receipt.err"; then
+  printf 'semantic smoke replaced an existing native receipt\n' >&2
+  exit 1
+fi
+grep -Fq 'semantic smoke receipt already exists' "${tmp}/duplicate-receipt.err"
 if find "${tmp}/onnx-runs" -name packaged-runtime-proof.txt -print -quit | grep -q .; then
   printf 'semantic smoke emitted a retired proof artifact\n' >&2
   exit 1

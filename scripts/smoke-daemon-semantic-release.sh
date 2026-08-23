@@ -5,7 +5,7 @@ umask 077
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  scripts/smoke-daemon-semantic-release.sh --runtime-archive PATH --runtime-platform PLATFORM [--ctx PATH] [--data-root DIR] [--timeout-seconds N] [--require-authoritative] [--keep-root]
+  scripts/smoke-daemon-semantic-release.sh --runtime-archive PATH --runtime-platform PLATFORM [--ctx PATH] [--data-root DIR] [--timeout-seconds N] [--require-authoritative] [--receipt PATH] [--keep-root]
   scripts/smoke-daemon-semantic-release.sh --coreml --runtime-platform macos-arm64|macos-x64 [--coreml-archive PATH] [--ctx PATH] [--data-root DIR] [--timeout-seconds N] [--require-authoritative] [--keep-root]
 
 Native release smoke for opt-in daemon + semantic search. The smoke creates an
@@ -21,6 +21,8 @@ production acquisition path without publication. When --data-root is provided,
 it is the parent for a fresh unique run root; --keep-root preserves that child
 for inspection. --require-authoritative fails unless host evidence confirms
 native execution for the requested platform.
+--receipt writes a sanitized exact-byte native ONNX semantic execution receipt;
+it requires --runtime-archive and --require-authoritative.
 USAGE
 }
 
@@ -35,6 +37,7 @@ timeout_seconds="${CTX_SEMANTIC_SMOKE_TIMEOUT_SECONDS:-900}"
 keep_root=0
 coreml_mode=0
 require_authoritative=0
+receipt_path=""
 
 while (($# > 0)); do
   case "$1" in
@@ -64,6 +67,10 @@ while (($# > 0)); do
     --require-authoritative)
       require_authoritative=1
       ;;
+    --receipt)
+      shift
+      receipt_path="${1:-}"
+      ;;
     --timeout-seconds)
       shift
       timeout_seconds="${1:-}"
@@ -86,6 +93,84 @@ done
 if [[ -z "${ctx_bin}" ]]; then
   echo "error: --ctx cannot be empty" >&2
   exit 2
+fi
+
+if [[ -n "${receipt_path}" ]]; then
+  if [[ "${coreml_mode}" == "1" ]]; then
+    echo "error: --receipt requires --runtime-archive" >&2
+    exit 2
+  fi
+  if [[ "${require_authoritative}" != "1" ]]; then
+    echo "error: --receipt requires --require-authoritative" >&2
+    exit 2
+  fi
+  receipt_parent="$(dirname "${receipt_path}")"
+  receipt_name="$(basename "${receipt_path}")"
+  if [[ -z "${receipt_name}" || "${receipt_name}" == "." || "${receipt_name}" == ".." ]]; then
+    echo "error: --receipt must name a file" >&2
+    exit 2
+  fi
+  mkdir -p -- "${receipt_parent}"
+  receipt_parent="$(cd -- "${receipt_parent}" && pwd -P)"
+  receipt_path="${receipt_parent%/}/${receipt_name}"
+  if [[ -e "${receipt_path}" || -L "${receipt_path}" ]]; then
+    echo "error: semantic smoke receipt already exists: ${receipt_path}" >&2
+    exit 1
+  fi
+  for buildkite_variable in \
+    BUILDKITE_BUILD_ID \
+    BUILDKITE_BUILD_NUMBER \
+    BUILDKITE_JOB_ID \
+    BUILDKITE_RETRY_COUNT \
+    BUILDKITE_STEP_KEY; do
+    [[ -n "${!buildkite_variable:-}" ]] || {
+      echo "error: --receipt requires ${buildkite_variable}" >&2
+      exit 2
+    }
+  done
+  uuid_pattern='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  [[ "${BUILDKITE_BUILD_ID}" =~ ${uuid_pattern} \
+    && "${BUILDKITE_JOB_ID}" =~ ${uuid_pattern} ]] || {
+    echo "error: semantic receipt Buildkite build/job identity is malformed" >&2
+    exit 2
+  }
+  [[ "${BUILDKITE_BUILD_NUMBER}" =~ ^[1-9][0-9]*$ \
+    && "${BUILDKITE_RETRY_COUNT}" =~ ^(0|[1-9][0-9]*)$ \
+    && "${BUILDKITE_STEP_KEY}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$ ]] || {
+    echo "error: semantic receipt Buildkite attempt/step identity is malformed" >&2
+    exit 2
+  }
+  receipt_repo_root="$(cd -- "${script_dir}/.." && pwd -P)"
+  receipt_source_commit="$(
+    env \
+      -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+      -u GIT_CEILING_DIRECTORIES \
+      -u GIT_COMMON_DIR \
+      -u GIT_CONFIG_COUNT \
+      -u GIT_CONFIG_GLOBAL \
+      -u GIT_CONFIG_NOSYSTEM \
+      -u GIT_CONFIG_PARAMETERS \
+      -u GIT_CONFIG_SYSTEM \
+      -u GIT_DIR \
+      -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
+      -u GIT_EXEC_PATH \
+      -u GIT_GRAFT_FILE \
+      -u GIT_INDEX_FILE \
+      -u GIT_NAMESPACE \
+      -u GIT_OBJECT_DIRECTORY \
+      -u GIT_REPLACE_REF_BASE \
+      -u GIT_SHALLOW_FILE \
+      -u GIT_WORK_TREE \
+      git -C "${receipt_repo_root}" rev-parse --verify HEAD^{commit}
+  )" || {
+    echo "error: semantic receipt could not resolve scrubbed checkout HEAD" >&2
+    exit 1
+  }
+  [[ "${receipt_source_commit}" =~ ^[0-9a-f]{40}$ \
+    && ! "${receipt_source_commit}" =~ ^0{40}$ ]] || {
+    echo "error: semantic receipt checkout source commit is malformed" >&2
+    exit 1
+  }
 fi
 if [[ -z "${runtime_platform}" ]]; then
   echo "error: --runtime-platform is required" >&2
@@ -415,6 +500,17 @@ EOF
   }
   grep -F '"manager": "ctx-explicit-metadata-installer"' "${ctx_bin}.install.json" >/dev/null
   grep -F '"metadata_trust": "explicit-unsigned"' "${runtime_install_dir}/ctx-runtime-install.json" >/dev/null
+  if command -v sha256sum >/dev/null 2>&1; then
+    installed_binary_sha="$(sha256sum "${ctx_bin}" | awk '{ print $1 }')"
+    installed_runtime_sha="$(sha256sum "${runtime_dylib}" | awk '{ print $1 }')"
+  else
+    installed_binary_sha="$(shasum -a 256 "${ctx_bin}" | awk '{ print $1 }')"
+    installed_runtime_sha="$(shasum -a 256 "${runtime_dylib}" | awk '{ print $1 }')"
+  fi
+  if [[ "${installed_binary_sha}" != "${binary_sha}" ]]; then
+    echo "error: installed semantic smoke CLI differs from the supplied final artifact" >&2
+    exit 1
+  fi
 fi
 marker="ctx-release-semantic-smoke-$(python3 -I -c 'import uuid; print(uuid.uuid4().hex)')"
 query="synthetic release retrieval cobalt willow transit"
@@ -721,6 +817,37 @@ if not any(marker in text for result in results for text in strings(result)):
 PY
 }
 
+write_semantic_receipt() {
+  [[ -n "${receipt_path}" ]] || return 0
+  "${script_dir}/write-semantic-execution-receipt.sh" \
+    "${receipt_path}" \
+    "${runtime_platform}" \
+    "${release_binary}" \
+    "${binary_sha}" \
+    "${expected_runtime_asset}" \
+    "${actual_runtime_sha_lower}" \
+    "${runtime_dylib_name}" \
+    "${installed_runtime_sha}" \
+    "${host_system}" \
+    "${host_arch}" \
+    "${host_native_arch}" \
+    "${process_translated}" \
+    "${native_arch_probe}" \
+    "${hardware_identity}" \
+    "${emulation}" \
+    "${hypervisor}" \
+    "${evidence_complete}" \
+    "${CTX_RELEASE_MACOS_X64_KVM_RUNNER_ID:-}" \
+    "${runtime_authority}" \
+    "${semantic_model_key}" \
+    "${receipt_source_commit}" \
+    "${BUILDKITE_BUILD_ID}" \
+    "${BUILDKITE_BUILD_NUMBER}" \
+    "${BUILDKITE_JOB_ID}" \
+    "${BUILDKITE_RETRY_COUNT}" \
+    "${BUILDKITE_STEP_KEY}"
+}
+
 while ((SECONDS < deadline)); do
   if ! kill -0 "${daemon_pid}" >/dev/null 2>&1; then
     echo "ctx semantic smoke: daemon exited before search succeeded" >&2
@@ -755,6 +882,7 @@ while ((SECONDS < deadline)); do
           echo "error: daemon reported a downloaded model without populating the clean cache" >&2
           exit 1
         fi
+        write_semantic_receipt
         printf 'ctx semantic smoke ok: strict semantic search found %s with %s\n' \
           "${marker}" "${semantic_model_key}"
         exit 0
