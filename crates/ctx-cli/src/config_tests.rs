@@ -930,12 +930,12 @@ automatic = false
 [sources.roots.claude-personal]
 provider = "claude"
 path = {:?}
-scope = "personal"
+group = "personal"
 
 [sources.roots.codex-work]
 provider = "codex"
 path = {:?}
-scope = "work"
+group = "work"
 "#,
             claude_home.path().display().to_string(),
             codex_home.path().display().to_string(),
@@ -949,7 +949,7 @@ scope = "work"
         config
             .provider_root_definitions()
             .into_iter()
-            .map(|root| (root.id, root.provider, root.path, root.scope))
+            .map(|root| (root.id, root.provider, root.path, root.group))
             .collect::<Vec<_>>(),
         vec![
             (
@@ -992,8 +992,15 @@ fn rejects_invalid_provider_root_config_as_one_atomic_config() {
             "provider root name",
         ),
         (
-            "[search]\ndefault_scope = \"work\"\n".to_owned(),
+            "[search]\ndefault_group = \"work\"\n".to_owned(),
             "unknown config key",
+        ),
+        (
+            format!(
+                "[sources.roots.work]\nprovider = \"claude\"\npath = {:?}\nscope = \"work\"\n",
+                provider_path
+            ),
+            "unknown config key `sources.roots.work.scope`",
         ),
     ];
     for (text, expected) in cases {
@@ -1065,7 +1072,7 @@ fn hand_edited_provider_root_symlink_is_canonicalized() {
     fs::write(
         data_root.path().join(CONFIG_FILE),
         format!(
-            "[sources.roots.personal]\nprovider = \"claude\"\npath = {:?}\nscope = \"personal\"\n",
+            "[sources.roots.personal]\nprovider = \"claude\"\npath = {:?}\ngroup = \"personal\"\n",
             alias.display().to_string(),
         ),
     )
@@ -1246,7 +1253,7 @@ fn provider_root_mutation_waits_for_the_shared_config_transaction_lock() {
 }
 
 #[test]
-fn removing_the_last_member_of_a_scope_is_allowed() {
+fn removing_the_last_member_of_a_group_is_allowed() {
     let data_root = tempfile::tempdir().unwrap();
     let provider_parent = tempfile::tempdir().unwrap();
     let provider_home = provider_parent.path().join("claude-personal");
@@ -1254,7 +1261,7 @@ fn removing_the_last_member_of_a_scope_is_allowed() {
     fs::write(
         data_root.path().join(CONFIG_FILE),
         format!(
-            "[sources.roots.personal]\nprovider = \"claude\"\npath = {:?}\nscope = \"personal\"\n",
+            "[sources.roots.personal]\nprovider = \"claude\"\npath = {:?}\ngroup = \"personal\"\n",
             provider_home.display().to_string()
         ),
     )

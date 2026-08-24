@@ -359,10 +359,10 @@ Each built-in provider source includes:
 - `importable`;
 - `unsupported_reason`;
 - `selection`, with `kind` (`automatic` or `configured`), configured `root`,
-  and configured `scope`.
+  and configured `group`.
 
 For a configured row, `selection.root` is the exact case-sensitive configured
-name and `selection.scope` is its configured scope or null. For an automatic
+name and `selection.group` is its configured group or null. For an automatic
 row, both values are null. History-source plugin rows retain their plugin
 identity fields and do not have configured provider-root selection metadata.
 
@@ -389,18 +389,18 @@ non-importable rows in `sources[]`; they are not provider discovery issues.
 Named provider-root mutations have a separate schema-version-1 JSON result:
 
 ```bash
-ctx sources add personal --provider claude --root /path/to/claude --scope work --format json
+ctx sources add personal --provider claude --root /path/to/claude --source-group work --format json
 ctx sources remove personal --format json
 ```
 
 Both successful shapes contain exactly `schema_version`, `operation`,
 `changed`, and `root`. `operation` is `"add"` or `"remove"`; `root` contains
-`name`, `provider`, canonical absolute `path`, and nullable `scope`. Repeating
+`name`, `provider`, canonical absolute `path`, and nullable `group`. Repeating
 an add with the same name and identical canonical settings is idempotent and
 returns `changed: false`. Reusing the name with different settings fails and
 requires an explicit remove first. A successful remove returns `changed: true`
 and the removed root; removing an absent name is an error, not a successful
-no-op. Root names and non-null scopes use 1 to 64 ASCII letters, digits,
+no-op. Root names and non-null groups use 1 to 64 ASCII letters, digits,
 hyphens, or underscores and remain case-sensitive.
 
 ## Import
@@ -718,9 +718,9 @@ appear in the same successful request because those inputs conflict
 unconditionally.
 
 When supplied, repeatable CLI root selectors are echoed as `source_root` and
-scope selectors as `scope`, each an array of normalized names. MCP accepts the
-equivalent request arrays `source_roots` and `scopes`. Both selector families
-resolve against the pinned Core generation. Every root and scope value forms
+group selectors as `source_groups`, each an array of normalized names. MCP accepts the
+equivalent request arrays `source_roots` and `source_groups`. Both selector families
+resolve against the pinned Core generation. Every root and group value forms
 one OR selection set before that set intersects with independent filters using
 AND semantics. Names are case-sensitive, and unknown selectors are typed
 request errors; they are never ignored or resolved from live config against an
@@ -946,7 +946,7 @@ error, and zero semantic weight performs no vector work. MCP search does not
 itself import provider history and does not automatically exclude the caller's
 session. Direct CLI current-session detection and
 `--include-current-session` do not apply to MCP calls.
-Its optional `source_roots` and `scopes` arrays use the same generation-pinned
+Its optional `source_roots` and `source_groups` arrays use the same generation-pinned
 source-key filter as CLI search. If both arrays are absent, all indexed roots
 are searched.
 
@@ -964,9 +964,9 @@ requires `mode: "log"` for ordinary tool events.
 The MCP `sources` tool returns `schema_version`, `automatic_discovery`,
 `sources`, `issues`, `issues_truncated`, and `read_only: true`. Its built-in
 provider rows use the same `selection` objects as CLI JSON, so configured
-`root` values and non-null configured `scope` values enumerate candidates for
-MCP search `source_roots` and `scopes`. Automatic rows have null `root` and
-`scope`; plugin rows do not participate in configured provider-root selection.
+`root` values and non-null configured `group` values enumerate candidates for
+MCP search `source_roots` and `source_groups`. Automatic rows have null `root` and
+`group`; plugin rows do not participate in configured provider-root selection.
 The bounded `issues` and `issues_truncated` fields retain the CLI contract.
 
 Tool-level argument validation failures set `isError: true`, preserve the

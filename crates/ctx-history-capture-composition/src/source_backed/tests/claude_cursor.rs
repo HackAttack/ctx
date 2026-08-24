@@ -386,13 +386,13 @@ fn unavailable_configured_claude_home_carries_only_itself_while_peer_refreshes()
             id: "personal".to_owned(),
             provider: CaptureProvider::Claude,
             path: personal_home.clone(),
-            scope: Some("personal".to_owned()),
+            group: Some("personal".to_owned()),
         },
         ctx_history_capture_model::ProviderRootDefinition {
             id: "work".to_owned(),
             provider: CaptureProvider::Claude,
             path: work_home.clone(),
-            scope: Some("work".to_owned()),
+            group: Some("work".to_owned()),
         },
     ];
     let context = DiscoveryContext::new(
@@ -473,13 +473,13 @@ fn cold_unavailable_configured_claude_home_does_not_block_healthy_peer() {
             id: "personal".to_owned(),
             provider: CaptureProvider::Claude,
             path: personal_home.clone(),
-            scope: Some("personal".to_owned()),
+            group: Some("personal".to_owned()),
         },
         ctx_history_capture_model::ProviderRootDefinition {
             id: "work".to_owned(),
             provider: CaptureProvider::Claude,
             path: work_home.clone(),
-            scope: Some("work".to_owned()),
+            group: Some("work".to_owned()),
         },
     ];
     let context = DiscoveryContext::new(

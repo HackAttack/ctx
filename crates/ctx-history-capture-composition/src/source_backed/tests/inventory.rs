@@ -18,7 +18,7 @@ fn only_one_configured_root_per_provider_can_own_the_released_namespace() {
             id: id.to_owned(),
             provider: CaptureProvider::Claude,
             path: path.to_path_buf(),
-            scope: None,
+            group: None,
         })
         .collect::<Vec<_>>();
     let context = DiscoveryContext::new(
@@ -83,13 +83,13 @@ fn configured_claude_roots_register_as_independent_routes_and_aliases() {
             id: "personal".to_owned(),
             provider: CaptureProvider::Claude,
             path: personal.clone(),
-            scope: Some("personal".to_owned()),
+            group: Some("personal".to_owned()),
         },
         ProviderRootDefinition {
             id: "work".to_owned(),
             provider: CaptureProvider::Claude,
             path: work.clone(),
-            scope: Some("work".to_owned()),
+            group: Some("work".to_owned()),
         },
     ];
     let context = DiscoveryContext::new(
@@ -152,13 +152,13 @@ fn nested_claude_homes_keep_exact_root_alias_membership() {
             id: "outer".to_owned(),
             provider: CaptureProvider::Claude,
             path: outer,
-            scope: None,
+            group: None,
         },
         ProviderRootDefinition {
             id: "inner".to_owned(),
             provider: CaptureProvider::Claude,
             path: inner,
-            scope: None,
+            group: None,
         },
     ];
     let context = DiscoveryContext::new(
@@ -213,13 +213,13 @@ fn nested_codex_homes_keep_exact_root_alias_membership() {
             id: "outer".to_owned(),
             provider: CaptureProvider::Codex,
             path: outer,
-            scope: None,
+            group: None,
         },
         ProviderRootDefinition {
             id: "inner".to_owned(),
             provider: CaptureProvider::Codex,
             path: inner,
-            scope: None,
+            group: None,
         },
     ];
     let context = DiscoveryContext::new(
@@ -285,7 +285,7 @@ fn configured_codex_root_keeps_its_route_alias_for_a_present_session_tree() {
         id: "personal".to_owned(),
         provider: CaptureProvider::Codex,
         path: root,
-        scope: Some("personal".to_owned()),
+        group: Some("personal".to_owned()),
     };
     let context = DiscoveryContext::new(
         &home,
@@ -332,7 +332,7 @@ fn naming_the_released_codex_home_preserves_the_compound_session_route() {
         id: "released".to_owned(),
         provider: CaptureProvider::Codex,
         path: root.clone(),
-        scope: Some("released".to_owned()),
+        group: Some("released".to_owned()),
     };
     let context = DiscoveryContext::new(
         &home,

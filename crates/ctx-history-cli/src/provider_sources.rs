@@ -270,12 +270,12 @@ pub fn enrich_sources_json_with_selection(
             Some(root) => json!({
                 "kind": "configured",
                 "root": root.id,
-                "scope": root.scope,
+                "group": root.group,
             }),
             None => json!({
                 "kind": "automatic",
                 "root": null,
-                "scope": null,
+                "group": null,
             }),
         };
     }
@@ -487,7 +487,7 @@ mod tests {
             id: "work".to_owned(),
             provider: CaptureProvider::Claude,
             path: claude_home.clone(),
-            scope: Some("work".to_owned()),
+            group: Some("work".to_owned()),
         }];
 
         for automatic_provider_discovery in [true, false] {

@@ -94,7 +94,7 @@ pub struct SearchRequest {
     pub source_id: Option<String>,
     pub source_format: Option<String>,
     pub source_roots: Vec<String>,
-    pub scopes: Vec<String>,
+    pub source_groups: Vec<String>,
     pub workspace: Option<String>,
     pub since: Option<String>,
     pub primary_only: bool,
@@ -197,7 +197,7 @@ pub fn validate_search_request(request: &SearchRequest) -> Result<()> {
     validate_lexical_query_limits(request)?;
     validate_manual_session_exclusions(request)?;
     validate_provider_root_selectors(&request.source_roots, "source root")?;
-    validate_provider_root_selectors(&request.scopes, "source scope")?;
+    validate_provider_root_selectors(&request.source_groups, "source group")?;
     if request
         .workspace
         .as_deref()
@@ -240,7 +240,7 @@ pub fn normalize_search_request(request: &mut SearchRequest) -> Result<()> {
     validate_lexical_query_limits(request)?;
     normalize_manual_session_exclusions(request)?;
     normalize_provider_root_selectors(&mut request.source_roots, "source root")?;
-    normalize_provider_root_selectors(&mut request.scopes, "source scope")?;
+    normalize_provider_root_selectors(&mut request.source_groups, "source group")?;
     if request.workspace.is_some() {
         request.workspace = normalized_optional_text(request.workspace.as_deref())
             .map(Some)
@@ -420,14 +420,15 @@ pub fn search_filters_with_refs(
         .flatten()
         .map(|active_session| excluded_active_session_tree(index, active_session))
         .transpose()?;
-    let allowed_source_keys = (!request.source_roots.is_empty() || !request.scopes.is_empty())
-        .then(|| {
-            index
-                .manifest()
-                .provider_root_source_tokens(&request.source_roots, &request.scopes)
-                .map_err(anyhow::Error::from)
-        })
-        .transpose()?;
+    let allowed_source_keys = (!request.source_roots.is_empty()
+        || !request.source_groups.is_empty())
+    .then(|| {
+        index
+            .manifest()
+            .provider_root_source_tokens(&request.source_roots, &request.source_groups)
+            .map_err(anyhow::Error::from)
+    })
+    .transpose()?;
     Ok(EventSearchFilters {
         allowed_source_keys,
         session_id,

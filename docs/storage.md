@@ -224,8 +224,8 @@ invocation terms become searchable.
 
 The generation manifest commits the global automatic-discovery policy and, for
 configured Claude/Codex homes, the normalized named-home definitions, their
-configuration digest, optional scope, and exact source-route membership. Search
-resolves `--source-root` and `--scope` only through this pinned manifest and
+configuration digest, optional group, and exact source-route membership. Search
+resolves `--source-root` and `--source-group` only through this pinned manifest and
 translates the result to exact indexed source keys. Live config is never mixed
 with an older generation, and all roots remain in one Core/Tantivy index.
 The ordinary inferred home keeps its released source identities when it is
@@ -425,19 +425,19 @@ one history home:
 [sources.roots.personal]
 provider = "claude"
 path = "/absolute/path/to/claude-personal"
-scope = "personal"
+group = "personal"
 
 [sources.roots.work]
 provider = "codex"
 path = "/absolute/path/to/codex-work"
-scope = "work"
+group = "work"
 ```
 
 The equivalent safe editor is `ctx sources add <name> --provider
-claude|codex --root <existing-home> [--scope <scope>]`; remove an entry with
+claude|codex --root <existing-home> [--source-group <group>]`; remove an entry with
 `ctx sources remove <name>`. Configured entries are additive to the provider's
 ordinary inferred root. If both select the same physical home, the configured
-name and scope annotate that one route instead of creating a duplicate. A
+name and group annotate that one route instead of creating a duplicate. A
 malformed edit is rejected as one config and does not publish a partial source
 change; the previous verified generation remains the query authority. Removing
 a valid entry retires history owned only by that entry at the next full refresh.
@@ -453,14 +453,14 @@ The name is a durable local mount key, not a cosmetic label: removing and later
 reusing it intentionally reuses that logical namespace. Use a new name when
 registering an unrelated home, even if the old definition was removed; matching
 provider-native session ids under a reused name reconcile as the same history.
-Scope changes do not change identity.
-Scopes and names remain local provenance/query metadata, not upload consent,
+Group changes do not change identity.
+Groups and names remain local provenance/query metadata, not upload consent,
 an ACL, a tenant boundary, or a retention rule.
 
 Set `[sources] automatic = false` to stop all future automatic provider-root
 selection while retaining named Claude/Codex homes. This policy change does not
-erase already indexed automatic history. Searches remain unscoped by default;
-`--source-root` and `--scope` are explicit per-query filters.
+erase already indexed automatic history. Searches remain unfiltered by source by default;
+`--source-root` and `--source-group` are explicit per-query filters.
 
 Local usage aggregation is enabled by default and is independent of analytics:
 
@@ -629,7 +629,7 @@ ctx sources remove work
 ```
 
 You can make the same change in `config.toml`. If the home is the last member
-of a scope, that scope simply stops matching it. Default provider locations are
+of a group, that group simply stops matching it. Default provider locations are
 still discovered alongside any remaining named homes, and explicit `--path`,
 custom JSONL, and plugin imports are not remembered as future defaults. The next
 full refresh atomically removes history owned only by a removed named home; a

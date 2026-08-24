@@ -1118,7 +1118,7 @@ fn mcp_sources_matches_cli_configured_selection_and_discovery_policy() {
     fs::write(
         root.join("config.toml"),
         format!(
-            "[sources]\nautomatic = false\n\n[sources.roots.personal]\nprovider = \"claude\"\npath = {provider_home_toml}\nscope = \"work\"\n"
+            "[sources]\nautomatic = false\n\n[sources.roots.personal]\nprovider = \"claude\"\npath = {provider_home_toml}\ngroup = \"work\"\n"
         ),
     )
     .unwrap();
@@ -1169,7 +1169,7 @@ fn mcp_sources_matches_cli_configured_selection_and_discovery_policy() {
         json!({
             "kind": "configured",
             "root": "personal",
-            "scope": "work",
+            "group": "work",
         })
     );
 }

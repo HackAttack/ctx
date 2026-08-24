@@ -432,10 +432,10 @@ impl AppConfig {
                         validate_provider_root_path(&path)?;
                         draft.1 = Some(path);
                     }
-                    "scope" => {
-                        let scope = parse_non_empty_string(key, value)?;
-                        validate_root_selector("source scope", &scope)?;
-                        draft.2 = Some(scope);
+                    "group" => {
+                        let group = parse_non_empty_string(key, value)?;
+                        validate_root_selector("source group", &group)?;
+                        draft.2 = Some(group);
                     }
                     _ => bail!("unknown config key `{key}` at line {}", value.line),
                 }
@@ -492,7 +492,7 @@ impl AppConfig {
         }
         self.provider_roots = provider_roots
             .into_iter()
-            .map(|(id, (provider, path, scope))| {
+            .map(|(id, (provider, path, group))| {
                 let provider = provider
                     .ok_or_else(|| anyhow::anyhow!("sources.roots.{id}.provider is required"))?;
                 let path =
@@ -503,7 +503,7 @@ impl AppConfig {
                         id,
                         provider,
                         path,
-                        scope,
+                        group,
                     },
                 ))
             })

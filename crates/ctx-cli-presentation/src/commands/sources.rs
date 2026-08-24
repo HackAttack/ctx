@@ -38,8 +38,12 @@ pub enum SourcesCommand {
         provider: crate::ProviderArg,
         #[arg(long, value_name = "DIRECTORY", help = "Provider home directory")]
         root: PathBuf,
-        #[arg(long, help = "Optional search scope, for example personal or work")]
-        scope: Option<String>,
+        #[arg(
+            long = "source-group",
+            value_name = "GROUP",
+            help = "Optional search group, for example personal or work"
+        )]
+        source_group: Option<String>,
     },
     #[command(about = "Remove a named provider home")]
     Remove {
@@ -92,4 +96,54 @@ pub fn run_sources(
     );
     local_usage.set_measured_output_bytes(observation.output_bytes);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[derive(Debug, Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        sources: SourcesArgs,
+    }
+
+    #[test]
+    fn sources_add_accepts_source_group_and_rejects_the_unreleased_scope_spelling() {
+        let parsed = TestCli::try_parse_from([
+            "ctx",
+            "add",
+            "personal",
+            "--provider",
+            "claude",
+            "--root",
+            "/tmp/claude",
+            "--source-group",
+            "work",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.sources.command,
+            Some(SourcesCommand::Add {
+                source_group: Some(ref group),
+                ..
+            }) if group == "work"
+        ));
+
+        let error = TestCli::try_parse_from([
+            "ctx",
+            "add",
+            "personal",
+            "--provider",
+            "claude",
+            "--root",
+            "/tmp/claude",
+            "--scope",
+            "work",
+        ])
+        .unwrap_err();
+        assert!(error.to_string().contains("--scope"));
+    }
 }

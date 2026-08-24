@@ -137,9 +137,9 @@ fn daemon_watch_test_catalog_for_paths(
     registry.watch_catalog()
 }
 
-fn daemon_watch_test_catalog_with_provider_root_scope(
+fn daemon_watch_test_catalog_with_provider_root_group(
     path: PathBuf,
-    scope: &str,
+    group: &str,
     automatic_provider_discovery: bool,
 ) -> SourceBackedWatchCatalog {
     let mut registry = SourceBackedProviderRegistry::new();
@@ -170,7 +170,7 @@ fn daemon_watch_test_catalog_with_provider_root_scope(
         id: "personal".to_owned(),
         provider: CaptureProvider::Codex,
         path: path.parent().expect("history path parent").to_path_buf(),
-        scope: Some(scope.to_owned()),
+        group: Some(group.to_owned()),
     };
     registry
         .set_applied_provider_roots(
@@ -197,15 +197,15 @@ fn provider_root_config_reload_enqueues_one_full_refresh_even_when_routes_are_un
     fs::create_dir_all(&provider_root)?;
     fs::write(&provider_file, b"{\"event\":1}\n")?;
     let personal =
-        daemon_watch_test_catalog_with_provider_root_scope(provider_file.clone(), "personal", true);
+        daemon_watch_test_catalog_with_provider_root_group(provider_file.clone(), "personal", true);
     let work =
-        daemon_watch_test_catalog_with_provider_root_scope(provider_file.clone(), "work", true);
+        daemon_watch_test_catalog_with_provider_root_group(provider_file.clone(), "work", true);
     let automatic_disabled =
-        daemon_watch_test_catalog_with_provider_root_scope(provider_file, "personal", false);
+        daemon_watch_test_catalog_with_provider_root_group(provider_file, "personal", false);
     assert_eq!(
         personal.route_ids().collect::<Vec<_>>(),
         work.route_ids().collect::<Vec<_>>(),
-        "scope-only changes deliberately keep the physical route topology"
+        "group-only changes deliberately keep the physical route topology"
     );
     assert_ne!(
         personal.provider_root_config_digest(),
@@ -258,7 +258,7 @@ fn provider_root_config_reload_enqueues_one_full_refresh_even_when_routes_are_un
 
     assert!(
         coordinator.has_pending_request(),
-        "exact watch reconciliation cannot publish changed root aliases or scopes"
+        "exact watch reconciliation cannot publish changed root aliases or source_groups"
     );
     assert!(
         watch_runtime.provider_root_refresh_pending_for_test(),
@@ -516,13 +516,13 @@ fn write_observation_fixture_generation(
     source: &SourceKey,
     provider_file: &Path,
     route_staged: bool,
-    provider_root_scope: Option<&str>,
+    provider_root_group: Option<&str>,
 ) -> Result<String> {
     let bytes = fs::read(provider_file)?;
     let mut writer = GenerationWriter::open(index_root, WriterOptions::default())?
         .into_writer()
         .map_err(crate::committed_generation_recovery_error)?;
-    if let Some(scope) = provider_root_scope {
+    if let Some(group) = provider_root_group {
         let definition = ProviderRootDefinition {
             id: "personal".to_owned(),
             provider: CaptureProvider::Codex,
@@ -530,7 +530,7 @@ fn write_observation_fixture_generation(
                 .parent()
                 .expect("provider-root fixture file parent")
                 .to_path_buf(),
-            scope: Some(scope.to_owned()),
+            group: Some(group.to_owned()),
         };
         writer.set_applied_provider_roots(
             true,

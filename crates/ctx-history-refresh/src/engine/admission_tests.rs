@@ -78,7 +78,7 @@ fn queued_complete_catalog_is_readmitted_when_provider_roots_change() {
         id: id.to_owned(),
         provider: CaptureProvider::Codex,
         path: temp.path().join(format!("codex-{id}")),
-        scope: Some(id.to_owned()),
+        group: Some(id.to_owned()),
     };
     let roots = Arc::new(Mutex::new(vec![definition("personal")]));
     let runtime = Arc::new(MutableProviderRootRuntime {

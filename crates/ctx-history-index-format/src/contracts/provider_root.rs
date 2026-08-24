@@ -9,8 +9,8 @@ use super::{IndexError, Result};
 
 /// Generation-authoritative expansion of one configured provider home.
 ///
-/// Search resolves the human-facing id and scope to exact physical route
-/// identities from the same pinned generation. Scope and path remain aliases;
+/// Search resolves the human-facing id and group to exact physical route
+/// identities from the same pinned generation. Group and path remain aliases;
 /// the stable root id namespaces independently named homes so filesystem moves
 /// do not rotate source, session, or event identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,12 +86,12 @@ fn validate_provider_root_definition(root: &ProviderRootDefinition) -> Result<()
         )));
     }
     if root
-        .scope
+        .group
         .as_deref()
-        .is_some_and(|scope| !valid_selector(scope))
+        .is_some_and(|group| !valid_selector(group))
     {
         return Err(IndexError::InvalidProviderRoots(format!(
-            "root {} has invalid scope",
+            "root {} has invalid group",
             root.id
         )));
     }

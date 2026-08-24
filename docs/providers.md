@@ -62,7 +62,7 @@ installed clients, persisted profiles, or configured agents. See
 
 Claude and Codex additionally support explicitly configured named homes for
 the common work/personal or multi-profile case. Use `ctx sources add <name>
---provider claude|codex --root <home> [--scope <scope>]`, or edit
+--provider claude|codex --root <home> [--source-group <group>]`, or edit
 `[sources.roots.<name>]` in `config.toml`. Named homes are additive to that
 provider's environment/default winner and do not affect discovery for any
 other provider. A named home that resolves to the inferred physical home
@@ -76,7 +76,7 @@ configuration; this does not delete already indexed history.
 The configured name is the durable local identity of an additional home, not
 only a label. Keep the name and update its path when the same home moves; choose
 a new name for an unrelated home. Reusing a removed name intentionally reuses
-its logical namespace, while changing only its scope does not rotate source or
+its logical namespace, while changing only its group does not rotate source or
 citation identities.
 
 One-shot flags, API constructor paths, old launch directories, container host

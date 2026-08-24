@@ -123,13 +123,13 @@ fn configured_codex_roots_add_to_scalar_selection_and_expand_independently() {
             id: "personal".to_owned(),
             provider: CaptureProvider::Codex,
             path: personal.clone(),
-            scope: Some("personal".to_owned()),
+            group: Some("personal".to_owned()),
         },
         ctx_history_capture_model::ProviderRootDefinition {
             id: "work".to_owned(),
             provider: CaptureProvider::Codex,
             path: work.clone(),
-            scope: Some("work".to_owned()),
+            group: Some("work".to_owned()),
         },
     ];
     let report = resolve_provider(
@@ -174,13 +174,13 @@ fn configured_claude_roots_add_to_automatic_discovery() {
             id: "personal".to_owned(),
             provider: CaptureProvider::Claude,
             path: claude_personal.clone(),
-            scope: Some("personal".to_owned()),
+            group: Some("personal".to_owned()),
         },
         ctx_history_capture_model::ProviderRootDefinition {
             id: "work".to_owned(),
             provider: CaptureProvider::Claude,
             path: claude_work.clone(),
-            scope: Some("work".to_owned()),
+            group: Some("work".to_owned()),
         },
     ];
     let context = base.clone().with_configured_provider_roots(configured);
@@ -220,7 +220,7 @@ fn global_automatic_disable_keeps_only_named_provider_roots() {
             id: "personal".to_owned(),
             provider: CaptureProvider::Claude,
             path: named_claude.clone(),
-            scope: Some("personal".to_owned()),
+            group: Some("personal".to_owned()),
         }]);
 
     assert_eq!(
@@ -250,7 +250,7 @@ fn naming_the_automatic_home_deduplicates_the_physical_source() {
             id: "personal".to_owned(),
             provider: CaptureProvider::Claude,
             path: home.clone(),
-            scope: Some("personal".to_owned()),
+            group: Some("personal".to_owned()),
         },
     ]);
 
@@ -279,7 +279,7 @@ fn naming_the_automatic_home_through_a_symlink_deduplicates_the_physical_source(
             id: "personal".to_owned(),
             provider: CaptureProvider::Claude,
             path: alias,
-            scope: Some("personal".to_owned()),
+            group: Some("personal".to_owned()),
         },
     ]);
 
@@ -306,13 +306,13 @@ fn configured_roots_retain_unknown_physical_routes() {
             id: "claude-unavailable".to_owned(),
             provider: CaptureProvider::Claude,
             path: unavailable_claude.clone(),
-            scope: None,
+            group: None,
         },
         ctx_history_capture_model::ProviderRootDefinition {
             id: "codex-unavailable".to_owned(),
             provider: CaptureProvider::Codex,
             path: unavailable_codex.clone(),
-            scope: None,
+            group: None,
         },
     ];
     let context = base

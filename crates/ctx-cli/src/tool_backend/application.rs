@@ -49,7 +49,7 @@ fn adapt_tool_search_request(
         source_id: request.source_id,
         source_format: request.source_format,
         source_roots: request.source_roots,
-        scopes: request.scopes,
+        source_groups: request.source_groups,
         workspace: request.workspace,
         since: request.since,
         primary_only: request.primary_only,
@@ -392,12 +392,12 @@ fn classify_mcp_search_error(
                 ToolBackendError::invalid_request(
                     "source_roots contains an invalid or unavailable selector",
                 )
-            } else if detail.contains("unknown provider root scope in the pinned generation")
-                || detail.contains("unknown provider root scope `")
-                || detail.contains("invalid source scope selector `")
+            } else if detail.contains("unknown provider root group in the pinned generation")
+                || detail.contains("unknown provider root group `")
+                || detail.contains("invalid source group selector `")
             {
                 ToolBackendError::invalid_request(
-                    "scopes contains an invalid or unavailable selector",
+                    "source_groups contains an invalid or unavailable selector",
                 )
             } else {
                 ToolBackendError::internal(detail)
@@ -480,7 +480,7 @@ mod tests {
             source_id: None,
             source_format: None,
             source_roots: Vec::new(),
-            scopes: Vec::new(),
+            source_groups: Vec::new(),
             workspace: None,
             since: None,
             primary_only: false,
@@ -541,7 +541,7 @@ mod tests {
             source_id: None,
             source_format: None,
             source_roots: Vec::new(),
-            scopes: Vec::new(),
+            source_groups: Vec::new(),
             workspace: Some("/workspace/pinned".to_owned()),
             since: Some("30d".to_owned()),
             primary_only: true,
@@ -594,8 +594,8 @@ mod tests {
                 "source_roots contains an invalid or unavailable selector",
             ),
             (
-                format!("unknown provider root scope `{rejected}` in the pinned generation"),
-                "scopes contains an invalid or unavailable selector",
+                format!("unknown provider root group `{rejected}` in the pinned generation"),
+                "source_groups contains an invalid or unavailable selector",
             ),
         ] {
             let error = classify_mcp_search_error(

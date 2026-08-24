@@ -26,7 +26,7 @@ impl From<SearchRequest> for SourceSearchRequest {
             source_id: args.source_id,
             source_format: args.source_format,
             source_roots: args.source_roots,
-            scopes: args.scopes,
+            source_groups: args.source_groups,
             workspace: args.workspace,
             since: args.since,
             primary_only: args.primary_only,

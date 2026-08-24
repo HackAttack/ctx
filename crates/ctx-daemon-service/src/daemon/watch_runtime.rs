@@ -176,7 +176,7 @@ impl DaemonWatchRuntime {
                             _ => false,
                         };
                     if provider_root_config_changed {
-                        // Root aliases and scopes are generation metadata, not
+                        // Root aliases and source_groups are generation metadata, not
                         // live watch-catalog state. Exact route maintenance
                         // deliberately preserves the pinned generation's
                         // aliases, so a config topology change must cross one

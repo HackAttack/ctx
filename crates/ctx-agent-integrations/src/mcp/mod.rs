@@ -109,7 +109,7 @@ const SEARCH_ARGUMENTS: &[&str] = &[
     "source_id",
     "source_format",
     "source_roots",
-    "scopes",
+    "source_groups",
     "workspace",
     "since",
     "primary_only",
@@ -577,7 +577,7 @@ fn search_request<B: ToolBackend>(
     let source_id = optional_string(arguments, "source_id")?;
     let source_format = optional_string(arguments, "source_format")?;
     let source_roots = provider_root_selectors(arguments, "source_roots")?;
-    let scopes = provider_root_selectors(arguments, "scopes")?;
+    let source_groups = provider_root_selectors(arguments, "source_groups")?;
     let session = optional_string(arguments, "session")?;
     let workspace = optional_string(arguments, "workspace")?;
     let since = optional_string(arguments, "since")?;
@@ -618,7 +618,7 @@ fn search_request<B: ToolBackend>(
         source_id: source_identity.source_id,
         source_format: source_identity.source_format,
         source_roots,
-        scopes,
+        source_groups,
         workspace,
         since,
         primary_only,
@@ -662,7 +662,7 @@ fn tool_definitions(provider_names: Vec<&'static str>) -> Vec<Value> {
                 "source_id": { "type": "string", "description": "Custom history source_id." },
                 "source_format": { "type": "string", "description": "Custom history source_format." },
                 "source_roots": { "type": "array", "maxItems": MAX_PROVIDER_ROOT_SELECTORS, "items": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": PROVIDER_ROOT_SELECTOR_PATTERN }, "description": "Case-sensitive configured provider-root names to union." },
-                "scopes": { "type": "array", "maxItems": MAX_PROVIDER_ROOT_SELECTORS, "items": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": PROVIDER_ROOT_SELECTOR_PATTERN }, "description": "Case-sensitive configured provider-root scopes to union." },
+                "source_groups": { "type": "array", "maxItems": MAX_PROVIDER_ROOT_SELECTORS, "items": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": PROVIDER_ROOT_SELECTOR_PATTERN }, "description": "Case-sensitive configured provider-root groups to union." },
                 "workspace": { "type": "string", "description": "Workspace path or name text." },
                 "since": { "type": "string", "description": "RFC3339 timestamp or day window such as 30d." },
                 "primary_only": { "type": "boolean", "default": false, "description": "Search only primary agent sessions." },
@@ -896,18 +896,18 @@ mod request_id_tests {
     }
 
     #[test]
-    fn search_root_and_scope_arrays_are_typed_and_forwarded() {
+    fn search_root_and_group_arrays_are_typed_and_forwarded() {
         let request = search_request(
             &json!({
                 "query": "fixture",
                 "source_roots": ["personal", "archive"],
-                "scopes": ["work"]
+                "source_groups": ["work"]
             }),
             &UnusedBackend,
         )
         .unwrap();
         assert_eq!(request.source_roots, ["personal", "archive"]);
-        assert_eq!(request.scopes, ["work"]);
+        assert_eq!(request.source_groups, ["work"]);
 
         let error = search_request(
             &json!({"query": "fixture", "source_roots": ["personal", 7]}),
@@ -928,10 +928,10 @@ mod request_id_tests {
             64
         );
         assert_eq!(
-            search["inputSchema"]["properties"]["scopes"]["items"]["maxLength"],
+            search["inputSchema"]["properties"]["source_groups"]["items"]["maxLength"],
             64
         );
-        for key in ["source_roots", "scopes"] {
+        for key in ["source_roots", "source_groups"] {
             assert_eq!(
                 search["inputSchema"]["properties"][key]["items"]["pattern"],
                 PROVIDER_ROOT_SELECTOR_PATTERN
@@ -940,9 +940,9 @@ mod request_id_tests {
     }
 
     #[test]
-    fn search_root_and_scope_schema_matches_the_runtime_token_grammar() {
+    fn search_root_and_group_schema_matches_the_runtime_token_grammar() {
         for value in ["a", "A0_-", &"x".repeat(64)] {
-            for key in ["source_roots", "scopes"] {
+            for key in ["source_roots", "source_groups"] {
                 let mut arguments = json!({"query": "fixture"});
                 arguments[key] = json!([value]);
                 assert!(
@@ -953,7 +953,7 @@ mod request_id_tests {
         }
 
         for value in ["", "bad.root", " spaced ", "café", &"x".repeat(65)] {
-            for key in ["source_roots", "scopes"] {
+            for key in ["source_roots", "source_groups"] {
                 let mut arguments = json!({"query": "fixture"});
                 arguments[key] = json!([value]);
                 let error = search_request(&arguments, &UnusedBackend).unwrap_err();
@@ -972,7 +972,7 @@ mod request_id_tests {
         }
 
         let too_many = vec!["root"; 65];
-        for key in ["source_roots", "scopes"] {
+        for key in ["source_roots", "source_groups"] {
             let mut arguments = json!({"query": "fixture"});
             arguments[key] = json!(&too_many);
             let error = search_request(&arguments, &UnusedBackend).unwrap_err();

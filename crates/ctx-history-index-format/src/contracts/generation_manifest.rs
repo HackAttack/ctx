@@ -238,24 +238,24 @@ impl GenerationManifest {
             .and_then(|index| self.provider_roots.get(index))
     }
 
-    /// Resolves user-facing root/scope aliases only through this immutable
-    /// generation. Root and scope selectors form one union; all other search
+    /// Resolves user-facing root/group aliases only through this immutable
+    /// generation. Root and group selectors form one union; all other search
     /// filters remain independent intersections.
     pub fn provider_root_source_tokens(
         &self,
         root_ids: &[String],
-        scopes: &[String],
+        source_groups: &[String],
     ) -> Result<Vec<String>> {
         if let Some(unknown) = root_ids.iter().find(|id| self.provider_root(id).is_none()) {
             return Err(IndexError::UnknownProviderRootSelector(unknown.clone()));
         }
-        if let Some(unknown) = scopes.iter().find(|scope| {
+        if let Some(unknown) = source_groups.iter().find(|group| {
             !self
                 .provider_roots
                 .iter()
-                .any(|root| root.definition.scope.as_ref() == Some(*scope))
+                .any(|root| root.definition.group.as_ref() == Some(*group))
         }) {
-            return Err(IndexError::UnknownProviderRootScope(unknown.clone()));
+            return Err(IndexError::UnknownProviderRootGroup(unknown.clone()));
         }
         let mut tokens = self
             .provider_roots
@@ -264,9 +264,9 @@ impl GenerationManifest {
                 root_ids.iter().any(|id| id == &root.definition.id)
                     || root
                         .definition
-                        .scope
+                        .group
                         .as_ref()
-                        .is_some_and(|scope| scopes.contains(scope))
+                        .is_some_and(|group| source_groups.contains(group))
             })
             .flat_map(|root| root.routes.iter())
             .filter_map(|route| self.source_route(route))

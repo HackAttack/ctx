@@ -86,12 +86,12 @@ pub fn add_provider_root(
     id: &str,
     provider: CaptureProvider,
     root: &Path,
-    scope: Option<&str>,
+    group: Option<&str>,
 ) -> Result<ProviderRootMutation> {
     validate_root_selector("provider root name", id)?;
     validate_provider_root_support(provider)?;
-    if let Some(scope) = scope {
-        validate_root_selector("source scope", scope)?;
+    if let Some(group) = group {
+        validate_root_selector("source group", group)?;
     }
     validate_provider_root_path(root)?;
     let metadata = fs::symlink_metadata(root)
@@ -115,7 +115,7 @@ pub fn add_provider_root(
         id: id.to_owned(),
         provider,
         path: root,
-        scope: scope.map(str::to_owned),
+        group: group.map(str::to_owned),
     };
 
     establish_private_data_root(data_root)?;
@@ -142,8 +142,8 @@ pub fn add_provider_root(
     let mut item = toml_edit::Table::new();
     item.insert("provider", toml_edit::value(provider.as_str()));
     item.insert("path", toml_edit::value(desired.path.display().to_string()));
-    if let Some(scope) = desired.scope.as_deref() {
-        item.insert("scope", toml_edit::value(scope));
+    if let Some(group) = desired.group.as_deref() {
+        item.insert("group", toml_edit::value(group));
     }
     roots.insert(id, toml_edit::Item::Table(item));
     persist_validated_document(&path, document)?;

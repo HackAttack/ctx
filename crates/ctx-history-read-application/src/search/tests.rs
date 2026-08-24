@@ -146,7 +146,7 @@ fn request() -> SearchRequest {
         source_id: None,
         source_format: None,
         source_roots: Vec::new(),
-        scopes: Vec::new(),
+        source_groups: Vec::new(),
         workspace: None,
         since: None,
         primary_only: false,
@@ -199,17 +199,17 @@ fn manual_session_exclusions_trim_selectors_and_reject_blanks() {
 }
 
 #[test]
-fn provider_root_and_scope_selectors_are_normalized_and_bounded() {
+fn provider_root_and_group_selectors_are_normalized_and_bounded() {
     let mut request = request();
     request.source_roots = vec![
         " work ".to_owned(),
         "personal".to_owned(),
         "work".to_owned(),
     ];
-    request.scopes = vec![" personal ".to_owned(), "work".to_owned()];
+    request.source_groups = vec![" personal ".to_owned(), "work".to_owned()];
     normalize_search_request(&mut request).unwrap();
     assert_eq!(request.source_roots, vec!["personal", "work"]);
-    assert_eq!(request.scopes, vec!["personal", "work"]);
+    assert_eq!(request.source_groups, vec!["personal", "work"]);
 
     request.source_roots = vec!["bad.root".to_owned()];
     let error = normalize_search_request(&mut request)

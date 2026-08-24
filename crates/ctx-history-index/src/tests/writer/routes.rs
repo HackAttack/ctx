@@ -58,7 +58,7 @@ fn provider_root_metadata_change_with_source_replacement_reopens_exactly() {
         id: "personal".to_owned(),
         provider: CaptureProvider::Claude,
         path: PathBuf::from(path),
-        scope: Some("personal".to_owned()),
+        group: Some("personal".to_owned()),
     };
     let initial_definition = definition("/home/example/.claude-personal");
 
@@ -130,7 +130,7 @@ fn valid_provider_root_removal_retires_its_last_route_without_a_replacement() {
         id: "personal".to_owned(),
         provider: CaptureProvider::Claude,
         path: PathBuf::from("/home/example/.claude-personal"),
-        scope: Some("personal".to_owned()),
+        group: Some("personal".to_owned()),
     };
 
     let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())

@@ -193,7 +193,7 @@ mod tests {
                 id: "work".to_owned(),
                 provider,
                 path: home.to_path_buf(),
-                scope: Some("work".to_owned()),
+                group: Some("work".to_owned()),
             },
         ]);
         ctx_history_capture::build_automatic_source_backed_registry_from_report(

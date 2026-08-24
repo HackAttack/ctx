@@ -177,7 +177,7 @@ fn request(_refresh: RefreshArg) -> SourceSearchRequest {
         source_id: None,
         source_format: None,
         source_roots: Vec::new(),
-        scopes: Vec::new(),
+        source_groups: Vec::new(),
         workspace: None,
         since: None,
         primary_only: false,

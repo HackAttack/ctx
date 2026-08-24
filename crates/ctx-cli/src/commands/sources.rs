@@ -37,13 +37,13 @@ pub(crate) fn run_sources(
             name,
             provider,
             root,
-            scope,
+            source_group,
         } => crate::config::add_provider_root(
             &data_root,
             &name,
             provider.capture_provider(),
             &root,
-            scope.as_deref(),
+            source_group.as_deref(),
         )?,
         SourcesCommand::Remove { name } => crate::config::remove_provider_root(&data_root, &name)?,
     };
@@ -55,7 +55,7 @@ pub(crate) fn run_sources(
             "name": mutation.root.id.clone(),
             "provider": mutation.root.provider.as_str(),
             "path": mutation.root.path.clone(),
-            "scope": mutation.root.scope.clone(),
+            "group": mutation.root.group.clone(),
         }
     });
     if args.format.is_json() {

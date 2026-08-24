@@ -201,7 +201,7 @@ fn lexical_request() -> SearchRequest {
         source_id: None,
         source_format: None,
         source_roots: Vec::new(),
-        scopes: Vec::new(),
+        source_groups: Vec::new(),
         workspace: None,
         since: None,
         primary_only: false,
@@ -438,10 +438,10 @@ fn manual_session_exclusions_request_retained_peer_and_render_original_selectors
 }
 
 #[test]
-fn search_rejects_root_and_scope_selectors_absent_from_the_pinned_generation() {
+fn search_rejects_root_and_group_selectors_absent_from_the_pinned_generation() {
     let temp = tempdir().unwrap();
     let (_index, _) = publish(temp.path());
-    for (roots, scopes, expected, secret) in [
+    for (roots, source_groups, expected, secret) in [
         (
             vec!["personal".to_owned()],
             Vec::new(),
@@ -451,13 +451,13 @@ fn search_rejects_root_and_scope_selectors_absent_from_the_pinned_generation() {
         (
             Vec::new(),
             vec!["work".to_owned()],
-            "unknown provider root scope",
+            "unknown provider root group",
             "work",
         ),
     ] {
         let mut request = lexical_request();
         request.source_roots = roots;
-        request.scopes = scopes;
+        request.source_groups = source_groups;
         let plan = plan_search(
             request,
             SearchPolicy::lexical_only(SemanticReason::PolicyDisabled),

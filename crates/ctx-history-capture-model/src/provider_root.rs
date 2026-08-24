@@ -45,7 +45,7 @@ impl ProviderRootSourceIdentity {
 
 /// Canonical desired/applied identity for one user-named provider home.
 ///
-/// A provider adapter expands the home into physical routes. Human scope
+/// A provider adapter expands the home into physical routes. Human group
 /// membership stays here rather than being copied into every Core record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,7 +54,7 @@ pub struct ProviderRootDefinition {
     pub provider: CaptureProvider,
     pub path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
+    pub group: Option<String>,
 }
 
 pub fn provider_source_config_digest(
@@ -83,11 +83,11 @@ pub fn provider_source_config_digest(
                 let path = root.path.as_os_str().as_encoded_bytes();
                 digest.update((path.len() as u64).to_be_bytes());
                 digest.update(path);
-                match root.scope {
-                    Some(scope) => {
+                match root.group {
+                    Some(group) => {
                         digest.update([1]);
-                        digest.update((scope.len() as u64).to_be_bytes());
-                        digest.update(scope.as_bytes());
+                        digest.update((group.len() as u64).to_be_bytes());
+                        digest.update(group.as_bytes());
                     }
                     None => digest.update([0]),
                 }
@@ -109,7 +109,7 @@ mod tests {
             id: "fixture".to_owned(),
             provider: CaptureProvider::Claude,
             path: PathBuf::from(OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', byte])),
-            scope: None,
+            group: None,
         };
 
         assert_ne!(
@@ -128,7 +128,7 @@ mod tests {
             id: "personal".to_owned(),
             provider: CaptureProvider::Claude,
             path: PathBuf::from("/old/claude"),
-            scope: None,
+            group: None,
         };
         let original = ProviderRootSourceIdentity::NamedV1.lineage(&root);
         root.path = PathBuf::from("/new/claude");

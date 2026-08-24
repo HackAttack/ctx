@@ -202,8 +202,8 @@ pub enum IndexError {
     SourceRouteOwnedByMultipleProviderRoots { route_id: String },
     #[error("unknown provider root selector in the pinned generation")]
     UnknownProviderRootSelector(String),
-    #[error("unknown provider root scope in the pinned generation")]
-    UnknownProviderRootScope(String),
+    #[error("unknown provider root group in the pinned generation")]
+    UnknownProviderRootGroup(String),
     #[error(
         "generation manifest totals do not match its source certificates: \
          documents {documents}/{expected_documents}, bytes {bytes}/{expected_bytes}"

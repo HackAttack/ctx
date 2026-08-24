@@ -31,7 +31,7 @@ pub struct ToolSearchRequest {
     pub source_id: Option<String>,
     pub source_format: Option<String>,
     pub source_roots: Vec<String>,
-    pub scopes: Vec<String>,
+    pub source_groups: Vec<String>,
     pub workspace: Option<String>,
     pub since: Option<String>,
     pub primary_only: bool,

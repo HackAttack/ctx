@@ -34,7 +34,7 @@ fn provider_root_aliases_are_bounded_and_generation_local() {
         id: "personal".to_owned(),
         provider: CaptureProvider::Claude,
         path: temp.path().join("claude-personal"),
-        scope: Some("personal".to_owned()),
+        group: Some("personal".to_owned()),
     };
     let manifest = GenerationManifest::from_parts_with_record_aggregates_and_provider_roots(
         Vec::new(),
@@ -59,7 +59,7 @@ fn provider_root_aliases_are_bounded_and_generation_local() {
     ));
     assert!(matches!(
         manifest.provider_root_source_tokens(&[], &["work".to_owned()]),
-        Err(IndexError::UnknownProviderRootScope(scope)) if scope == "work"
+        Err(IndexError::UnknownProviderRootGroup(group)) if group == "work"
     ));
 }
 
@@ -71,7 +71,7 @@ fn provider_root_manifest_prunes_unretained_routes_and_rejects_shared_routes() {
         id: id.to_owned(),
         provider: CaptureProvider::Codex,
         path: temp.path().join(format!("codex-{id}")),
-        scope: None,
+        group: None,
     };
     let first = definition("first");
     let pruned = GenerationManifest::from_parts_with_record_aggregates_and_provider_roots(

@@ -609,7 +609,7 @@ fn configured_claude_home_is_additive_and_naming_the_automatic_home_deduplicates
                 id: "work".to_owned(),
                 provider: CaptureProvider::Claude,
                 path: configured_home,
-                scope: Some("work".to_owned()),
+                group: Some("work".to_owned()),
             };
             let configured_discovery = automatic_discovery
                 .clone()
@@ -707,7 +707,7 @@ fn watch_catalog_retains_released_identity_after_named_default_home_moves() {
         id: "work".to_owned(),
         provider: CaptureProvider::Claude,
         path,
-        scope: Some("work".to_owned()),
+        group: Some("work".to_owned()),
     };
     let initial_discovery = discovery
         .with_env("CLAUDE_CONFIG_DIR", &released_home)
@@ -793,7 +793,7 @@ fn moved_released_root_wins_if_the_old_automatic_location_reappears() {
             id: "work".to_owned(),
             provider: CaptureProvider::Claude,
             path,
-            scope: Some("work".to_owned()),
+            group: Some("work".to_owned()),
         };
         let initial_discovery = discovery
             .with_env("CLAUDE_CONFIG_DIR", &released_home)
@@ -945,7 +945,7 @@ fn naming_a_failing_automatic_home_carries_it_while_named_peer_advances() {
         id: id.to_owned(),
         provider: CaptureProvider::Claude,
         path,
-        scope: Some(id.to_owned()),
+        group: Some(id.to_owned()),
     };
     let peer_definition = definition("peer", peer_home.clone());
     let initial_discovery = discovery
@@ -1078,7 +1078,7 @@ fn removing_last_configured_claude_home_returns_to_one_automatic_route() {
             id: "personal".to_owned(),
             provider: CaptureProvider::Claude,
             path: home,
-            scope: Some("personal".to_owned()),
+            group: Some("personal".to_owned()),
         }]);
     let mut progress = |_: CaptureSourceBackedDetailedRefreshProgress| Ok(());
     refresh_all_provider_sources(
@@ -1158,7 +1158,7 @@ fn moving_a_named_claude_home_preserves_route_and_source_identity() {
         id: "work".to_owned(),
         provider: CaptureProvider::Claude,
         path,
-        scope: Some("work".to_owned()),
+        group: Some("work".to_owned()),
     };
     let first_discovery = discovery
         .clone()
@@ -1277,7 +1277,7 @@ fn moving_a_named_codex_home_preserves_route_and_source_identity() {
         id: "work".to_owned(),
         provider: CaptureProvider::Codex,
         path,
-        scope: Some("work".to_owned()),
+        group: Some("work".to_owned()),
     };
     let first_discovery = discovery
         .clone()

@@ -235,8 +235,8 @@ fn render_sources_human(
         for source in sources {
             let selection = configured_root_for_source(provider_roots, source).map_or_else(
                 || "automatic".to_owned(),
-                |root| match root.scope.as_deref() {
-                    Some(scope) => format!("{} ({scope})", root.id),
+                |root| match root.group.as_deref() {
+                    Some(group) => format!("{} ({group})", root.id),
                     None => root.id.clone(),
                 },
             );
@@ -530,7 +530,7 @@ mod ui_tests {
             id: "personal-claude".to_owned(),
             provider: CaptureProvider::Claude,
             path: PathBuf::from("/tmp/claude"),
-            scope: Some("personal".to_owned()),
+            group: Some("personal".to_owned()),
         };
         assert_eq!(
             configured_root_for_source(std::slice::from_ref(&root), &configured_source)
@@ -581,7 +581,7 @@ mod ui_tests {
             id: "personal-claude".to_owned(),
             provider: CaptureProvider::Claude,
             path: alias,
-            scope: Some("personal".to_owned()),
+            group: Some("personal".to_owned()),
         };
 
         assert_eq!(
