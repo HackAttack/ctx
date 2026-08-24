@@ -849,6 +849,12 @@ fn mcp_search_applies_source_backed_identity_filters() {
         assert_eq!(search["retrieval"]["index"], "core", "{search:#}");
         assert_eq!(search["filters"]["provider"], "custom", "{search:#}");
         assert_eq!(search["results"].as_array().map(Vec::len), Some(1));
+        assert_eq!(search["results"][0]["provider_key"], "demo-agent");
+        assert_eq!(search["results"][0]["source_id"], "demo-source");
+        assert_useful_mcp_text(
+            &response["result"],
+            &["provider_key: demo-agent", "source_id: demo-source"],
+        );
     }
     assert_eq!(
         responses[1]["result"]["structuredContent"]["filters"]["history_source"],

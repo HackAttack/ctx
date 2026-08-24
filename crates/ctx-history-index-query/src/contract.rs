@@ -629,6 +629,27 @@ pub struct EventRecord {
     pub role: Option<String>,
 }
 
+impl EventRecord {
+    /// Returns the exporter-declared route for a custom JSONL event.
+    ///
+    /// Custom source identity is retained in the native event key so query
+    /// surfaces can display the same route used by exact source filters.
+    pub fn custom_source_identity(&self) -> Option<(&str, &str)> {
+        if self.provider != "custom" {
+            return None;
+        }
+        let Some(TypedKey::Composite(values)) = self.native_event_id.as_ref() else {
+            return None;
+        };
+        let [TypedKey::Utf8(provider_key), TypedKey::Utf8(source_id), TypedKey::Utf8(_)] =
+            values.as_slice()
+        else {
+            return None;
+        };
+        Some((provider_key, source_id))
+    }
+}
+
 /// One direct provider-native event-copy claim targeting the selected event.
 ///
 /// All identities are full stable IDs from the same stored Core record. The
@@ -741,6 +762,8 @@ pub struct SessionRecord {
     pub root_session_id: Option<StableEntityId>,
     pub session_relationship: Option<ProviderNativeSessionRelationship>,
     pub provider: String,
+    pub provider_key: Option<String>,
+    pub source_id: Option<String>,
     pub source_format: String,
     pub provider_session_id: Option<String>,
     pub agent_scope: Option<CoreAgentScope>,

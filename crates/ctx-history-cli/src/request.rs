@@ -106,7 +106,7 @@ pub enum ListEventsContentProjection {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportFormat {
-    CtxHistoryJsonlV1,
+    CtxHistoryJsonlV2,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -144,6 +144,8 @@ pub enum ShowRequest {
         id: Option<String>,
         provider: Option<HistoryProvider>,
         provider_session: Option<String>,
+        provider_key: Option<String>,
+        source_id: Option<String>,
         mode: TranscriptMode,
         max_events: Option<usize>,
         format: OutputFormat,
@@ -164,6 +166,8 @@ pub enum LocateRequest {
         id: Option<String>,
         provider: Option<HistoryProvider>,
         provider_session: Option<String>,
+        provider_key: Option<String>,
+        source_id: Option<String>,
         format: OutputFormat,
     },
     Event {
@@ -257,6 +261,8 @@ mod tests {
             id: Some("session".to_owned()),
             provider: Some(HistoryProvider::Native(CaptureProvider::Codex)),
             provider_session: None,
+            provider_key: None,
+            source_id: None,
             mode: TranscriptMode::Lite,
             max_events: None,
             format: OutputFormat::Markdown,

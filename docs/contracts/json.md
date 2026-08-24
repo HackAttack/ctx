@@ -540,6 +540,7 @@ Session JSON is one `session_transcript` object containing:
 - `target: "session"`;
 - `payload_type: "session_transcript"`;
 - `ctx_session_id`, `provider`, and `provider_session_id` when known;
+- `provider_key` and `source_id` for custom history-source sessions;
 - `mode` and `format`;
 - `session` for session output;
 - `events[]`.
@@ -590,10 +591,12 @@ normalized repository evidence already in Core. Event type is an open string;
 unknown normalized values are preserved. See
 [`event-queries.md`](../event-queries.md) for selection details and jq examples.
 
-`session` includes the ctx-owned `item_id`, `record_type`, `provider`, and
-`provider_session_id` when known. For Codex, `provider_session_id` is the resume
-UUID. `event` and `events[]` rows include `ctx_event_id`, `record_type`,
-`ctx_session_id`, `provider`, `provider_session_id`, `source_format`,
+`session` includes the ctx-owned `item_id`, `record_type`, `provider`,
+`provider_session_id` when known, and `provider_key` plus `source_id` for a
+custom history source. For Codex, `provider_session_id` is the resume UUID.
+`event` and `events[]` rows include `ctx_event_id`, `record_type`,
+`ctx_session_id`, `provider`, custom-source `provider_key` and `source_id`,
+`provider_session_id`, `source_format`,
 `sequence`, `event_type`, `role`, `occurred_at`, and exact normalized `text`
 or `structured_content` when policy permits. Each rendered event also includes
 `content.complete`, `content.policy_status`, and an optional
@@ -653,6 +656,7 @@ states are distinct from a genuinely missing Core generation.
 ```bash
 ctx locate session <ctx-session-id> --format json
 ctx locate session --provider codex --provider-session <provider-session-id> --format json
+ctx locate session --provider-session <provider-session-id> --provider-key <provider-key> --source-id <source-id> --format json
 ctx locate event <ctx-event-id> --format json
 ```
 
@@ -664,6 +668,7 @@ Session JSON is one `session_location` object containing:
 - `schema_version: 1`, `target: "session"`, and
   `payload_type: "session_location"`;
 - `ctx_session_id`, `provider`, and `provider_session_id` when known;
+- `provider_key` and `source_id` for custom history-source sessions;
 - nullable `parent_ctx_session_id`, `root_ctx_session_id`, and `started_at`;
 - `source` with `ctx_source_id`, `source_format`, `schema_variant`, and
   `provider_identity_version`.
@@ -674,6 +679,7 @@ Event JSON is one `event_location` object containing:
   `payload_type: "event_location"`;
 - `ctx_event_id`, `ctx_session_id`, `provider`, `provider_session_id`, and
   `provider_event_id` when known;
+- `provider_key` and `source_id` for custom history-source events;
 - `sequence`, `event_type`, `role`, and `occurred_at`;
 - the same bounded `source` identity object as session locate.
 
@@ -770,6 +776,7 @@ Each result can include:
   alias of the diagnostic `retrieval_score` rather than an ordering contract;
 - `more_matches_in_session` for default session results;
 - `provider`;
+- `provider_key` and `source_id` for custom history-source results;
 - `timestamp`;
 - `cwd`;
 - `why_matched`;

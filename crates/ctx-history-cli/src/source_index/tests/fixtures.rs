@@ -334,6 +334,8 @@ fn show_session_args(id: Option<&str>, provider_session: Option<&str>) -> ShowSe
         id: id.map(str::to_owned),
         provider: None,
         provider_session: provider_session.map(str::to_owned),
+        provider_key: None,
+        source_id: None,
         mode: TranscriptMode::Lite,
         max_events: None,
         format: OutputFormat::Json,

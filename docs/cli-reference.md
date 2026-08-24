@@ -377,7 +377,7 @@ ctx import --provider lingma
 ctx import --provider codebuddy
 ctx import --provider codex --path ~/.codex/sessions
 ctx import --provider pi --path ~/.pi/agent/sessions
-ctx import --input-format ctx-history-jsonl-v1 --path ./history.jsonl
+ctx import --input-format ctx-history-jsonl-v2 --path ./history.jsonl
 ctx import --history-source example-agent/default
 ctx import --history-source-manifest ./ctx-history-plugin.json
 ctx import --resume
@@ -406,7 +406,7 @@ advances independently and does not extend the foreground import boundary. It
 does not write `config.toml` for implicit defaults.
 
 History-source plugin import is explicit and single-source in 1.0. A selected
-manifest declares a durable provider-owned `ctx-history-jsonl-v1` path; the
+manifest declares a durable provider-owned `ctx-history-jsonl-v2` path; the
 importer validates its schema and source identity, registers that same path as
 the custom acquisition route, and waits for daemon-owned Core publication.
 Command-only manifests are reported as unsupported and are never copied into
@@ -451,6 +451,7 @@ ctx show session <ctx-session-id> --mode log --format jsonl
 ctx show session <ctx-session-id> --max-events 4096 --format json
 ctx show session <ctx-session-id> --format markdown --out transcript.md
 ctx show session <ctx-session-id> --mode full --format markdown --out transcript.md
+ctx show session --provider-session <provider-session-id> --provider-key <provider-key> --source-id <source-id>
 ctx show event <ctx-event-id> --window 3 --format text
 ctx show event <ctx-event-id> --before 5 --after 10 --format json
 ```
@@ -510,7 +511,9 @@ import policy, such as binary data or provider-private blobs.
 Provider-owned IDs are metadata, not positional IDs. Positional session and
 event arguments are ctx-owned IDs. To look up a provider-owned session, use an
 explicit provider lookup such as `--provider codex --provider-session
-<provider-session-id>` on commands that support provider lookup.
+<provider-session-id>` on commands that support provider lookup. Custom
+provider-session IDs can repeat across exporters, so add the exporter route
+`--provider-key <provider-key> --source-id <source-id>` to disambiguate them.
 
 JSON output may expose transcript content, MCP arguments/responses, and local
 workspace metadata, so treat it as private local data.
@@ -520,17 +523,21 @@ workspace metadata, so treat it as private local data.
 ```bash
 ctx locate session <ctx-session-id>
 ctx locate session --provider codex --provider-session <provider-session-id> --format json
+ctx locate session --provider-session <provider-session-id> --provider-key <provider-key> --source-id <source-id> --format json
 ctx locate event <ctx-event-id> --format json
 ```
 
 `locate` returns bounded source identity metadata stored in the active verified
 Core/Tantivy generation. Session lookup accepts a ctx-owned ID or the explicit
-provider-session selector; event lookup accepts a ctx-owned event ID. `--format`
-accepts `text` or `json`.
+provider-session selector; custom provider-session lookup also accepts the
+paired `--provider-key`/`--source-id` route selector. Event lookup accepts a
+ctx-owned event ID. `--format` accepts `text` or `json`.
 
 The result identifies the Core source with `ctx_source_id`, `source_format`,
 `schema_variant`, and `provider_identity_version`. It does not expose a provider
 path, reopen provider history, or recreate provider-native locator state.
+Custom history-source results also report their exporter-declared
+`provider_key` and `source_id` beside the canonical `custom` provider.
 Human event output also identifies the owning ctx session, exact event time,
 and stored event sequence. Human session output labels its timestamp `First
 event`: this is the first stored event in the indexed session, not a claimed
