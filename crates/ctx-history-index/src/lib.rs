@@ -109,12 +109,11 @@ pub use preparation::{
 pub(crate) use publication::publish_active_generation_pointer;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use publication::republish_current_for_qualification;
-#[cfg(not(windows))]
-pub(crate) use publication::verify_candidate_physical_fence;
 #[cfg(test)]
 pub(crate) use publication::verify_searcher;
 pub(crate) use publication::{
-    best_effort_post_republish_cleanup, canonical_commit_payload, create_candidate_generation,
+    best_effort_post_republish_cleanup, canonical_commit_payload,
+    certify_candidate_physical_integrity, create_candidate_generation,
     load_active_generation_pointer, meta_generation, open_slot_index, payload_generation_id,
     prepare_successor_manifest, prime_candidate_physical_proof,
     publish_active_generation_pointer_validated, reclaim_inactive_generation_directories,
@@ -365,6 +364,7 @@ pub struct GenerationWriter {
     root: PathBuf,
     index: Index,
     active_pointer: Option<ActiveGenerationPointer>,
+    active_pointer_fence: ctx_history_index_generation::ActiveGenerationPointerFence,
     candidate_directory_name: Option<String>,
     candidate_physical_proof: Option<CandidatePhysicalProof>,
     candidate_activation_fence: Option<CandidateActivationFence>,

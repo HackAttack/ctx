@@ -1,4 +1,4 @@
-use std::{cell::Cell, panic::AssertUnwindSafe, sync::Arc};
+use std::{cell::Cell, panic::AssertUnwindSafe};
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 use tantivy::{
@@ -115,7 +115,7 @@ fn raw_term_count(root: &Path, term_text: &str) -> usize {
 }
 
 #[test]
-fn metadata_factory_runs_inside_the_terminal_authority_fence_without_reopen() {
+fn metadata_factory_runs_inside_the_terminal_authority_fence_with_exact_reopen() {
     let temp = tempdir().unwrap();
     let source = source("publication-metadata-ordering.jsonl");
     let inventory = complete_inventory(&source, 1, vec![source.clone()]);
@@ -182,15 +182,11 @@ fn metadata_factory_runs_inside_the_terminal_authority_fence_without_reopen() {
         crate::publication::candidate_lineage_verification_activity(),
         (0, 0)
     );
-    assert_eq!(ctx_history_index_query::verified_index_reopen_count(), 0);
+    assert_eq!(ctx_history_index_query::verified_index_reopen_count(), 1);
     assert_eq!(
         ctx_history_index_query::verified_index_publication_construction_count(),
-        1
+        0
     );
-    assert!(Arc::ptr_eq(
-        &published.receipt().shared_manifest(),
-        published.verified_index().test_shared_manifest()
-    ));
     assert_eq!(crate::publication::complete_session_id_traversals(), 0);
 
     let expected_payload = format!(
@@ -240,7 +236,7 @@ fn receipt_only_commit_does_not_construct_a_return_pin() {
         crate::publication::candidate_lineage_verification_activity(),
         (0, 0)
     );
-    assert_eq!(ctx_history_index_query::verified_index_reopen_count(), 0);
+    assert_eq!(ctx_history_index_query::verified_index_reopen_count(), 1);
     assert_eq!(
         ctx_history_index_query::verified_index_publication_construction_count(),
         0

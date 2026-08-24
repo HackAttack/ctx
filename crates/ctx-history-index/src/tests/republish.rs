@@ -477,7 +477,11 @@ fn metadata_only_republish_keeps_stored_core_replay_explicit() {
         crate::publication::candidate_lineage_verification_activity(),
         (0, 0)
     );
-    assert_eq!(ctx_history_index_query::verified_index_reopen_count(), 1);
+    assert_eq!(
+        ctx_history_index_query::verified_index_reopen_count(),
+        2,
+        "republish verifies the inactive candidate and independently returns the activated generation"
+    );
 
     let (searcher, _) = open_unverified_generation(predecessor.root());
     let explicit_scrub =

@@ -73,6 +73,13 @@ impl GenerationWriter {
                 }
             }
         }
+        let active_pointer_fence =
+            ctx_history_index_generation::ActiveGenerationPointerFence::capture(
+                &root,
+                active_authority
+                    .as_ref()
+                    .map(ActivePublicationAuthority::pointer),
+            )?;
         if !pointer_requires_rebuild {
             let active_pointer_ref = active_authority
                 .as_ref()
@@ -204,6 +211,7 @@ impl GenerationWriter {
                 root,
                 index,
                 active_pointer,
+                active_pointer_fence,
                 candidate_directory_name,
                 candidate_physical_proof,
                 candidate_activation_fence,

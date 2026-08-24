@@ -586,7 +586,6 @@ impl GenerationWriter {
         if let Some(hook) = self.before_pointer_publication.take() {
             hook(&candidate_path);
         }
-        report_progress(PublicationStage::Activation)?;
         let activation_fence =
             self.candidate_activation_fence
                 .as_ref()
@@ -595,14 +594,29 @@ impl GenerationWriter {
                 ))?;
         let terminal_index = verified.publication.publication().searcher().index();
         let expected_audit = verified.publication.physical_integrity_audit();
-        match publish_active_generation_pointer_validated(&root, &next_pointer, || {
-            #[cfg(windows)]
-            let terminal_guard = ctx_history_index_generation::acquire_terminal_publication_guard(
+        #[cfg(windows)]
+        let mut terminal_guard = Some(
+            ctx_history_index_generation::acquire_terminal_publication_guard(
                 &root,
                 &candidate_path,
                 terminal_index,
                 self.active_pointer.as_ref(),
-            )?;
+            )?,
+        );
+        certify_candidate_physical_integrity(
+            &root,
+            &self.active_pointer_fence,
+            &verified.slot,
+            terminal_index,
+            expected_audit,
+        )?;
+        let reopened_candidate = VerifiedIndex::open_certified_candidate_before_activation(
+            &root,
+            &self.active_pointer_fence,
+            &verified.slot,
+        )?;
+        report_progress(PublicationStage::Activation)?;
+        match publish_active_generation_pointer_validated(&root, &next_pointer, || {
             activation_fence.validate_binding()?;
             prepared_manifest
                 .verify_persisted(&root)
@@ -612,18 +626,23 @@ impl GenerationWriter {
                 &candidate_path,
                 self.active_pointer.as_ref(),
             )?;
-            #[cfg(not(windows))]
-            verify_candidate_physical_fence(
+            ctx_history_index_generation::verify_candidate_physical_integrity_read_only(
+                &root,
+                &self.active_pointer_fence,
+                &verified.slot,
                 terminal_index,
-                &candidate_path,
-                self.active_pointer.as_ref(),
-                expected_audit,
             )?;
             #[cfg(windows)]
-            terminal_guard.verify_physical_fence(expected_audit)?;
+            terminal_guard
+                .as_ref()
+                .ok_or(ctx_history_index_generation::GenerationError::ConcurrentGenerationChange)?
+                .verify_physical_fence(expected_audit)?;
             activation_fence.validate_binding()?;
             #[cfg(windows)]
             {
+                let terminal_guard = terminal_guard.take().ok_or(
+                    ctx_history_index_generation::GenerationError::ConcurrentGenerationChange,
+                )?;
                 terminal_guard.verify_identities()?;
                 Ok(terminal_guard)
             }
@@ -675,22 +694,12 @@ impl GenerationWriter {
                 retention_lease.as_ref(),
             );
         }
-        let _ = publication::certify_activated_generation(
-            &root,
-            &next_pointer,
-            next_pointer.active(),
-            verified.publication.publication().searcher().index(),
-            verified.publication.physical_integrity_audit(),
-        );
-
         let receipt = CommitReceipt::from_verified_manifest(
             opstamp,
             generation_id.clone(),
             std::sync::Arc::clone(verified.publication.publication().shared_manifest()),
         );
-        let verified_index = return_verified_index.then(|| {
-            VerifiedIndex::from_verified_publication(verified.publication.into_publication())
-        });
+        let verified_index = return_verified_index.then_some(reopened_candidate);
         Ok(CommitGenerationOutcome {
             receipt,
             disposition: PublicationDisposition::Published,
