@@ -542,7 +542,7 @@ fn recover_terminal_attempt(
 fn recover_failure_outcome(
     job: &Value,
     scope: &SourceBackedRefreshScope,
-    legacy_failure_type: Option<&'static str>,
+    legacy_failure_type: Option<RefreshOutcomeCode>,
 ) -> Result<Option<SourceBackedRefreshFailureOutcome>> {
     let Some(value) = job.get("structured_outcome") else {
         return Ok(
@@ -675,14 +675,17 @@ fn required_outcome_text<'a>(
 }
 
 fn legacy_failure_outcome(
-    failure_type: &'static str,
+    failure_type: RefreshOutcomeCode,
     scope: &SourceBackedRefreshScope,
 ) -> SourceBackedRefreshFailureOutcome {
     let (class, retryable, retry_advice) = match failure_type {
-        "source_unavailable" => ("unavailable", true, "retry_affected_routes"),
-        "source_changed" => ("source_changed", true, "retry_affected_routes"),
-        "malformed_source" => ("unreadable", false, "inspect_sources"),
-        "unsupported_schema" => ("incompatible", false, "upgrade_or_reconfigure"),
+        RefreshOutcomeCode::SourceUnavailable => ("unavailable", true, "retry_affected_routes"),
+        RefreshOutcomeCode::SourceChanged => ("source_changed", true, "retry_affected_routes"),
+        RefreshOutcomeCode::MalformedSource => ("unreadable", false, "inspect_sources"),
+        RefreshOutcomeCode::UnsupportedSchema => ("incompatible", false, "upgrade_or_reconfigure"),
+        RefreshOutcomeCode::AllProviderTerminalCoverageUnavailable => {
+            ("coverage", true, "retry_request")
+        }
         _ => ("mixed", true, "retry_affected_routes"),
     };
     let affected_routes = match scope {
@@ -690,7 +693,7 @@ fn legacy_failure_outcome(
         SourceBackedRefreshScope::Exact(routes) => routes.clone(),
     };
     SourceBackedRefreshFailureOutcome::new(
-        failure_type,
+        failure_type.as_str(),
         class,
         retryable,
         affected_routes,
@@ -792,20 +795,15 @@ fn optional_string(job: &Value, field: &str) -> Result<Option<String>> {
     }
 }
 
-fn recover_optional_failure_type(job: &Value) -> Result<Option<&'static str>> {
+fn recover_optional_failure_type(job: &Value) -> Result<Option<RefreshOutcomeCode>> {
     match job.get("failure_type") {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => [
-            "unsupported_schema",
-            "malformed_source",
-            "source_unavailable",
-            "source_changed",
-            "source_failures",
-        ]
-        .into_iter()
-        .find(|accepted| accepted == value)
-        .map(Some)
-        .ok_or_else(|| anyhow!("durable terminal source refresh has invalid failure type")),
+        Some(Value::String(value)) => value
+            .parse::<RefreshOutcomeCode>()
+            .ok()
+            .filter(|code| code.is_failure())
+            .map(Some)
+            .ok_or_else(|| anyhow!("durable terminal source refresh has invalid failure type")),
         Some(_) => bail!("durable terminal source refresh has invalid failure type"),
     }
 }
@@ -834,6 +832,25 @@ fn recover_timings(job: &Value) -> Result<(Option<SourceBackedRefreshTimings>, u
         }),
         required("publication_probe")?,
     ))
+}
+
+#[cfg(test)]
+mod failure_type_recovery_tests {
+    use super::*;
+
+    // The write path yields `RefreshOutcomeCode`, so a persisted value that
+    // recovery cannot parse no longer compiles. Only the untrusted on-disk
+    // text boundary still needs a runtime check.
+    #[test]
+    fn recovery_rejects_failure_types_outside_the_terminal_vocabulary() {
+        for failure_type in ["completed", "completed_with_rejections", "not_a_code"] {
+            let job = json!({ "failure_type": failure_type });
+            assert!(
+                recover_optional_failure_type(&job).is_err(),
+                "{failure_type}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
