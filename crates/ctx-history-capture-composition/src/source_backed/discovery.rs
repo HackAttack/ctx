@@ -355,25 +355,19 @@ fn build_automatic_source_backed_registry_from_parts_with_probes(
             // not make its landed adapter unsupported.
             source.unsupported_reason = None;
         }
-        if configured_root.is_some() {
+        if let Some(configured_root) = configured_root {
             if source.provider == CaptureProvider::Codex
                 && source.source_format == "codex_session_jsonl_tree"
                 && configured_source_identity == Some(ProviderRootSourceIdentity::Released)
             {
                 released_configured_codex_session_tree_sources
-                    .entry(
-                        configured_root
-                            .expect("configured root was checked")
-                            .id
-                            .clone(),
-                    )
+                    .entry(configured_root.id.clone())
                     .or_default()
                     .push(source);
                 continue;
             }
-            let source_root_lineage = configured_root
-                .zip(configured_source_identity)
-                .and_then(|(root, identity)| identity.lineage(root));
+            let source_root_lineage =
+                configured_source_identity.and_then(|identity| identity.lineage(configured_root));
             let registration = match (source.provider, source.source_format) {
                 (CaptureProvider::Claude, "claude_projects_jsonl_tree") => {
                     register_configured_claude_source_backed_route(

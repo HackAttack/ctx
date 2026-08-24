@@ -113,30 +113,19 @@ where
         ctx_terminal::print_json(value)?;
         output_bytes
     } else {
-        let document = render_sources_human(
-            ui.stdout_context(),
+        let render_input = SourcesHumanRenderInput {
             sources,
-            &discovery_report.issues,
-            &plugin_sources,
-            &plugin_failures,
+            issues: &discovery_report.issues,
+            plugin_sources: &plugin_sources,
+            plugin_failures: &plugin_failures,
             hidden_missing_sources,
-            home.as_deref(),
+            home: home.as_deref(),
             automatic_provider_discovery,
-            &provider_roots,
-        );
-        let output_bytes = canonical_human_output_bytes(|context| {
-            render_sources_human(
-                context,
-                sources,
-                &discovery_report.issues,
-                &plugin_sources,
-                &plugin_failures,
-                hidden_missing_sources,
-                home.as_deref(),
-                automatic_provider_discovery,
-                &provider_roots,
-            )
-        });
+            provider_roots: &provider_roots,
+        };
+        let document = render_sources_human(ui.stdout_context(), render_input);
+        let output_bytes =
+            canonical_human_output_bytes(|context| render_sources_human(context, render_input));
         ui.write_stdout(&document)?;
         output_bytes
     };
@@ -150,17 +139,73 @@ where
 #[cfg(test)]
 use ctx_history_ingest_application::{merge_sources, source_identity, source_is_visible};
 
-fn render_sources_human(
-    context: &RenderContext,
-    sources: &[SourceInfo],
-    issues: &[DiscoveryIssue],
-    plugin_sources: &[HistorySourcePluginSource],
-    plugin_failures: &[HistorySourcePluginManifestFailure],
+#[derive(Clone, Copy)]
+struct SourcesHumanRenderInput<'a> {
+    sources: &'a [SourceInfo],
+    issues: &'a [DiscoveryIssue],
+    plugin_sources: &'a [HistorySourcePluginSource],
+    plugin_failures: &'a [HistorySourcePluginManifestFailure],
     hidden_missing_sources: usize,
-    home: Option<&Path>,
+    home: Option<&'a Path>,
     automatic_provider_discovery: bool,
-    provider_roots: &[ctx_history_capture::ProviderRootDefinition],
-) -> Document {
+    provider_roots: &'a [ctx_history_capture::ProviderRootDefinition],
+}
+
+#[cfg(test)]
+impl<'a> SourcesHumanRenderInput<'a> {
+    fn from_sources(sources: &'a [SourceInfo]) -> Self {
+        Self {
+            sources,
+            issues: &[],
+            plugin_sources: &[],
+            plugin_failures: &[],
+            hidden_missing_sources: 0,
+            home: None,
+            automatic_provider_discovery: true,
+            provider_roots: &[],
+        }
+    }
+
+    fn with_issues(mut self, issues: &'a [DiscoveryIssue]) -> Self {
+        self.issues = issues;
+        self
+    }
+
+    fn with_hidden_missing_sources(mut self, hidden_missing_sources: usize) -> Self {
+        self.hidden_missing_sources = hidden_missing_sources;
+        self
+    }
+
+    fn with_home(mut self, home: Option<&'a Path>) -> Self {
+        self.home = home;
+        self
+    }
+
+    fn with_automatic_provider_discovery(mut self, enabled: bool) -> Self {
+        self.automatic_provider_discovery = enabled;
+        self
+    }
+
+    fn with_provider_roots(
+        mut self,
+        provider_roots: &'a [ctx_history_capture::ProviderRootDefinition],
+    ) -> Self {
+        self.provider_roots = provider_roots;
+        self
+    }
+}
+
+fn render_sources_human(context: &RenderContext, input: SourcesHumanRenderInput<'_>) -> Document {
+    let SourcesHumanRenderInput {
+        sources,
+        issues,
+        plugin_sources,
+        plugin_failures,
+        hidden_missing_sources,
+        home,
+        automatic_provider_discovery,
+        provider_roots,
+    } = input;
     if sources.is_empty()
         && issues.is_empty()
         && plugin_sources.is_empty()
@@ -541,14 +586,9 @@ mod ui_tests {
         let context = context(100, ColorMode::Never);
         let rendered = render_sources_human(
             &context,
-            &[configured_source],
-            &[],
-            &[],
-            &[],
-            0,
-            None,
-            false,
-            &[root],
+            SourcesHumanRenderInput::from_sources(&[configured_source])
+                .with_automatic_provider_discovery(false)
+                .with_provider_roots(&[root]),
         )
         .render_plain();
         assert!(
@@ -602,8 +642,12 @@ mod ui_tests {
         let concise_prefix = Path::new("~").join(".codex").display().to_string();
         for width in [32, 48, 80, 100, 120] {
             let context = context(width, ColorMode::Never);
-            let document =
-                render_sources_human(&context, &sources, &[], &[], &[], 2, Some(&home), true, &[]);
+            let document = render_sources_human(
+                &context,
+                SourcesHumanRenderInput::from_sources(&sources)
+                    .with_hidden_missing_sources(2)
+                    .with_home(Some(&home)),
+            );
             let rendered = document.render_plain();
             assert!(rendered.starts_with("✓ 1 history source is ready\n"));
             assert!(rendered.contains("Locations\n"));
@@ -677,8 +721,10 @@ mod ui_tests {
 
         for width in [80, 100, 120] {
             let context = context(width, ColorMode::Never);
-            let document =
-                render_sources_human(&context, &sources, &[], &[], &[], 0, Some(&home), true, &[]);
+            let document = render_sources_human(
+                &context,
+                SourcesHumanRenderInput::from_sources(&sources).with_home(Some(&home)),
+            );
             let rendered = document.render_plain();
             for atom in ["factory-ai-droid", "available", "cursor"] {
                 assert!(
@@ -710,8 +756,8 @@ mod ui_tests {
     #[test]
     fn sources_empty_state_is_actionable() {
         let context = context(48, ColorMode::Never);
-        let rendered =
-            render_sources_human(&context, &[], &[], &[], &[], 0, None, true, &[]).render_plain();
+        let rendered = render_sources_human(&context, SourcesHumanRenderInput::from_sources(&[]))
+            .render_plain();
         assert!(rendered.starts_with("No history sources found\n"));
         assert!(rendered.contains("Next\n  ctx sources --all\n"));
     }
@@ -725,7 +771,10 @@ mod ui_tests {
             reason: "selector contained \u{1b}[31mcontrol",
         };
         let context = context(48, ColorMode::Never);
-        let document = render_sources_human(&context, &[], &[issue], &[], &[], 0, None, true, &[]);
+        let document = render_sources_human(
+            &context,
+            SourcesHumanRenderInput::from_sources(&[]).with_issues(&[issue]),
+        );
         let rendered = document.render_plain();
         assert!(rendered.contains("\\x1b[31mcontrol"));
         assert!(rendered.contains("ctx import --provider codex --path <path>"));
@@ -737,7 +786,8 @@ mod ui_tests {
     fn sources_plain_output_matches_ansi_stripped_output() {
         let sources = vec![source(ProviderSourceStatus::Available, "/tmp/codex")];
         let context = context(80, ColorMode::Always);
-        let document = render_sources_human(&context, &sources, &[], &[], &[], 0, None, true, &[]);
+        let document =
+            render_sources_human(&context, SourcesHumanRenderInput::from_sources(&sources));
         assert_eq!(
             strip_ansi(&document.render(&context)),
             document.render_plain()

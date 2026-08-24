@@ -1082,8 +1082,17 @@ name = "ctx-history-capture-composition-qualification"
 version = "1.1.0"
 dependencies = [
  "ctx-history-capture-composition",
+ "ctx-history-capture-model",
  "ctx-history-core",
  "ctx-history-index",
+ "ctx-history-openclaw-schema",
+ "ctx-history-provider-gemini",
+ "ctx-history-provider-native-jsonl",
+ "ctx-history-provider-openclaw-sqlite",
+ "ctx-history-provider-runtime",
+ "ctx-history-source-discovery",
+ "ctx-history-source-io",
+ "rusqlite",
  "serde_json",
  "tempfile",
 ]
