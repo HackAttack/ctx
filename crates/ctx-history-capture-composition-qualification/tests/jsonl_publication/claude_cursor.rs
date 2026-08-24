@@ -316,6 +316,98 @@ fn claude_route_publishes_cold_append_and_recovers_from_carried_checkpoint() {
 }
 
 #[test]
+fn automatic_claude_root_replacement_retires_sources_absent_from_strict_subset() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let first_home = temp.path().join("first");
+    let first_projects = first_home.join("projects");
+    let replacement_projects = temp.path().join("replacement/projects");
+    let retained_session = "retained-session";
+    let retired_session = "retired-session";
+    let retired_transcript = first_projects.join(format!("project/{retired_session}.jsonl"));
+    write_transcript(
+        &first_projects.join(format!("project/{retained_session}.jsonl")),
+        &[claude_message(
+            "user",
+            "first-retained-event",
+            retained_session,
+            "first root retained content",
+        )],
+    );
+    write_transcript(
+        &retired_transcript,
+        &[claude_message(
+            "user",
+            "first-retired-event",
+            retired_session,
+            "first root retired content",
+        )],
+    );
+    write_transcript(
+        &replacement_projects.join(format!("project/{retained_session}.jsonl")),
+        &[claude_message(
+            "user",
+            "replacement-retained-event",
+            retained_session,
+            "replacement root retained content",
+        )],
+    );
+
+    let index = temp.path().join("index");
+    let initial_context = DiscoveryContext::new(
+        temp.path(),
+        temp.path(),
+        DiscoveryPlatform::Linux,
+        crate::DiscoveryPlatformDirs::default(),
+    )
+    .with_env("CLAUDE_CONFIG_DIR", &first_home);
+    let data_root = temp.path().join("data");
+    let initial =
+        build_discovered_provider_registry(&initial_context, &data_root, CaptureProvider::Claude);
+    assert!(initial.issues.is_empty(), "{:?}", initial.issues);
+    refresh_source_backed_generation(&index, &initial.registry, writer_options()).unwrap();
+
+    let replacement_home = temp.path().join("replacement");
+    let replacement_context = DiscoveryContext::new(
+        temp.path(),
+        temp.path(),
+        DiscoveryPlatform::Linux,
+        crate::DiscoveryPlatformDirs::default(),
+    )
+    .with_env("CLAUDE_CONFIG_DIR", &replacement_home);
+    let replacement = build_discovered_provider_registry(
+        &replacement_context,
+        &data_root,
+        CaptureProvider::Claude,
+    );
+    assert!(replacement.issues.is_empty(), "{:?}", replacement.issues);
+    let receipt =
+        refresh_source_backed_generation(&index, &replacement.registry, writer_options()).unwrap();
+    assert!(receipt.failed_routes.is_empty());
+    assert_eq!(receipt.complete_inventory_route_ids.len(), 1);
+    assert_eq!(receipt.removals.len(), 1);
+
+    let verified = VerifiedIndex::open(&index).unwrap();
+    assert_eq!(
+        verified
+            .manifest()
+            .sources
+            .iter()
+            .filter(|source| source.observation().source().provider() == "claude")
+            .count(),
+        1
+    );
+    assert_literal_bodies(
+        &indexed_records(&index, CaptureProvider::Claude, retained_session),
+        &["replacement root retained content"],
+    );
+    assert!(indexed_records(&index, CaptureProvider::Claude, retired_session).is_empty());
+    assert!(retired_transcript.exists());
+    assert!(fs::read_to_string(retired_transcript)
+        .unwrap()
+        .contains("first root retired content"));
+}
+
+#[test]
 fn claude_roots_with_the_same_relative_session_path_publish_independent_sources() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let personal = temp.path().join("personal/projects");

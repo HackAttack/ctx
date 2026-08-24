@@ -26,20 +26,23 @@ pub(super) fn base_sources_for_root<R: JsonlFamilyRuntime>(
             .filter(|source| adapter.owns(source.observation().source()))
             .collect(),
     };
-    sources
-        .into_iter()
-        .filter_map(|source| match adapter.base_source_path(&source) {
-            Ok(path)
-                if inventory.authorities.is_empty() && path.starts_with(requested_root)
-                    || inventory
-                        .authorities
-                        .iter()
-                        .any(|authority| path.starts_with(authority.named_path())) =>
-            {
-                Some(Ok(source))
-            }
-            Ok(_) => None,
-            Err(error) => Some(Err(route_invalid(error))),
-        })
-        .collect()
+    match adapter.base_scope() {
+        JsonlFamilyBaseScope::ProviderFamily => sources
+            .into_iter()
+            .filter_map(|source| match adapter.base_source_path(&source) {
+                Ok(path)
+                    if inventory.authorities.is_empty() && path.starts_with(requested_root)
+                        || inventory
+                            .authorities
+                            .iter()
+                            .any(|authority| path.starts_with(authority.named_path())) =>
+                {
+                    Some(Ok(source))
+                }
+                Ok(_) => None,
+                Err(error) => Some(Err(route_invalid(error))),
+            })
+            .collect(),
+        JsonlFamilyBaseScope::Route => Ok(sources),
+    }
 }

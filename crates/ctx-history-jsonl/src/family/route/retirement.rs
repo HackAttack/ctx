@@ -34,14 +34,23 @@ pub(super) fn retirement_absence_dependency<R: JsonlFamilyRuntime>(
     base_source: &SourceKey,
     base_path: &Path,
 ) -> Option<JsonlFamilyAbsentMember<JsonlRuntimeError<R>>> {
-    if certified_owned_same_path_replacement(
+    let same_path_replacement = certified_owned_same_path_replacement(
         adapter,
         opening,
         inventory,
         terminal_sources,
         base_source,
         base_path,
-    ) {
+    );
+    // A complete current inventory is terminal authority for an exact route
+    // whose named root changed; reopening the former root would reject an
+    // intentional replacement merely because the old home still exists.
+    let external_exact_route_replacement = adapter.base_scope() == JsonlFamilyBaseScope::Route
+        && opening
+            .authorities
+            .iter()
+            .all(|authority| !base_path.starts_with(authority.named_path()));
+    if same_path_replacement || external_exact_route_replacement {
         None
     } else {
         JsonlFamilyAbsentMember::from_path(opening, base_path.to_path_buf())

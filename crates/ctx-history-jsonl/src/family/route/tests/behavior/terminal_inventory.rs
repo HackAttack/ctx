@@ -377,6 +377,50 @@ fn active_source_family_contract_jsonl_frozen_multi_root_defers_new_leaves() {
 }
 
 #[test]
+fn route_base_scope_retains_prior_sources_outside_replacement_authorities() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let first_root = temp.path().join("first-root");
+    let replacement_root = temp.path().join("replacement-root");
+    let selection_root = temp.path().join("selection");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&first_root).unwrap();
+    fs::create_dir_all(&replacement_root).unwrap();
+    fs::write(first_root.join("retired.jsonl"), TEST_RECORD).unwrap();
+    fs::write(replacement_root.join("active.jsonl"), TEST_RECORD).unwrap();
+
+    let initial_adapter = FrozenMultiRootTestAdapter {
+        roots: vec![first_root],
+    };
+    let (resident, _inventory) = expected_state(&initial_adapter, &selection_root);
+    let prior = expected_source(&resident);
+    test_generations().lock().unwrap().insert(
+        index_root.clone(),
+        TestSnapshot {
+            sources: vec![prior.clone()],
+            route_identity: Some(test_route_identity()),
+            route_sources: vec![prior.observation().source().clone()],
+            records: Vec::new(),
+        },
+    );
+
+    let replacement_adapter = FrozenMultiRootTestAdapter {
+        roots: vec![replacement_root],
+    };
+    let (_writer, _resident, bases) = capture_test_generation!(
+        &replacement_adapter,
+        &selection_root,
+        &index_root,
+        1,
+        |_resident, sink| {
+            let inventory = replacement_adapter.discover(&selection_root).unwrap();
+            base_sources_for_root(&replacement_adapter, &inventory, &selection_root, sink)
+        }
+    );
+
+    assert_eq!(bases.unwrap().len(), 1);
+}
+
+#[test]
 fn active_source_family_contract_jsonl_frozen_root_replacement_fails_closed() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let root = temp.path().join("sessions");
