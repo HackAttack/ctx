@@ -295,11 +295,31 @@ fn claude_roots_with_the_same_relative_session_path_publish_independent_sources(
             "work kumquat marker",
         )],
     );
-    let mut registry = SourceBackedProviderRegistry::new();
-    for (root, lineage) in [(&personal, [7; 32]), (&work, [8; 32])] {
-        register_configured_claude_source_backed_route(
-            &mut registry,
-            ProviderSource {
+    let definitions = [
+        ("personal", personal.parent().unwrap()),
+        ("work", work.parent().unwrap()),
+    ]
+    .into_iter()
+    .map(
+        |(id, path)| ctx_history_capture_model::ProviderRootDefinition {
+            id: id.to_owned(),
+            provider: CaptureProvider::Claude,
+            path: path.to_path_buf(),
+            group: None,
+        },
+    )
+    .collect::<Vec<_>>();
+    let context = DiscoveryContext::new(
+        temp.path(),
+        temp.path(),
+        DiscoveryPlatform::Linux,
+        crate::DiscoveryPlatformDirs::default(),
+    )
+    .with_configured_provider_roots(definitions);
+    let report = DiscoveryReport {
+        sources: [&personal, &work]
+            .into_iter()
+            .map(|root| ProviderSource {
                 provider: CaptureProvider::Claude,
                 path: root.to_path_buf(),
                 exists: true,
@@ -309,12 +329,19 @@ fn claude_roots_with_the_same_relative_session_path_publish_independent_sources(
                 catalog_support: ProviderCatalogSupport::None,
                 status: ProviderSourceStatus::Available,
                 unsupported_reason: None,
-            },
-            SourceBackedRouteSelection::ExplicitManual,
-            Some(lineage),
-        )
-        .unwrap();
-    }
+            })
+            .collect(),
+        issues: Vec::new(),
+    };
+    let build = build_automatic_source_backed_registry_from_report_with_probes_and_root_identities(
+        &crate::test_provider_probes(),
+        &context,
+        &temp.path().join("data"),
+        report,
+        &std::collections::BTreeMap::new(),
+    );
+    assert!(build.issues.is_empty(), "{:?}", build.issues);
+    let registry = build.registry;
 
     let index = temp.path().join("index");
     let result = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();

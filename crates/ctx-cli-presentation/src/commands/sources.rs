@@ -52,19 +52,30 @@ pub enum SourcesCommand {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct SourcesEnvironment {
+    pub data_root: PathBuf,
+    pub home_dir: Option<PathBuf>,
+    pub automatic_provider_discovery: bool,
+    pub provider_roots: Vec<ctx_history_cli::ProviderRootDefinition>,
+}
+
 /// Final-host shell for the sources command. Clap conversion and result delivery
 /// remain here; application execution and presentation live in `ctx-history-cli`.
 pub fn run_sources(
     args: SourcesArgs,
-    data_root: PathBuf,
+    environment: SourcesEnvironment,
     telemetry: &mut SourcesTelemetry,
     local_usage: &mut CliUsage,
-    home_dir: Option<PathBuf>,
-    automatic_provider_discovery: bool,
-    provider_roots: Vec<ctx_history_cli::ProviderRootDefinition>,
     ui: &mut ctx_terminal::Ui,
 ) -> Result<()> {
     debug_assert!(args.command.is_none());
+    let SourcesEnvironment {
+        data_root,
+        home_dir,
+        automatic_provider_discovery,
+        provider_roots,
+    } = environment;
     let request = ctx_history_cli::SourcesRequest {
         provider: args
             .provider

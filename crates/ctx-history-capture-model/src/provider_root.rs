@@ -13,17 +13,12 @@ pub const MAX_PROVIDER_ROOT_SELECTOR_BYTES: usize = 64;
 /// before named roots existed. Independently named homes use a logical
 /// provider/root-id namespace so duplicate native session IDs remain distinct
 /// without tying public identities to a machine-specific filesystem path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderRootSourceIdentity {
     Released,
+    #[default]
     NamedV1,
-}
-
-impl Default for ProviderRootSourceIdentity {
-    fn default() -> Self {
-        Self::NamedV1
-    }
 }
 
 impl ProviderRootSourceIdentity {

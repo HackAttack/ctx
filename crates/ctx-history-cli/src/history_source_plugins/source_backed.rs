@@ -140,13 +140,12 @@ fn validate_provider_owned_source(
                 }
                 manifest_seen = true;
             }
-            CtxHistoryJsonlRecord::Source(record) => {
+            CtxHistoryJsonlRecord::Source(record)
                 if record.provider_key == source.provider_key
                     && record.source_id == source.source_id
-                    && record.source_format == source.source_format
-                {
-                    source_seen = true;
-                }
+                    && record.source_format == source.source_format =>
+            {
+                source_seen = true;
             }
             _ => {}
         }

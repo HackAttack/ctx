@@ -1,27 +1,21 @@
-use std::path::PathBuf;
-
 use anyhow::Result;
-pub(crate) use ctx_cli_presentation::commands::sources::{SourcesArgs, SourcesCommand};
+pub(crate) use ctx_cli_presentation::commands::sources::{
+    SourcesArgs, SourcesCommand, SourcesEnvironment,
+};
 
 pub(crate) fn run_sources(
     mut args: SourcesArgs,
-    data_root: PathBuf,
+    environment: SourcesEnvironment,
     telemetry: &mut crate::analytics::SourcesTelemetry,
     local_usage: &mut crate::local_usage::CliUsage,
-    home_dir: Option<PathBuf>,
-    automatic_provider_discovery: bool,
-    provider_roots: Vec<ctx_history_cli::ProviderRootDefinition>,
     ui: &mut ctx_terminal::Ui,
 ) -> Result<()> {
     let Some(command) = args.command.take() else {
         return ctx_cli_presentation::commands::sources::run_sources(
             args,
-            data_root,
+            environment,
             telemetry,
             local_usage,
-            home_dir,
-            automatic_provider_discovery,
-            provider_roots,
             ui,
         );
     };
@@ -39,13 +33,15 @@ pub(crate) fn run_sources(
             root,
             source_group,
         } => crate::config::add_provider_root(
-            &data_root,
+            &environment.data_root,
             &name,
             provider.capture_provider(),
             &root,
             source_group.as_deref(),
         )?,
-        SourcesCommand::Remove { name } => crate::config::remove_provider_root(&data_root, &name)?,
+        SourcesCommand::Remove { name } => {
+            crate::config::remove_provider_root(&environment.data_root, &name)?
+        }
     };
     let value = serde_json::json!({
         "schema_version": 1,
