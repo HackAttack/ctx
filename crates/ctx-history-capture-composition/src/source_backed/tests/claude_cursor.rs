@@ -8,6 +8,7 @@ use ctx_history_core::{CaptureProvider, CoreRecord};
 use ctx_history_index::{VerifiedIndex, WriterOptions};
 use serde_json::{json, Value};
 
+use super::*;
 use crate::{
     provider::source_backed::family::jsonl::set_after_jsonl_semantic_preflight_hook,
     refresh_source_backed_generation, register_landed_source_backed_route, ProviderCatalogSupport,
@@ -20,6 +21,20 @@ fn writer_options() -> WriterOptions {
         indexer_threads: 1,
         memory_bytes: 15_000_000,
     }
+}
+
+fn build_discovered_provider_registry(
+    context: &DiscoveryContext,
+    data_root: &Path,
+    provider: CaptureProvider,
+) -> SourceBackedAutomaticRegistryBuild {
+    let probes = crate::test_provider_probes();
+    let report = ctx_history_source_discovery::discover_provider_sources_for_provider_with_context(
+        &probes, context, provider,
+    );
+    build_automatic_source_backed_registry_from_report_with_probes(
+        &probes, context, data_root, report,
+    )
 }
 
 fn registry(
@@ -254,4 +269,267 @@ fn claude_route_publishes_cold_append_and_recovers_from_carried_checkpoint() {
             "race-before",
         ),
     );
+}
+
+#[test]
+fn claude_roots_with_the_same_relative_session_path_publish_independent_sources() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let personal = temp.path().join("personal/projects");
+    let work = temp.path().join("work/projects");
+    let relative = Path::new("project/shared-session.jsonl");
+    write_transcript(
+        &personal.join(relative),
+        &[claude_message(
+            "user",
+            "personal-event",
+            "shared-session",
+            "personal pineapple marker",
+        )],
+    );
+    write_transcript(
+        &work.join(relative),
+        &[claude_message(
+            "user",
+            "work-event",
+            "shared-session",
+            "work kumquat marker",
+        )],
+    );
+    let mut registry = SourceBackedProviderRegistry::new();
+    for (root, lineage) in [(&personal, [7; 32]), (&work, [8; 32])] {
+        register_configured_claude_source_backed_route(
+            &mut registry,
+            ProviderSource {
+                provider: CaptureProvider::Claude,
+                path: root.to_path_buf(),
+                exists: true,
+                source_format: "claude_projects_jsonl_tree",
+                source_kind: ProviderSourceKind::NativeHistory,
+                import_support: ProviderImportSupport::Native,
+                catalog_support: ProviderCatalogSupport::None,
+                status: ProviderSourceStatus::Available,
+                unsupported_reason: None,
+            },
+            SourceBackedRouteSelection::ExplicitManual,
+            Some(lineage),
+        )
+        .unwrap();
+    }
+
+    let index = temp.path().join("index");
+    let result = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(
+        result.failed_routes.is_empty(),
+        "{:?}",
+        result.failed_routes
+    );
+    assert_eq!(result.successful_route_ids.len(), 2);
+
+    let verified = VerifiedIndex::open(&index).unwrap();
+    let claude_sources = verified
+        .manifest()
+        .sources
+        .iter()
+        .filter(|source| source.observation().source().provider() == "claude")
+        .collect::<Vec<_>>();
+    assert_eq!(claude_sources.len(), 2);
+    let mut bodies = claude_sources
+        .into_iter()
+        .flat_map(|source| {
+            verified
+                .core_source_event_page(source.observation().source(), None, 8)
+                .unwrap()
+                .items
+                .into_iter()
+                .map(|item| item.core_record.content.normalized_body.unwrap())
+        })
+        .collect::<Vec<_>>();
+    bodies.sort();
+    assert_eq!(
+        bodies,
+        vec![
+            "personal pineapple marker".to_owned(),
+            "work kumquat marker".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn unavailable_configured_claude_home_carries_only_itself_while_peer_refreshes() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let personal_home = temp.path().join("personal");
+    let work_home = temp.path().join("work");
+    let personal = personal_home.join("projects");
+    let work = work_home.join("projects");
+    let personal_transcript = personal.join("project/personal-session.jsonl");
+    let work_transcript = work.join("project/work-session.jsonl");
+    write_transcript(
+        &personal_transcript,
+        &[claude_message(
+            "user",
+            "personal-first",
+            "personal-session",
+            "personal initial marker",
+        )],
+    );
+    write_transcript(
+        &work_transcript,
+        &[claude_message(
+            "user",
+            "work-first",
+            "work-session",
+            "work retained marker",
+        )],
+    );
+    let definitions = vec![
+        ctx_history_capture_model::ProviderRootDefinition {
+            id: "personal".to_owned(),
+            provider: CaptureProvider::Claude,
+            path: personal_home.clone(),
+            group: Some("personal".to_owned()),
+        },
+        ctx_history_capture_model::ProviderRootDefinition {
+            id: "work".to_owned(),
+            provider: CaptureProvider::Claude,
+            path: work_home.clone(),
+            group: Some("work".to_owned()),
+        },
+    ];
+    let context = DiscoveryContext::new(
+        temp.path(),
+        temp.path(),
+        DiscoveryPlatform::Linux,
+        crate::DiscoveryPlatformDirs::default(),
+    )
+    .with_configured_provider_roots(definitions);
+    let data_root = temp.path().join("data");
+    let initial = build_discovered_provider_registry(&context, &data_root, CaptureProvider::Claude);
+    assert!(initial.issues.is_empty(), "{:?}", initial.issues);
+    let index = temp.path().join("index");
+    refresh_source_backed_generation(&index, &initial.registry, writer_options()).unwrap();
+
+    append_transcript(
+        &personal_transcript,
+        &claude_message(
+            "assistant",
+            "personal-second",
+            "personal-session",
+            "personal refreshed marker",
+        ),
+    );
+    let displaced_work_home = temp.path().join("work-displaced");
+    fs::rename(&work_home, &displaced_work_home).unwrap();
+    fs::write(&work_home, b"temporarily not a directory").unwrap();
+    let current = build_discovered_provider_registry(&context, &data_root, CaptureProvider::Claude);
+    assert!(current.issues.iter().any(|issue| matches!(
+        issue,
+        SourceBackedAutomaticRegistryIssue::Discovery(issue)
+            if issue.path.as_deref() == Some(work.as_path())
+    )));
+    fs::remove_file(&work_home).unwrap();
+    fs::rename(&displaced_work_home, &work_home).unwrap();
+    let receipt =
+        refresh_source_backed_generation(&index, &current.registry, writer_options()).unwrap();
+    assert!(matches!(
+        receipt.failed_routes.as_slice(),
+        [failure]
+            if failure.class == SourceBackedSourceFailureClass::Unavailable
+                && failure.carried_forward
+    ));
+    let personal_records = indexed_records(&index, CaptureProvider::Claude, "personal-session");
+    assert_literal_bodies(
+        &personal_records,
+        &["personal initial marker", "personal refreshed marker"],
+    );
+    let work_records = indexed_records(&index, CaptureProvider::Claude, "work-session");
+    assert_literal_bodies(&work_records, &["work retained marker"]);
+    let published = VerifiedIndex::open(&index).unwrap();
+    assert_eq!(published.manifest().provider_roots().len(), 2);
+    assert!(published
+        .manifest()
+        .provider_roots()
+        .iter()
+        .all(|root| root.routes().len() == 1));
+}
+
+#[test]
+fn cold_unavailable_configured_claude_home_does_not_block_healthy_peer() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let personal_home = temp.path().join("personal");
+    let work_home = temp.path().join("work");
+    let personal = personal_home.join("projects");
+    write_transcript(
+        &personal.join("project/personal-session.jsonl"),
+        &[claude_message(
+            "user",
+            "personal-first",
+            "personal-session",
+            "personal cold marker",
+        )],
+    );
+    fs::write(&work_home, b"temporarily not a directory").unwrap();
+    let definitions = vec![
+        ctx_history_capture_model::ProviderRootDefinition {
+            id: "personal".to_owned(),
+            provider: CaptureProvider::Claude,
+            path: personal_home.clone(),
+            group: Some("personal".to_owned()),
+        },
+        ctx_history_capture_model::ProviderRootDefinition {
+            id: "work".to_owned(),
+            provider: CaptureProvider::Claude,
+            path: work_home.clone(),
+            group: Some("work".to_owned()),
+        },
+    ];
+    let context = DiscoveryContext::new(
+        temp.path(),
+        temp.path(),
+        DiscoveryPlatform::Linux,
+        crate::DiscoveryPlatformDirs::default(),
+    )
+    .with_configured_provider_roots(definitions);
+    let build = build_discovered_provider_registry(
+        &context,
+        &temp.path().join("data"),
+        CaptureProvider::Claude,
+    );
+    assert!(build.issues.iter().any(|issue| matches!(
+        issue,
+        SourceBackedAutomaticRegistryIssue::Discovery(issue)
+            if issue.path.as_deref() == Some(work_home.join("projects").as_path())
+    )));
+    let index = temp.path().join("index");
+    let receipt =
+        refresh_source_backed_generation(&index, &build.registry, writer_options()).unwrap();
+    assert!(matches!(
+        receipt.failed_routes.as_slice(),
+        [failure]
+            if failure.class == SourceBackedSourceFailureClass::Unavailable
+                && !failure.carried_forward
+    ));
+    assert_eq!(
+        receipt.successful_route_ids.len(),
+        2,
+        "the inferred missing default and healthy named home remain independent"
+    );
+    assert_literal_bodies(
+        &indexed_records(&index, CaptureProvider::Claude, "personal-session"),
+        &["personal cold marker"],
+    );
+    let published = VerifiedIndex::open(&index).unwrap();
+    let personal_root = published
+        .manifest()
+        .provider_roots()
+        .iter()
+        .find(|root| root.definition().id == "personal")
+        .unwrap();
+    let work_root = published
+        .manifest()
+        .provider_roots()
+        .iter()
+        .find(|root| root.definition().id == "work")
+        .unwrap();
+    assert_eq!(personal_root.routes().len(), 1);
+    assert!(work_root.routes().is_empty());
 }

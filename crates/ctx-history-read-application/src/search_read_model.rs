@@ -122,6 +122,8 @@ pub fn render_search_json(input: SearchJsonInput<'_>) -> Result<Value> {
             "provider_key": filters.provider_key,
             "source_id": filters.source_id,
             "source_format": filters.source_format,
+            "source_root": (!request.source_roots.is_empty()).then_some(&request.source_roots),
+            "source_groups": (!request.source_groups.is_empty()).then_some(&request.source_groups),
             "workspace": request.workspace,
             "since": request.since,
             "content_scope": filters.content_scope.as_str(),

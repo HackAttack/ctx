@@ -119,6 +119,7 @@ mod tests {
 "#,
         )
         .unwrap();
+        let canonical_leaf = fs::canonicalize(&leaf).unwrap();
         let request = upsert_explicit_source(
             &data_root,
             &provider_source_for_path(CaptureProvider::Codex, leaf.clone()),
@@ -139,7 +140,7 @@ mod tests {
                 .authority
                 .automatic_route_worksets(&build.registry, &bindings)
                 .unwrap(),
-            BTreeMap::from([(route, SourceBackedRefreshWorkset::members([leaf]))])
+            BTreeMap::from([(route, SourceBackedRefreshWorkset::members([canonical_leaf]),)])
         );
     }
 
@@ -172,6 +173,99 @@ mod tests {
                 .unwrap(),
             BTreeMap::from([(route, SourceBackedRefreshWorkset::Exhaustive)])
         );
+    }
+
+    fn configured_root_build(
+        provider: CaptureProvider,
+        home: &Path,
+        source_path: PathBuf,
+        data_root: &Path,
+    ) -> SourceBackedAutomaticRegistryBuild {
+        let discovery = ctx_history_capture::DiscoveryContext::new(
+            home.parent().unwrap(),
+            home.parent().unwrap(),
+            ctx_history_capture::DiscoveryPlatform::Linux,
+            ctx_history_capture::DiscoveryPlatformDirs::default(),
+        )
+        .with_automatic_provider_discovery(false)
+        .with_configured_provider_roots(vec![
+            ctx_history_capture::ProviderRootDefinition {
+                id: "work".to_owned(),
+                provider,
+                path: home.to_path_buf(),
+                group: Some("work".to_owned()),
+            },
+        ]);
+        ctx_history_capture::build_automatic_source_backed_registry_from_report(
+            &discovery,
+            data_root,
+            DiscoveryReport {
+                sources: vec![provider_source_for_path(provider, source_path)],
+                issues: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn configured_codex_root_covers_exact_and_descendant_imports() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let home = temp.path().join("codex-work");
+        let sessions = home.join("sessions");
+        let leaf = sessions.join("2026/08/19/rollout.jsonl");
+        fs::create_dir_all(leaf.parent().unwrap()).unwrap();
+        fs::write(&leaf, CODEX_ROLLOUT_FIRST_RECORD).unwrap();
+        let mut build =
+            configured_root_build(CaptureProvider::Codex, &home, sessions.clone(), &data_root);
+        let configured_route = build
+            .registry
+            .routes()
+            .find_map(|route| route.route_identity.clone())
+            .unwrap();
+
+        for requested in [sessions, leaf] {
+            let request = upsert_explicit_source(
+                &data_root,
+                &provider_source_for_path(CaptureProvider::Codex, requested),
+            )
+            .unwrap();
+            let bindings = request
+                .authority
+                .register_routes_after_discovery_merge(&data_root, None, &mut build)
+                .unwrap();
+            assert_eq!(bindings.len(), 1);
+            assert_eq!(bindings[0].route_identity, configured_route.as_str());
+            assert_eq!(build.registry.routes().count(), 1);
+        }
+    }
+
+    #[test]
+    fn configured_claude_root_covers_exact_import() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let home = temp.path().join("claude-work");
+        let projects = home.join("projects");
+        fs::create_dir_all(&projects).unwrap();
+        let mut build =
+            configured_root_build(CaptureProvider::Claude, &home, projects.clone(), &data_root);
+        let configured_route = build
+            .registry
+            .routes()
+            .find_map(|route| route.route_identity.clone())
+            .unwrap();
+        let request = upsert_explicit_source(
+            &data_root,
+            &provider_source_for_path(CaptureProvider::Claude, projects),
+        )
+        .unwrap();
+
+        let bindings = request
+            .authority
+            .register_routes_after_discovery_merge(&data_root, None, &mut build)
+            .unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].route_identity, configured_route.as_str());
+        assert_eq!(build.registry.routes().count(), 1);
     }
 
     #[test]
@@ -310,6 +404,7 @@ mod tests {
         let leaf = nested.join("rollout.jsonl");
         fs::create_dir_all(&nested).unwrap();
         fs::write(&leaf, CODEX_ROLLOUT_FIRST_RECORD).unwrap();
+        let canonical_leaf = fs::canonicalize(&leaf).unwrap();
 
         let parent_source = provider_source_for_path(CaptureProvider::Codex, parent);
         let mut nested_source = parent_source.clone();
@@ -348,7 +443,7 @@ mod tests {
         assert_eq!(selected.route_identity, nested_route);
         assert_eq!(
             selected.workset,
-            SourceBackedRefreshWorkset::members([leaf])
+            SourceBackedRefreshWorkset::members([canonical_leaf])
         );
     }
 
@@ -407,6 +502,7 @@ mod tests {
         let leaf = real_root.join("2026/08/19/rollout.jsonl");
         fs::create_dir_all(leaf.parent().unwrap()).unwrap();
         fs::write(&leaf, CODEX_ROLLOUT_FIRST_RECORD).unwrap();
+        let canonical_leaf = fs::canonicalize(&leaf).unwrap();
         let alias_root = temp.path().join("sessions-alias");
         symlink(&real_root, &alias_root).unwrap();
         let alias_leaf = alias_root.join("2026/08/19/rollout.jsonl");
@@ -428,7 +524,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(binding.route_identity, route);
-        assert_eq!(binding.workset, SourceBackedRefreshWorkset::members([leaf]));
+        assert_eq!(
+            binding.workset,
+            SourceBackedRefreshWorkset::members([canonical_leaf])
+        );
     }
 
     #[test]

@@ -548,6 +548,9 @@ pub struct ExcludedSessionTree {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EventSearchFilters {
+    /// Exact source-key terms resolved from the pinned generation. `None`
+    /// means unrestricted; `Some([])` deliberately matches no events.
+    pub allowed_source_keys: Option<Vec<String>>,
     pub session_id: Option<Uuid>,
     pub excluded_session_ids: Vec<Uuid>,
     pub parent_session_id: Option<Uuid>,

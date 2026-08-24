@@ -32,6 +32,8 @@ fn search_request_preserves_every_content_scope_and_backend_into_execution() {
                 provider_key: Some("key".to_owned()),
                 source_id: Some("source".to_owned()),
                 source_format: Some("jsonl".to_owned()),
+                source_roots: vec!["personal".to_owned()],
+                source_groups: vec!["work".to_owned()],
                 workspace: Some("workspace".to_owned()),
                 since: Some("2026-01-01".to_owned()),
                 primary_only: true,
@@ -51,6 +53,8 @@ fn search_request_preserves_every_content_scope_and_backend_into_execution() {
             let execution = ctx_history_read_application::SearchRequest::from(neutral);
             assert_eq!(execution.content_scope, expected_scope);
             assert_eq!(execution.backend, Some(expected_backend));
+            assert_eq!(execution.source_roots, ["personal"]);
+            assert_eq!(execution.source_groups, ["work"]);
             assert!(execution.events);
         }
     }
@@ -144,6 +148,8 @@ fn neutral_search_backend_is_explicit_and_not_reconstructed_from_defaults() {
         provider_key: None,
         source_id: None,
         source_format: None,
+        source_roots: Vec::new(),
+        source_groups: Vec::new(),
         workspace: None,
         since: None,
         primary_only: false,
