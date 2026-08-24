@@ -16,6 +16,8 @@ use crate::{
     SourceBackedProviderRegistry, SourceBackedRouteSelection, SourceBackedSourceFailureClass,
 };
 
+const CURSOR_SOURCE_FORMAT: &str = "cursor_agent_transcript_jsonl_tree";
+
 fn writer_options() -> WriterOptions {
     WriterOptions {
         indexer_threads: 1,
@@ -142,19 +144,26 @@ fn exercise_lifecycle(
 ) {
     write_transcript(transcript, &[first]);
     let registry = registry(provider, source_format, source_root);
+    let records = || indexed_records(index, provider, native_session_id);
 
     let cold = refresh_source_backed_generation(index, &registry, writer_options()).unwrap();
     assert!(cold.failed_routes.is_empty());
     assert_eq!(cold.successful_route_ids.len(), 1);
-    let cold_records = indexed_records(index, provider, native_session_id);
+    let cold_records = records();
     assert_literal_bodies(&cold_records, &["literal first"]);
     let cold_checkpoint = certified_prefix_bytes(index, provider);
     assert_eq!(cold_checkpoint, fs::metadata(transcript).unwrap().len());
 
+    let noop = refresh_source_backed_generation(index, &registry, writer_options()).unwrap();
+    assert!(noop.failed_routes.is_empty());
+    assert_eq!(noop.commit.generation_id, cold.commit.generation_id);
+    assert_eq!(records(), cold_records);
+    assert_eq!(certified_prefix_bytes(index, provider), cold_checkpoint);
+
     append_transcript(transcript, &second);
     let appended = refresh_source_backed_generation(index, &registry, writer_options()).unwrap();
     assert!(appended.failed_routes.is_empty());
-    let appended_records = indexed_records(index, provider, native_session_id);
+    let appended_records = records();
     assert_literal_bodies(&appended_records, &["literal first", "literal second"]);
     assert_eq!(appended_records[0].event_id, cold_records[0].event_id);
     let appended_checkpoint = certified_prefix_bytes(index, provider);
@@ -179,14 +188,11 @@ fn exercise_lifecycle(
                 && failure.carried_forward
     ));
     assert_eq!(certified_prefix_bytes(index, provider), appended_checkpoint);
-    assert_eq!(
-        indexed_records(index, provider, native_session_id),
-        appended_records
-    );
+    assert_eq!(records(), appended_records);
 
     let recovered = refresh_source_backed_generation(index, &registry, writer_options()).unwrap();
     assert!(recovered.failed_routes.is_empty());
-    let recovered_records = indexed_records(index, provider, native_session_id);
+    let recovered_records = records();
     assert_literal_bodies(
         &recovered_records,
         &["literal first", "literal second", "race-after!"],
@@ -220,7 +226,7 @@ fn cursor_route_publishes_cold_append_and_recovers_from_carried_checkpoint() {
         .join(format!("{native_session_id}.jsonl"));
     exercise_lifecycle(
         CaptureProvider::Cursor,
-        "cursor_agent_transcript_jsonl_tree",
+        CURSOR_SOURCE_FORMAT,
         &root,
         &transcript,
         &temp.path().join("cursor-index"),
@@ -229,6 +235,44 @@ fn cursor_route_publishes_cold_append_and_recovers_from_carried_checkpoint() {
         cursor_message("assistant", "2026-08-16T00:00:01Z", "literal second"),
         cursor_message("assistant", "2026-08-16T00:00:02Z", "race-before"),
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn cursor_incomplete_canonical_inventory_retains_last_good_generation() {
+    use std::os::unix::fs::symlink;
+
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("cursor-data");
+    let native_session_id = "retained-cursor-session";
+    let transcript = root
+        .join("projects/project/agent-transcripts")
+        .join(native_session_id)
+        .join(format!("{native_session_id}.jsonl"));
+    let retained = cursor_message("user", "2026-08-16T00:00:00Z", "retained literal");
+    write_transcript(&transcript, &[retained]);
+    let index = temp.path().join("cursor-index");
+    let registry = registry(CaptureProvider::Cursor, CURSOR_SOURCE_FORMAT, &root);
+    let records = || indexed_records(&index, CaptureProvider::Cursor, native_session_id);
+    let checkpoint = || certified_prefix_bytes(&index, CaptureProvider::Cursor);
+    let cold = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(cold.failed_routes.is_empty());
+    let cold_records = records();
+    let cold_checkpoint = checkpoint();
+
+    let linked_target = temp.path().join("linked-project-target");
+    fs::create_dir_all(&linked_target).unwrap();
+    symlink(&linked_target, root.join("projects/a-linked-project")).unwrap();
+
+    let failed = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+
+    assert!(matches!(
+        failed.failed_routes.as_slice(),
+        [failure] if failure.carried_forward
+    ));
+    assert_eq!(failed.commit.generation_id, cold.commit.generation_id);
+    assert_eq!(records(), cold_records);
+    assert_eq!(checkpoint(), cold_checkpoint);
 }
 
 fn claude_message(kind: &str, uuid: &str, session_id: &str, text: &str) -> Value {
