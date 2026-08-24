@@ -82,6 +82,11 @@ pub(in super::super) fn prepare_leaf_with_resources<R: JsonlFamilyRuntime>(
     // reconsidered without replaying already certified records.
     let previous_physical = previous.as_ref().filter(|checkpoint| {
         checkpoint.physical.source_observation() == leaf.observation()
+            || (checkpoint
+                .physical
+                .source_observation()
+                .differs_only_by_change_identity(leaf.observation())
+                && checkpoint.authenticates_admitted_eof())
             || append_mode.certified_suffix()
     });
     let open_reader = |previous| {
