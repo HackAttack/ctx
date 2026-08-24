@@ -25,7 +25,8 @@ use super::*;
 use ctx_history_jsonl::{
     fit_jsonl_activity, FallbackEventIdentityState, JsonlActivityObservedBytes, JsonlFamilyAdapter,
     JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf, JsonlFamilyProjectionMode,
-    JsonlFamilyProjector, JsonlFamilyWorkerContext, JsonlRecordRef,
+    JsonlFamilyProjector, JsonlFamilyWorkerContext, JsonlOversizedRecordPolicy, JsonlRecordRef,
+    JsonlRecordRejections, SourceBackedRecordRejectionDrafts,
 };
 use ctx_history_provider_runtime::{
     source_io::{OpenedProviderSourceFile, ProviderSourceRoot},
@@ -44,7 +45,7 @@ const NATIVE_EVENT_REUSED_TOOL_CALL_POSITION_KIND: &str =
     "mistral-vibe-duplicate-tool-call-id-ordinal";
 const LOGICAL_SESSION_KIND: &str = "mistral-vibe-session";
 const LOGICAL_EVENT_KIND: &str = "mistral-vibe-event";
-const PARSER_REVISION: &str = "mistral-vibe-source-backed-v14-optional-admission";
+const PARSER_REVISION: &str = "mistral-vibe-source-backed-v15-optional-admission-record-rejections";
 const EVENT_IDENTITY_REVISION: &str = "mistral-vibe-content-occurrence-v1";
 const FALLBACK_FINGERPRINT_DOMAIN: &[u8] = b"ctx.mistral-vibe.fallback-event-fingerprint.v1\0";
 const SOURCE_REVISION_DIGEST_DOMAIN: &[u8] = b"ctx.mistral-vibe.source-revision.v1\0";
@@ -120,6 +121,10 @@ where
 
     fn append_mode(&self) -> JsonlFamilyAppendMode {
         JsonlFamilyAppendMode::Replacement
+    }
+
+    fn oversized_record_policy(&self) -> JsonlOversizedRecordPolicy {
+        JsonlOversizedRecordPolicy::RejectRecord
     }
 
     fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory<CaptureError>> {
@@ -256,6 +261,11 @@ where
             )?,
             native_identities: MistralNativeIdentityTracker::default(),
             binding,
+            rejections: JsonlRecordRejections::new(
+                leaf.source().clone(),
+                CaptureProvider::MistralVibe,
+                leaf.source_path().display().to_string(),
+            ),
         }))
     }
 }
@@ -265,6 +275,7 @@ struct MistralProjector<B: ProviderRuntimeBinding> {
     binding: Binding,
     fallback_identities: FallbackEventIdentityState<ProviderBaseEventLookup<B>, CaptureError>,
     native_identities: MistralNativeIdentityTracker,
+    rejections: JsonlRecordRejections,
 }
 
 impl<B> JsonlFamilyProjector for MistralProjector<B>
@@ -279,12 +290,34 @@ where
         _worker: &mut JsonlFamilyWorkerContext<Self::Runtime>,
         emit: &mut dyn FnMut(CoreRecord) -> Result<()>,
     ) -> Result<()> {
-        if let Some(document) = core_record(
+        let bytes = record.bytes();
+        if record.oversized() {
+            self.rejections.malformed(
+                record,
+                format!(
+                    "Mistral Vibe record exceeds the {MAX_PROVIDER_JSONL_LINE_BYTES} byte limit"
+                ),
+            );
+            return Ok(());
+        }
+        if bytes.iter().all(u8::is_ascii_whitespace) {
+            return Ok(());
+        }
+        let value = match serde_json::from_slice::<Value>(bytes) {
+            Ok(value) => value,
+            Err(error) => {
+                self.rejections
+                    .malformed(record, format!("malformed Mistral Vibe JSONL: {error}"));
+                return Ok(());
+            }
+        };
+        if let Some(document) = core_record_with_value(
             &self.source,
             &self.binding,
             &mut self.fallback_identities,
             &mut self.native_identities,
             record,
+            value,
         )? {
             emit(document)?;
         }
@@ -294,25 +327,28 @@ where
     fn finish(&mut self) -> Result<()> {
         self.fallback_identities.finish()
     }
+
+    fn rejected_records(&self) -> u64 {
+        self.rejections.count()
+    }
+
+    fn take_record_rejections(&mut self) -> SourceBackedRecordRejectionDrafts {
+        self.rejections.take_drafts()
+    }
 }
 
-fn core_record<L>(
+fn core_record_with_value<L>(
     source: &SourceKey,
     binding: &Binding,
     fallback_identities: &mut FallbackEventIdentityState<L, CaptureError>,
     native_identities: &mut MistralNativeIdentityTracker,
     record: JsonlRecordRef<'_>,
+    value: Value,
 ) -> Result<Option<CoreRecord>>
 where
     L: BaseEventLookup,
 {
     let bytes = record.bytes();
-    if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Ok(None);
-    }
-    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
-        return Ok(None);
-    };
     let ordinal = record.evidence().physical_ordinal();
     let requires_collision_position = native_identities.requires_collision_position(&value);
     let Ok(role) = valid_mistral_vibe_record_role(&value) else {
@@ -432,6 +468,28 @@ where
         .map_err(contract)?;
     record.validate_contract().map_err(contract)?;
     Ok(Some(record))
+}
+
+#[cfg(test)]
+fn core_record<L>(
+    source: &SourceKey,
+    binding: &Binding,
+    fallback_identities: &mut FallbackEventIdentityState<L, CaptureError>,
+    native_identities: &mut MistralNativeIdentityTracker,
+    record: JsonlRecordRef<'_>,
+) -> Result<Option<CoreRecord>>
+where
+    L: BaseEventLookup,
+{
+    let value = serde_json::from_slice::<Value>(record.bytes())?;
+    core_record_with_value(
+        source,
+        binding,
+        fallback_identities,
+        native_identities,
+        record,
+        value,
+    )
 }
 
 fn mistral_vibe_record_timestamp(value: &Value) -> Option<DateTime<Utc>> {

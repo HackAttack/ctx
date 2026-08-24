@@ -60,9 +60,10 @@ pub mod lifecycle {
         DocumentRecordSpool, DocumentSourceTerminal, ObservedDocumentLeaf, ReplacementDocumentTree,
         SourceBackedCoordinatorError, SourceBackedCoordinatorResult,
         SourceBackedCurrentSourceProgress, SourceBackedCurrentSourceProgressStage,
-        SourceBackedReconciliationDemand, SourceBackedRouteError, SourceBackedRouteErrorKind,
-        SourceBackedRouteResult, SourceBackedRouteSelection, SourceBackedRouteWatchTargets,
-        SourceBackedSelectorAuthority,
+        SourceBackedReconciliationDemand, SourceBackedRecordRejectionClass,
+        SourceBackedRecordRejectionDraft, SourceBackedRecordRejectionDrafts,
+        SourceBackedRouteError, SourceBackedRouteErrorKind, SourceBackedRouteResult,
+        SourceBackedRouteSelection, SourceBackedRouteWatchTargets, SourceBackedSelectorAuthority,
     };
 }
 

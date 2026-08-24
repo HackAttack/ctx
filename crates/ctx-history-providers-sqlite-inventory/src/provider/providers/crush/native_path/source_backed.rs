@@ -30,7 +30,10 @@ use super::{
 use crate::{
     common::io::{OpenedProviderSourceFile, ProviderSourceRoot},
     fnv1a64,
-    provider::source_backed::{family::document::ChangedDocumentSink, SourceBackedRouteError},
+    provider::source_backed::{
+        family::document::ChangedDocumentSink, sqlite_rejection_draft,
+        SourceBackedRecordRejectionClass, SourceBackedRouteError,
+    },
     provider_sources::{
         retain_sqlite_source_directory_authority, SqliteFailurePhase, SqliteLogicalSnapshot,
         SqliteSourceAccessError, SqliteSourceDirectoryAuthority, SqliteSourceReadSnapshot,
@@ -57,8 +60,7 @@ const CRUSH_SOURCE_ANCHOR_NAMESPACE: &str = "crush.project-database";
 const CRUSH_INVENTORY_AUTHORITY_NAMESPACE: &str = "crush.project-inventory";
 const CRUSH_INVENTORY_REVISION_KIND: &str = "crush-selected-registered-projects-v0";
 pub(crate) const CRUSH_SOURCE_SCHEMA_VARIANT: &str = "crush-project-sqlite-v0";
-pub(crate) const CRUSH_PARSER_REVISION: &str =
-    "crush-sqlite-source-backed-v4-neutral-core-agent-scope";
+pub(crate) const CRUSH_PARSER_REVISION: &str = "crush-sqlite-source-backed-v5-record-rejections";
 const CRUSH_NATIVE_SESSION_NAMESPACE: &str = "crush.session";
 const CRUSH_NATIVE_MESSAGE_NAMESPACE: &str = "crush.message";
 const CRUSH_LOGICAL_SESSION_KIND: &str = "crush-session";
@@ -571,6 +573,14 @@ where
                 Err(error) if row_decode_error_is_local(&error) => {
                     counts.rejected_records = checked_add(counts.rejected_records, 1)?;
                     hash_rejected_candidate(&mut digest, candidate, error.to_string().as_bytes());
+                    sink.record_rejection(sqlite_rejection_draft(
+                        &source.database.source_key,
+                        CaptureProvider::Crush,
+                        &source.database.canonical_path,
+                        u64::try_from(candidate.rowid).unwrap_or_default(),
+                        SourceBackedRecordRejectionClass::MalformedRecord,
+                        error.to_string(),
+                    ));
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -582,14 +592,38 @@ where
             match project_message(&row, session.as_ref())? {
                 CrushRecordProjection::Rejection => {
                     counts.rejected_records = checked_add(counts.rejected_records, 1)?;
+                    sink.record_rejection(sqlite_rejection_draft(
+                        &source.database.source_key,
+                        CaptureProvider::Crush,
+                        &source.database.canonical_path,
+                        u64::try_from(candidate.rowid).unwrap_or_default(),
+                        SourceBackedRecordRejectionClass::UnsupportedRecord,
+                        "Crush SQLite row has an unsupported message shape",
+                    ));
                 }
                 CrushRecordProjection::Message(projection) if projection.event.is_some() => {
                     let session = session
                         .as_ref()
                         .ok_or(CrushSourceBackedErrorV0::UnexpectedNativeRow)?;
-                    sink.emit_core_record(core_record(source, &row, session, &projection)?)?;
-                    counts.retained_records = checked_add(counts.retained_records, 1)?;
-                    counts.indexed_documents = checked_add(counts.indexed_documents, 1)?;
+                    match core_record(source, &row, session, &projection) {
+                        Ok(record) => {
+                            sink.emit_core_record(record)?;
+                            counts.retained_records = checked_add(counts.retained_records, 1)?;
+                            counts.indexed_documents = checked_add(counts.indexed_documents, 1)?;
+                        }
+                        Err(error) if crush_row_projection_error(&error) => {
+                            counts.rejected_records = checked_add(counts.rejected_records, 1)?;
+                            sink.record_rejection(sqlite_rejection_draft(
+                                &source.database.source_key,
+                                CaptureProvider::Crush,
+                                &source.database.canonical_path,
+                                u64::try_from(candidate.rowid).unwrap_or_default(),
+                                SourceBackedRecordRejectionClass::UnsupportedRecord,
+                                error.to_string(),
+                            ));
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
                 CrushRecordProjection::Message(_) => {
                     counts.ignored_records = checked_add(counts.ignored_records, 1)?;
@@ -601,6 +635,27 @@ where
         content_digest: digest.finalize().into(),
         counts,
     })
+}
+
+fn crush_row_projection_error(error: &CrushSourceBackedErrorV0) -> bool {
+    matches!(
+        error,
+        CrushSourceBackedErrorV0::Projection(ProjectionContractError::EmptyField {
+            field: "typed_key_utf8",
+        }) | CrushSourceBackedErrorV0::Projection(ProjectionContractError::FieldTooLarge {
+            field: "typed_key_utf8",
+            ..
+        }) | CrushSourceBackedErrorV0::CoreRecord(CoreRecordError::EmptyField {
+            field: "activity.invocation.tool" | "activity.result.status",
+        }) | CrushSourceBackedErrorV0::CoreRecord(CoreRecordError::FieldTooLarge {
+            field: "normalized_body"
+                | "structured_content"
+                | "selected_content"
+                | "activity.invocation.tool"
+                | "activity.result.status",
+            ..
+        })
+    )
 }
 
 fn core_record(

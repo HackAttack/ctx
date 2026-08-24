@@ -12,10 +12,11 @@ use std::{
 
 use ctx_history_core::{
     derive_event_id, derive_session_id, ActivityJsonCapture, ActivityResult, ActivityTextCapture,
-    AgentScope, CertifiedSource, CoreActivity, CoreRecord, EventIdentityInput, LiteralFactKind,
-    NativeItemKey, NativeSessionKey, ProjectionContractError, ProviderDeclaredFact,
-    ProviderNativeSessionRelationship, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
-    SourceKey, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
+    AgentScope, CertifiedSource, CoreActivity, CoreRecord, CoreRecordError, EventIdentityInput,
+    LiteralFactKind, NativeItemKey, NativeSessionKey, ProjectionContractError,
+    ProviderDeclaredFact, ProviderNativeSessionRelationship, ScannedSourceCounts,
+    SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -59,7 +60,7 @@ const SHELLEY_SOURCE_ANCHOR_NAMESPACE: &str = "shelley.exact-cwd-slot";
 const SHELLEY_SOURCE_ANCHOR_KEY: &str = "shelley.db";
 const SHELLEY_SOURCE_SCHEMA_VARIANT: &str = "shelley-exact-cwd-sqlite-v1";
 pub(crate) const SHELLEY_SOURCE_PARSER_REVISION: &str =
-    "shelley-source-backed-v4-neutral-core-agent-scope";
+    "shelley-source-backed-v5-record-rejections";
 const SHELLEY_LOGICAL_SESSION_KIND: &str = "shelley-conversation";
 const SHELLEY_NATIVE_SESSION_NAMESPACE: &str = "shelley.conversation";
 const SHELLEY_LOGICAL_EVENT_KIND: &str = "shelley-message";
@@ -81,6 +82,8 @@ pub(crate) enum ShelleySourceBackedError {
     },
     #[error(transparent)]
     Projection(#[from] ProjectionContractError),
+    #[error(transparent)]
+    CoreRecord(#[from] CoreRecordError),
     #[error("Shelley source-backed scan was not drained to terminal certification")]
     ScanIncomplete,
     #[error("Shelley source-backed counts overflowed")]
@@ -399,11 +402,7 @@ impl ShelleySourceBackedScan {
                             );
                             checked_add_count(&mut page.counts.ignored_records, 1)?;
                         }
-                        Err(
-                            error @ (ShelleySourceBackedError::Projection(_)
-                            | ShelleySourceBackedError::MissingLexicalBody
-                            | ShelleySourceBackedError::InvalidResultShape(_)),
-                        ) => {
+                        Err(error) if shelley_row_projection_error(&error) => {
                             self.hash_record(
                                 rowid,
                                 scanner_digest,
@@ -660,10 +659,7 @@ fn build_record(
         event_type.as_str(),
         SHELLEY_SOURCE_PARSER_REVISION,
         body,
-    )
-    .map_err(|error| {
-        ShelleySourceBackedError::Capture(CaptureError::InvalidPayload(error.to_string()))
-    })?;
+    )?;
     record.agent_scope = Some(if lineage.parent_session_id.is_some() {
         AgentScope::Subagent
     } else {
@@ -691,12 +687,7 @@ fn build_record(
             .then(|| result.call_ids[0].as_str())
             .filter(|_| result.tool_names.len() <= 1)
     });
-    let provider_call_id = linked_result
-        .map(TypedKey::utf8)
-        .transpose()
-        .map_err(|error| {
-            ShelleySourceBackedError::Capture(CaptureError::InvalidPayload(error.to_string()))
-        })?;
+    let provider_call_id = linked_result.map(TypedKey::utf8).transpose()?;
     let activity_result = provider_call_id.as_ref().map(|_| ActivityResult {
         status: shelley_literal_status(&native_body),
         completed_at_unix_ms: Some(occurred_at.timestamp_millis()),
@@ -713,10 +704,7 @@ fn build_record(
             facts,
         });
     }
-    if record.content.encoded_content_bytes().map_err(|error| {
-        ShelleySourceBackedError::Capture(CaptureError::InvalidPayload(error.to_string()))
-    })? > ctx_history_core::MAX_CORE_CONTENT_BYTES
-    {
+    if record.content.encoded_content_bytes()? > ctx_history_core::MAX_CORE_CONTENT_BYTES {
         if let Some(capture @ ActivityJsonCapture::Present { .. }) = record
             .content
             .activity
@@ -738,14 +726,30 @@ fn build_record(
     }
     record
         .content
-        .omit_structured_content_if_aggregate_exceeds_limit()
-        .map_err(|error| {
-            ShelleySourceBackedError::Capture(CaptureError::InvalidPayload(error.to_string()))
-        })?;
-    record.validate_contract().map_err(|error| {
-        ShelleySourceBackedError::Capture(CaptureError::InvalidPayload(error.to_string()))
-    })?;
+        .omit_structured_content_if_aggregate_exceeds_limit()?;
+    record.validate_contract()?;
     Ok(Some(record))
+}
+
+fn shelley_row_projection_error(error: &ShelleySourceBackedError) -> bool {
+    matches!(
+        error,
+        ShelleySourceBackedError::Projection(ProjectionContractError::EmptyField {
+            field: "typed_key_utf8",
+        }) | ShelleySourceBackedError::Projection(ProjectionContractError::FieldTooLarge {
+            field: "typed_key_utf8" | "typed_composite_key",
+            ..
+        }) | ShelleySourceBackedError::CoreRecord(CoreRecordError::EmptyField {
+            field: "provider_declared_fact.value",
+        }) | ShelleySourceBackedError::CoreRecord(CoreRecordError::FieldTooLarge {
+            field: "normalized_body"
+                | "structured_content"
+                | "selected_content"
+                | "provider_declared_fact.value",
+            ..
+        }) | ShelleySourceBackedError::MissingLexicalBody
+            | ShelleySourceBackedError::InvalidResultShape(_)
+    )
 }
 
 pub(crate) fn shelley_literal_status(value: &serde_json::Value) -> Option<String> {

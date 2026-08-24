@@ -29,8 +29,10 @@ use crate::{
     provider::source_backed::family::jsonl::{
         JsonlAppendOccurrenceState, JsonlFamilyAdapter, JsonlFamilyAppendMode,
         JsonlFamilyInventory, JsonlFamilyLeaf, JsonlFamilyProjectionMode, JsonlFamilyProjector,
-        JsonlFamilyTerminalProof, JsonlFamilyWorkerContext, JsonlReader, JsonlRecordRef,
-        JsonlTerminalAuthority, JsonlTerminalObservationRegion,
+        JsonlFamilyTerminalProof, JsonlFamilyWorkerContext, JsonlOversizedRecordPolicy,
+        JsonlReader, JsonlRecordRef, JsonlRecordRejections, JsonlTerminalAuthority,
+        JsonlTerminalObservationRegion, SourceBackedRecordRejectionClass,
+        SourceBackedRecordRejectionDrafts,
     },
     CaptureError, Result, MAX_OPENCLAW_SESSION_INDEX_BYTES, OPENCLAW_SOURCE_FORMAT,
 };
@@ -51,7 +53,7 @@ const LOGICAL_SESSION_KIND: &str = "openclaw-legacy-session";
 const LOGICAL_EVENT_KIND: &str = "openclaw-legacy-event";
 const SOURCE_SCHEMA_VARIANT: &str = "openclaw-legacy-jsonl-v2";
 const PARSER_REVISION: &str =
-    "openclaw-source-backed-v18-source-wide-call-id-admission-agent-scope-raw-lineage-exact-authored-text";
+    "openclaw-source-backed-v19-source-wide-call-id-admission-agent-scope-raw-lineage-exact-authored-text-record-rejections";
 const MAX_TERMINAL_CALL_IDS: usize = 4096;
 const MAX_TERMINAL_LINKAGE_IDS: usize = MAX_TERMINAL_CALL_IDS * 2;
 const MAX_SELECTOR_CALL_ID_BYTES: usize = 16 * 1024;
@@ -105,6 +107,10 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for OpenClawJsonlAdapter<R> {
 
     fn append_mode(&self) -> JsonlFamilyAppendMode {
         JsonlFamilyAppendMode::ProjectorPreflight(true)
+    }
+
+    fn oversized_record_policy(&self) -> JsonlOversizedRecordPolicy {
+        JsonlOversizedRecordPolicy::RejectRecord
     }
 
     fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
@@ -253,6 +259,11 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for OpenClawJsonlAdapter<R> {
                 }
                 _ => FallbackEventIdentityState::<R>::default(),
             },
+            rejections: JsonlRecordRejections::new(
+                leaf.source().clone(),
+                CaptureProvider::OpenClaw,
+                leaf.source_path().display().to_string(),
+            ),
         }))
     }
 }
@@ -267,6 +278,7 @@ struct OpenClawProjector<R: JsonlProviderRuntime> {
     authority: Arc<ProviderSourceRoot>,
     terminal_authority: OpenClawTerminalAuthority,
     fallback_identities: FallbackEventIdentityState<R>,
+    rejections: JsonlRecordRejections,
 }
 
 #[derive(Debug, Clone, Copy)]

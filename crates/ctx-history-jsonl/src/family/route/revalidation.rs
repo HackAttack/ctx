@@ -266,7 +266,10 @@ pub(super) fn inventory_observation<E: JsonlFamilyError>(
         digest.update(leaf.authority_path.as_os_str().as_encoded_bytes());
         digest.update((leaf.source_path.as_os_str().as_encoded_bytes().len() as u64).to_be_bytes());
         digest.update(leaf.source_path.as_os_str().as_encoded_bytes());
-        digest.update(serde_json::to_vec(&leaf.observation)?);
+        match &leaf.observation {
+            Some(observation) => digest.update(serde_json::to_vec(observation)?),
+            None => digest.update(b"unobserved-quarantined-leaf-v1\0"),
+        }
         digest.update(serde_json::to_vec(&leaf.proof)?);
         digest.update(b"bound-source-v1\0");
         if let Some(source) = &leaf.quarantined_source {

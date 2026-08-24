@@ -134,9 +134,12 @@ fn transferred_snapshot_scan_failure_reports_cleanup_fatal_error() {
     )
     .unwrap();
 
-    let error = scan_astrbot_snapshot_v0(&source, snapshot, &mut |_record| {
-        Err(AstrBotSourceBackedErrorV0::CountOverflow)
-    })
+    let error = scan_astrbot_snapshot_v0(
+        &source,
+        snapshot,
+        &mut |_record| Err(AstrBotSourceBackedErrorV0::CountOverflow),
+        &mut crate::lifecycle::SourceBackedRecordRejectionDrafts::default(),
+    )
     .unwrap_err();
     let AstrBotSourceBackedErrorV0::SnapshotCleanup { primary, cleanup } = error else {
         panic!("expected typed primary-plus-cleanup failure");
@@ -303,6 +306,68 @@ fn cold_scan_is_bounded_deterministic_and_emits_valid_stable_core() {
             decoded_rows: 257,
         }
     );
+}
+
+#[test]
+fn row_local_projection_failure_rejects_only_its_conversation() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("data_v4.db");
+    create_database(&path, "bad-session", "bad body");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "update conversations set inner_conversation_id = ?1 where id = 1",
+            ["x".repeat(70 * 1024)],
+        )
+        .unwrap();
+    insert_conversation(
+        &connection,
+        2,
+        "healthy-session",
+        "healthy body",
+        "healthy-message",
+    );
+    drop(connection);
+
+    let source = selected_source(&path);
+    let mut records = Vec::new();
+    let certificate = scan_astrbot_source_backed_v0(
+        crate::test_provider_sqlite_data_root(),
+        &source,
+        &mut |record| {
+            records.push(record);
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].content.meaningful_text(), "healthy body");
+    assert_eq!(certificate.counts().complete_records, 2);
+    assert_eq!(certificate.counts().retained_records, 1);
+    assert_eq!(certificate.counts().rejected_records, 1);
+    assert_eq!(certificate.counts().indexed_documents, 1);
+}
+
+#[test]
+fn row_local_projection_filter_preserves_core_invariants() {
+    assert!(astrbot_row_projection_error(
+        &AstrBotSourceBackedErrorV0::Projection(ProjectionContractError::FieldTooLarge {
+            field: "typed_key_utf8",
+            actual: 2,
+            maximum: 1,
+        })
+    ));
+    for error in [
+        AstrBotSourceBackedErrorV0::Projection(ProjectionContractError::SourceChanged),
+        AstrBotSourceBackedErrorV0::Projection(ProjectionContractError::InvalidDerivedIdentity),
+        AstrBotSourceBackedErrorV0::CoreRecord(CoreRecordError::Projection(
+            ProjectionContractError::SourceChanged,
+        )),
+        AstrBotSourceBackedErrorV0::CoreRecord(CoreRecordError::InvalidIdentityRelationship),
+    ] {
+        assert!(!astrbot_row_projection_error(&error), "{error:?}");
+    }
 }
 
 #[test]

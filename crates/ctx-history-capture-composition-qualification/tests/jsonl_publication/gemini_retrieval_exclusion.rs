@@ -709,7 +709,7 @@ fn gemini_legacy_v1_generation_migrates_atomically_to_all_v2_recordings_then_noo
     assert_eq!(migrated.sources.len(), 2);
     assert!(migrated.sources.iter().all(|source| {
         source.observation().source().provider_identity_version() == 2
-            && source.parser_revision() == "gemini-nativepath-core-activity-v2"
+            && source.parser_revision() == "gemini-nativepath-core-activity-v2-record-rejections"
     }));
     let sources = gemini_sources(&index);
     assert_eq!(sources.len(), 2);

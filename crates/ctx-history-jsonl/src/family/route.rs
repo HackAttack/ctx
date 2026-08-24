@@ -70,7 +70,7 @@ use ownership::base_sources_for_root;
 mod membership;
 pub use membership::{JsonlFamilyAppendTrustContract, JsonlFamilyMembershipObservation};
 mod projector;
-pub use projector::JsonlFamilyProjector;
+pub use projector::{JsonlFamilyProjector, JsonlFamilyProjectorPreflightError};
 mod resident;
 use resident::{AuthenticatedSourceObservation, FamilyResident};
 mod revalidation;

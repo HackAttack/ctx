@@ -21,7 +21,9 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::dto::{GeminiEventBody, GeminiTranscriptLayout};
-use super::parser::{read_gemini_session_header, GeminiBorrowedRecordParser};
+use super::parser::{
+    read_gemini_session_header, GeminiBorrowedRecordParser, GeminiRecordRejectionKind,
+};
 use super::{
     discover_gemini_transcripts, GeminiFileObservation, GeminiScanError, GeminiSession,
     GeminiTranscriptSource,
@@ -29,9 +31,11 @@ use super::{
 use crate::io::{OpenedProviderSourceFile, ProviderSourceRoot};
 use ctx_history_jsonl::{
     JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf,
-    JsonlFamilyProjector, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext, JsonlReader,
-    JsonlRecordRef,
+    JsonlFamilyProjector, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
+    JsonlOversizedRecordPolicy, JsonlReader, JsonlRecordRef, JsonlRecordRejections,
+    SourceBackedRecordRejectionClass, SourceBackedRecordRejectionDrafts,
 };
+use ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 
 use crate::{GeminiError, GeminiResult, GeminiRuntime, GEMINI_CLI_SOURCE_FORMAT};
 #[cfg(any(test, feature = "test-support"))]
@@ -47,7 +51,8 @@ const GEMINI_LOGICAL_EVENT_KIND: &str = "gemini-event";
 const GEMINI_SOURCE_SCHEMA_VARIANT: &str = "gemini-nativepath-jsonl-v0";
 #[cfg(any(test, feature = "test-support"))]
 const GEMINI_SOURCE_BACKED_PARSER_REVISION_V1: &str = "gemini-nativepath-core-activity-v1";
-const GEMINI_SOURCE_BACKED_PARSER_REVISION: &str = "gemini-nativepath-core-activity-v2";
+const GEMINI_SOURCE_BACKED_PARSER_REVISION: &str =
+    "gemini-nativepath-core-activity-v2-record-rejections";
 const MAX_GEMINI_ACTIVITY_FIELD_BYTES: usize = 64 * 1024;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -186,6 +191,10 @@ impl<R: GeminiRuntime> JsonlFamilyAdapter for GeminiJsonlAdapter<R> {
 
     fn append_mode(&self) -> JsonlFamilyAppendMode {
         JsonlFamilyAppendMode::ProjectorPreflight(false)
+    }
+
+    fn oversized_record_policy(&self) -> JsonlOversizedRecordPolicy {
+        JsonlOversizedRecordPolicy::RejectRecord
     }
 
     fn discover(&self, root: &Path) -> GeminiResult<JsonlFamilyInventory<GeminiError>> {
@@ -348,6 +357,11 @@ impl<R: GeminiRuntime> JsonlFamilyAdapter for GeminiJsonlAdapter<R> {
             authority: Arc::clone(leaf.authority()),
             native_item_ids: GeminiSourceNativeItemIds::default(),
             emitted_event_digests: BTreeSet::new(),
+            rejections: JsonlRecordRejections::new(
+                leaf.source().clone(),
+                CaptureProvider::Gemini,
+                leaf.source_path().display().to_string(),
+            ),
             runtime: PhantomData,
         }))
     }
@@ -403,6 +417,7 @@ struct GeminiProjector<R> {
     authority: Arc<ProviderSourceRoot>,
     native_item_ids: GeminiSourceNativeItemIds,
     emitted_event_digests: BTreeSet<[u8; 32]>,
+    rejections: JsonlRecordRejections,
     runtime: PhantomData<fn() -> R>,
 }
 
@@ -477,6 +492,13 @@ impl<R: GeminiRuntime> JsonlFamilyProjector for GeminiProjector<R> {
         _worker: &mut JsonlFamilyWorkerContext<R>,
         emit: &mut dyn FnMut(CoreRecord) -> GeminiResult<()>,
     ) -> GeminiResult<()> {
+        if record.oversized() {
+            self.rejections.malformed(
+                record,
+                format!("Gemini record exceeds the {MAX_PROVIDER_JSONL_LINE_BYTES} byte limit"),
+            );
+            return Ok(());
+        }
         let native_item_id = self.native_item_ids.candidate(record.bytes());
         if native_item_id
             .as_deref()
@@ -485,7 +507,7 @@ impl<R: GeminiRuntime> JsonlFamilyProjector for GeminiProjector<R> {
             return Ok(());
         }
         let evidence = record.evidence();
-        let events = self
+        let projection = self
             .parser
             .project(
                 record.bytes(),
@@ -495,6 +517,19 @@ impl<R: GeminiRuntime> JsonlFamilyProjector for GeminiProjector<R> {
                 evidence.record_digest(),
             )
             .map_err(capture_scan_error)?;
+        if let Some((kind, reason)) = projection.rejection {
+            let class = match kind {
+                GeminiRecordRejectionKind::Malformed => {
+                    SourceBackedRecordRejectionClass::MalformedRecord
+                }
+                GeminiRecordRejectionKind::Unsupported => {
+                    SourceBackedRecordRejectionClass::UnsupportedRecord
+                }
+            };
+            self.rejections.record(record, class, reason);
+            return Ok(());
+        }
+        let events = projection.events;
         if !events.is_empty() {
             self.native_item_ids.remember(native_item_id);
         }
@@ -530,6 +565,14 @@ impl<R: GeminiRuntime> JsonlFamilyProjector for GeminiProjector<R> {
         self.parser.finish().map_err(capture_scan_error)?;
         self.source_file.revalidate_leaf()?;
         self.authority.revalidate()
+    }
+
+    fn rejected_records(&self) -> u64 {
+        self.rejections.count()
+    }
+
+    fn take_record_rejections(&mut self) -> SourceBackedRecordRejectionDrafts {
+        self.rejections.take_drafts()
     }
 }
 

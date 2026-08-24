@@ -37,7 +37,8 @@ use crate::{
         family::jsonl::{
             JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf,
             JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyWorkerContext,
-            JsonlRecordRef,
+            JsonlOversizedRecordPolicy, JsonlRecordRef, JsonlRecordRejections,
+            SourceBackedRecordRejectionDrafts,
         },
         FallbackEventIdentityState,
     },
@@ -61,9 +62,9 @@ const KIMI_SOURCE_ANCHOR_NAMESPACE: &str = "kimi-code-cli-wire-lineage-v1";
 const KIMI_NATIVE_SESSION_NAMESPACE: &str = "kimi-code-cli-session-v1";
 const KIMI_LOGICAL_SESSION_KIND: &str = "agent-session";
 const KIMI_LOGICAL_EVENT_KIND: &str = "wire-event";
-// v6 omits optional activity fields that do not satisfy the Core admission bounds.
+// v7 also reports malformed newline-framed records without rejecting valid peers.
 const KIMI_SOURCE_PARSER_REVISION: &str =
-    "kimi-code-cli-source-backed-v6-optional-activity-admission";
+    "kimi-code-cli-source-backed-v7-optional-activity-admission-record-rejections";
 const KIMI_EVENT_IDENTITY_REVISION: &str = "kimi-code-cli-content-occurrence-v1";
 const KIMI_FALLBACK_FINGERPRINT_DOMAIN: &[u8] =
     b"ctx.kimi-code-cli.fallback-event-fingerprint.v1\0";
@@ -174,6 +175,10 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for KimiJsonlAdapter<R> {
         JsonlFamilyAppendMode::Replacement
     }
 
+    fn oversized_record_policy(&self) -> JsonlOversizedRecordPolicy {
+        JsonlOversizedRecordPolicy::RejectRecord
+    }
+
     fn discover(&self, root: &Path) -> crate::Result<JsonlFamilyInventory> {
         let inventory = discover_kimi_wire_files(root).map_err(capture_error)?;
         if inventory.root_missing {
@@ -265,6 +270,11 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for KimiJsonlAdapter<R> {
             state,
             index,
             fallback_identities,
+            rejections: JsonlRecordRejections::new(
+                leaf.source().clone(),
+                CaptureProvider::KimiCodeCli,
+                leaf.source_path().display().to_string(),
+            ),
         }))
     }
 }
@@ -277,6 +287,7 @@ struct KimiProjector<R: JsonlProviderRuntime> {
     state: Option<OpenedProviderSourceFile>,
     index: Option<OpenedProviderSourceFile>,
     fallback_identities: FallbackEventIdentityState<R>,
+    rejections: JsonlRecordRejections,
 }
 
 impl<R: JsonlProviderRuntime> JsonlFamilyProjector for KimiProjector<R> {
@@ -289,11 +300,26 @@ impl<R: JsonlProviderRuntime> JsonlFamilyProjector for KimiProjector<R> {
         emit: &mut dyn FnMut(CoreRecord) -> crate::Result<()>,
     ) -> crate::Result<()> {
         let bytes = record.bytes();
+        if record.oversized() {
+            self.rejections.malformed(
+                record,
+                format!(
+                    "Kimi record exceeds the {} byte limit",
+                    crate::MAX_PROVIDER_JSONL_LINE_BYTES
+                ),
+            );
+            return Ok(());
+        }
         if bytes.iter().all(u8::is_ascii_whitespace) {
             return Ok(());
         }
-        let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
-            return Ok(());
+        let value = match serde_json::from_slice::<Value>(bytes) {
+            Ok(value) => value,
+            Err(error) => {
+                self.rejections
+                    .malformed(record, format!("malformed Kimi JSONL: {error}"));
+                return Ok(());
+            }
         };
         if value.get("type").and_then(Value::as_str) == Some("metadata") {
             return Ok(());
@@ -324,6 +350,14 @@ impl<R: JsonlProviderRuntime> JsonlFamilyProjector for KimiProjector<R> {
         }
         self.authority.revalidate()?;
         self.fallback_identities.finish()
+    }
+
+    fn rejected_records(&self) -> u64 {
+        self.rejections.count()
+    }
+
+    fn take_record_rejections(&mut self) -> SourceBackedRecordRejectionDrafts {
+        self.rejections.take_drafts()
     }
 }
 

@@ -18,6 +18,10 @@ path = "tests/mistral_vibe_publication.rs"
 name = "jsonl_publication"
 path = "tests/jsonl_publication.rs"
 
+[[test]]
+name = "claude_failure_boundaries"
+path = "tests/claude_failure_boundaries.rs"
+
 [dev-dependencies]
 ctx-history-capture-composition = { path = "../ctx-history-capture-composition", features = ["test-support"] }
 ctx-history-capture-model = { path = "../ctx-history-capture-model" }

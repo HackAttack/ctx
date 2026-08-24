@@ -40,7 +40,7 @@ const NATIVE_EVENT_REUSED_TOOL_CALL_POSITION_KIND: &str =
     "mistral-vibe-duplicate-tool-call-id-ordinal";
 const LOGICAL_SESSION_KIND: &str = "mistral-vibe-session";
 const LOGICAL_EVENT_KIND: &str = "mistral-vibe-event";
-const PARSER_REVISION: &str = "mistral-vibe-source-backed-v14-optional-admission";
+const PARSER_REVISION: &str = "mistral-vibe-source-backed-v15-optional-admission-record-rejections";
 const PRE_AGENT_SCOPE_PARSER_REVISION: &str = "mistral-vibe-source-backed-v12-core-activity";
 
 fn source_key(native_session_id: &str) -> SourceKey {

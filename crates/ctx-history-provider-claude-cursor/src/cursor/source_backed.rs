@@ -28,12 +28,17 @@ use std::{
 use super::{
     discover_cursor_transcripts,
     layout::CursorTranscriptPath,
-    parser::project_cursor_jsonl_record,
+    parser::{
+        project_cursor_jsonl_record, project_cursor_jsonl_record_with_rejection,
+        CursorJsonlRecordOutcome, CursorRejectionKind,
+    },
     projection::{CursorEventBody, CursorNativeEvent},
 };
 use crate::CURSOR_AGENT_TRANSCRIPT_SOURCE_FORMAT;
 use ctx_history_jsonl::{
     fit_jsonl_activity, selected_content_fits, JsonlActivityObservedBytes, JsonlFamilyAdapter,
+    JsonlOversizedRecordPolicy, JsonlRecordRejections, SourceBackedRecordRejectionClass,
+    SourceBackedRecordRejectionDrafts,
 };
 use ctx_history_provider_runtime::{
     read_bounded_record_unhashed, source_io::OpenedProviderSourceFile, CaptureError,
@@ -55,7 +60,7 @@ const NATIVE_EVENT_LOGICAL_KIND: &str = "cursor.logical-event-v3";
 const LOGICAL_SESSION_KIND: &str = "cursor-session";
 const LOGICAL_EVENT_KIND: &str = "cursor-event";
 const SOURCE_SCHEMA_VARIANT: &str = "cursor-agent-transcript-jsonl-v1";
-const PARSER_REVISION: &str = "cursor-shared-jsonl-core-activity-v1";
+const PARSER_REVISION: &str = "cursor-shared-jsonl-core-activity-v2-record-rejections";
 const EVENT_SEQUENCE_PARTS: u64 = u16::MAX as u64 + 1;
 
 mod binding;
@@ -156,6 +161,10 @@ where
 
     fn append_mode(&self) -> JsonlFamilyAppendMode {
         JsonlFamilyAppendMode::ProjectorPreflight(true)
+    }
+
+    fn oversized_record_policy(&self) -> JsonlOversizedRecordPolicy {
+        JsonlOversizedRecordPolicy::RejectRecord
     }
 
     fn discover(&self, root: &Path) -> Result<ProviderJsonlInventory> {
@@ -273,6 +282,11 @@ where
                 }
                 _ => JsonlOrderedAppendOccurrenceState::default(),
             },
+            rejections: JsonlRecordRejections::new(
+                leaf.source().clone(),
+                CaptureProvider::Cursor,
+                leaf.source_path().display().to_string(),
+            ),
         }))
     }
 }
@@ -283,6 +297,19 @@ struct CursorProjector<B: ProviderRuntimeBinding> {
     session_id: StableEntityId,
     event_identities:
         JsonlOrderedAppendOccurrenceState<CursorLogicalEventIdentity, ProviderBaseEventLookup<B>>,
+    rejections: JsonlRecordRejections,
+}
+
+impl<B: ProviderRuntimeBinding> CursorProjector<B> {
+    fn reject(&mut self, record: JsonlRecordRef<'_>, kind: CursorRejectionKind, detail: String) {
+        let class = match kind {
+            CursorRejectionKind::MalformedJson => SourceBackedRecordRejectionClass::MalformedRecord,
+            CursorRejectionKind::UnsupportedShape => {
+                SourceBackedRecordRejectionClass::UnsupportedRecord
+            }
+        };
+        self.rejections.record(record, class, detail);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -333,16 +360,28 @@ where
     ) -> Result<()> {
         #[cfg(any(test, feature = "test-support"))]
         observe_cursor_projected_record(&self.source);
+        if record.oversized() {
+            self.reject(
+                record,
+                CursorRejectionKind::MalformedJson,
+                format!("Cursor record exceeds the {MAX_PROVIDER_JSONL_LINE_BYTES} byte limit"),
+            );
+            return Ok(());
+        }
         let evidence = record.evidence();
-        let Some(events) = project_cursor_jsonl_record(
+        let events = match project_cursor_jsonl_record_with_rejection(
             record.bytes(),
             evidence.physical_ordinal(),
             evidence.physical_ordinal(),
             evidence.byte_start(),
             evidence.byte_end_exclusive(),
-        )?
-        else {
-            return Ok(());
+        )? {
+            CursorJsonlRecordOutcome::Events(events) => events,
+            CursorJsonlRecordOutcome::Ignored => return Ok(()),
+            CursorJsonlRecordOutcome::Rejected(kind, detail) => {
+                self.reject(record, kind, detail);
+                return Ok(());
+            }
         };
         for event in events {
             let duplicate_occurrence = next_event_occurrence::<B>(
@@ -372,6 +411,14 @@ where
 
     fn provider_checkpoint(&self) -> Result<Option<TypedKey>> {
         Ok(None)
+    }
+
+    fn rejected_records(&self) -> u64 {
+        self.rejections.count()
+    }
+
+    fn take_record_rejections(&mut self) -> SourceBackedRecordRejectionDrafts {
+        self.rejections.take_drafts()
     }
 }
 

@@ -160,6 +160,9 @@ where
     L: CaptureLifecycleSink,
     S: DocumentRecordSpool,
 {
+    if let Some(detail) = leaf.snapshot.catalog_binding_failure.as_deref() {
+        return Err(invalid_route(detail));
+    }
     let (manifest, messages) =
         read_bound_leaf_files(&authority.root, &leaf.snapshot).map_err(route_error)?;
     let source_revision = source_revision(&leaf.snapshot, manifest.as_deref(), messages.as_deref());

@@ -45,8 +45,19 @@ fn registry(
     root: &Path,
 ) -> SourceBackedProviderRegistry {
     let mut registry = SourceBackedProviderRegistry::new();
+    register_source(&mut registry, provider, source_format, root);
+    assert_eq!(registry.routes().len(), 1);
+    registry
+}
+
+fn register_source(
+    registry: &mut SourceBackedProviderRegistry,
+    provider: CaptureProvider,
+    source_format: &'static str,
+    root: &Path,
+) {
     register_landed_source_backed_route(
-        &mut registry,
+        registry,
         ProviderSource {
             provider,
             path: root.to_path_buf(),
@@ -61,8 +72,6 @@ fn registry(
         SourceBackedRouteSelection::Automatic,
     )
     .unwrap();
-    assert_eq!(registry.routes().len(), 1);
-    registry
 }
 
 fn write_transcript(path: &Path, rows: &[Value]) {
@@ -695,4 +704,180 @@ fn cold_unavailable_configured_claude_home_does_not_block_healthy_peer() {
         .unwrap();
     assert_eq!(personal_root.routes().len(), 1);
     assert!(work_root.routes().is_empty());
+}
+
+#[test]
+fn claude_duplicate_identity_retains_warm_source_atomically_while_sibling_advances_and_repairs() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let projects = temp.path().join("projects");
+    let index = temp.path().join("index");
+    let retained_session = "retained-claude-session";
+    let sibling_session = "advancing-claude-session";
+    let retained_transcript = projects
+        .join("project")
+        .join(format!("{retained_session}.jsonl"));
+    let sibling_transcript = projects
+        .join("project")
+        .join(format!("{sibling_session}.jsonl"));
+    write_transcript(
+        &retained_transcript,
+        &[claude_message(
+            "user",
+            "retained-event",
+            retained_session,
+            "retained before failure",
+        )],
+    );
+    write_transcript(
+        &sibling_transcript,
+        &[claude_message(
+            "user",
+            "sibling-first",
+            sibling_session,
+            "sibling first",
+        )],
+    );
+    let registry = registry(
+        CaptureProvider::Claude,
+        "claude_projects_jsonl_tree",
+        &projects,
+    );
+
+    let initial = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(initial.failed_routes.is_empty());
+    let initial_generation = VerifiedIndex::open(&index)
+        .unwrap()
+        .generation_id()
+        .to_owned();
+    let retained_before = indexed_records(&index, CaptureProvider::Claude, retained_session);
+    assert_literal_bodies(&retained_before, &["retained before failure"]);
+
+    append_transcript(
+        &retained_transcript,
+        &claude_message(
+            "assistant",
+            "retained-event",
+            retained_session,
+            "must never publish partially",
+        ),
+    );
+    append_transcript(
+        &sibling_transcript,
+        &claude_message(
+            "assistant",
+            "sibling-second",
+            sibling_session,
+            "sibling second",
+        ),
+    );
+
+    let quarantined =
+        refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(quarantined.failed_routes.is_empty());
+    assert_eq!(quarantined.logical_source_failures.total(), 1);
+    let [failure] = quarantined.logical_source_failures.failures() else {
+        panic!("one Claude source failure expected");
+    };
+    assert!(failure.carried_forward);
+    assert_eq!(failure.source.provider(), CaptureProvider::Claude.as_str());
+    assert!(failure.detail.contains("repeats a stable event identity"));
+    assert_ne!(
+        VerifiedIndex::open(&index).unwrap().generation_id(),
+        initial_generation
+    );
+    assert_eq!(
+        indexed_records(&index, CaptureProvider::Claude, retained_session),
+        retained_before
+    );
+    assert_literal_bodies(
+        &indexed_records(&index, CaptureProvider::Claude, sibling_session),
+        &["sibling first", "sibling second"],
+    );
+
+    write_transcript(
+        &retained_transcript,
+        &[claude_message(
+            "assistant",
+            "repaired-event",
+            retained_session,
+            "repaired replacement",
+        )],
+    );
+    let repaired = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(repaired.failed_routes.is_empty());
+    assert!(repaired.logical_source_failures.is_empty());
+    assert_literal_bodies(
+        &indexed_records(&index, CaptureProvider::Claude, retained_session),
+        &["repaired replacement"],
+    );
+}
+
+#[test]
+fn cold_bad_claude_leaf_does_not_block_sibling_or_cursor_provider() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let projects = temp.path().join("projects");
+    let cursor_root = temp.path().join("cursor-data");
+    let index = temp.path().join("index");
+    let bad_session = "cold-bad-claude-session";
+    let sibling_session = "cold-good-claude-session";
+    let cursor_session = "cold-good-cursor-session";
+    write_transcript(
+        &projects
+            .join("bad-project")
+            .join(format!("{bad_session}.jsonl")),
+        &[
+            claude_message("user", "duplicate", bad_session, "bad first"),
+            claude_message("assistant", "duplicate", bad_session, "bad second"),
+        ],
+    );
+    write_transcript(
+        &projects
+            .join("good-project")
+            .join(format!("{sibling_session}.jsonl")),
+        &[claude_message(
+            "user",
+            "good-claude",
+            sibling_session,
+            "good Claude sibling",
+        )],
+    );
+    write_transcript(
+        &cursor_root
+            .join("projects/project/agent-transcripts")
+            .join(cursor_session)
+            .join(format!("{cursor_session}.jsonl")),
+        &[cursor_message(
+            "user",
+            "2026-08-23T00:00:00Z",
+            "good Cursor provider",
+        )],
+    );
+    let mut registry = SourceBackedProviderRegistry::new();
+    register_source(
+        &mut registry,
+        CaptureProvider::Claude,
+        "claude_projects_jsonl_tree",
+        &projects,
+    );
+    register_source(
+        &mut registry,
+        CaptureProvider::Cursor,
+        "cursor_agent_transcript_jsonl_tree",
+        &cursor_root,
+    );
+
+    let receipt = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(receipt.failed_routes.is_empty());
+    assert_eq!(receipt.successful_route_ids.len(), 2);
+    assert_eq!(receipt.logical_source_failures.total(), 1);
+    assert!(!receipt.logical_source_failures.failures()[0].carried_forward);
+    assert!(indexed_records(&index, CaptureProvider::Claude, bad_session).is_empty());
+    assert_literal_bodies(
+        &indexed_records(&index, CaptureProvider::Claude, sibling_session),
+        &["good Claude sibling"],
+    );
+    assert_literal_bodies(
+        &indexed_records(&index, CaptureProvider::Cursor, cursor_session),
+        &["good Cursor provider"],
+    );
 }

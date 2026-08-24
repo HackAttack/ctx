@@ -147,6 +147,37 @@ fn active_wal_scan_reads_latest_rows_without_persistent_source_writes() {
     drop(writer);
 }
 
+#[test]
+fn row_local_core_record_filter_does_not_absorb_capture_or_sqlite_failures() {
+    assert!(shelley_row_projection_error(
+        &ShelleySourceBackedError::CoreRecord(CoreRecordError::FieldTooLarge {
+            field: "normalized_body",
+            actual: 70 * 1024,
+            maximum: 64 * 1024,
+        })
+    ));
+    assert!(!shelley_row_projection_error(
+        &ShelleySourceBackedError::Capture(CaptureError::InvalidPayload(
+            "non-row capture failure".to_owned(),
+        ))
+    ));
+    assert!(!shelley_row_projection_error(
+        &ShelleySourceBackedError::SqliteSource(SqliteSourceAccessError::SourceChanged)
+    ));
+    for error in [
+        ShelleySourceBackedError::Projection(ProjectionContractError::SourceChanged),
+        ShelleySourceBackedError::Projection(ProjectionContractError::InvalidDerivedIdentity),
+        ShelleySourceBackedError::CoreRecord(CoreRecordError::Projection(
+            ProjectionContractError::SourceChanged,
+        )),
+        ShelleySourceBackedError::CoreRecord(CoreRecordError::InvalidIdentityRelationship),
+        ShelleySourceBackedError::CoreRecord(CoreRecordError::InvalidSessionRelationship),
+        ShelleySourceBackedError::CoreRecord(CoreRecordError::InvalidActivity),
+    ] {
+        assert!(!shelley_row_projection_error(&error), "{error:?}");
+    }
+}
+
 fn drain(adapter: &ShelleySourceBackedAdapter) -> (Vec<CoreRecord>, ShelleySourceBackedReceipt) {
     let mut scan = adapter.start_scan().unwrap();
     let mut documents = Vec::new();

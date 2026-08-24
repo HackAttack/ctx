@@ -195,9 +195,11 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
     let opening_membership = adapter
         .observe_terminal_membership(root, &opening)
         .map_err(|error| route_discovery(adapter, error))?;
+    // A rejected member with exact quarantine ownership belongs to a
+    // source-local failure even when a peer member owns the one diagnostic.
     let route_fatal_rejected = opening
         .quarantined_leaves()
-        .filter(|leaf| leaf.logical_source_failure.is_none())
+        .filter(|leaf| leaf.logical_source_failure.is_none() && leaf.quarantined_source.is_none())
         .collect::<Vec<_>>();
     if opening.accepted_len() == 0 && !route_fatal_rejected.is_empty() && bases.is_empty() {
         let rejected_records = route_fatal_rejected.iter().try_fold(0_u64, |total, leaf| {
@@ -221,10 +223,13 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
         if let Some((source, detail)) = &rejected.logical_source_failure {
             let failure =
                 SourceBackedRouteError::new(SourceBackedRouteErrorKind::InvalidSource, detail);
+            let carried_forward = bases
+                .iter()
+                .any(|base| base.observation().source().exact_descriptor_eq(source));
             if adapter.provider() == CaptureProvider::Codex {
                 sink.record_logical_source_quarantine(source.clone(), failure)
             } else {
-                sink.record_logical_source_failure(source.clone(), failure, false)
+                sink.record_logical_source_failure(source.clone(), failure, carried_forward)
             }
             .map_err(route_internal)?;
         }
@@ -366,11 +371,15 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
         .members()
         .iter()
         .filter_map(|member| match member {
-            JsonlFamilyInventoryMember::Quarantined { leaf, .. } => Some((
-                leaf.source_path.as_path(),
-                leaf.authority_path.as_path(),
-                &leaf.observation,
-            )),
+            JsonlFamilyInventoryMember::Quarantined { leaf, .. } => {
+                leaf.observation.as_ref().map(|observation| {
+                    (
+                        leaf.source_path.as_path(),
+                        leaf.authority_path.as_path(),
+                        observation,
+                    )
+                })
+            }
             JsonlFamilyInventoryMember::Pending { leaf, .. } => Some((
                 leaf.source_path.as_path(),
                 leaf.authority_path.as_path(),
@@ -403,10 +412,19 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
             SourceBackedRouteErrorKind::InvalidSource,
             &quarantined.detail,
         );
+        let carried_forward = bases.iter().any(|base| {
+            base.observation()
+                .source()
+                .exact_descriptor_eq(&quarantined.failure_source)
+        });
         if adapter.provider() == CaptureProvider::Codex {
             sink.record_logical_source_quarantine(quarantined.failure_source.clone(), failure)
         } else {
-            sink.record_logical_source_failure(quarantined.failure_source.clone(), failure, false)
+            sink.record_logical_source_failure(
+                quarantined.failure_source.clone(),
+                failure,
+                carried_forward,
+            )
         }
         .map_err(route_internal)?;
     }
@@ -544,7 +562,7 @@ pub(super) fn capture<R: JsonlFamilyRuntime>(
 /// classification. A nonempty first record without its framing terminator is
 /// pending/incomplete; zero-byte files and complete malformed records retain
 /// their existing provider semantics.
-fn classify_incomplete_first_records<R: JsonlFamilyRuntime>(
+pub(super) fn classify_incomplete_first_records<R: JsonlFamilyRuntime>(
     adapter: &dyn JsonlFamilyAdapter<Runtime = R>,
     opening: &mut JsonlFamilyInventory<JsonlRuntimeError<R>>,
 ) -> JsonlResult<(), JsonlRuntimeError<R>> {
@@ -580,27 +598,37 @@ fn classify_incomplete_first_records<R: JsonlFamilyRuntime>(
                 });
             }
             JsonlFamilyInventoryMember::Quarantined { identity, leaf } => {
-                let authority = exact_member_authority(
-                    &opening.authorities,
-                    &leaf.source_path,
-                    &leaf.authority_path,
-                )?;
-                if first_record_is_incomplete(
-                    &leaf.source_path,
-                    authority,
-                    &leaf.authority_path,
-                    &leaf.observation,
-                    leaf.physical_encoding,
-                    adapter.record_framing(),
-                    false,
-                )? {
+                // Provider classification wins once a member owns a diagnosed
+                // source failure; a framing probe must not erase that outcome.
+                let incomplete = if leaf.logical_source_failure.is_some() {
+                    false
+                } else if let Some(observation) = &leaf.observation {
+                    let authority = exact_member_authority(
+                        &opening.authorities,
+                        &leaf.source_path,
+                        &leaf.authority_path,
+                    )?;
+                    first_record_is_incomplete(
+                        &leaf.source_path,
+                        authority,
+                        &leaf.authority_path,
+                        observation,
+                        leaf.physical_encoding,
+                        adapter.record_framing(),
+                        false,
+                    )?
+                } else {
+                    false
+                };
+                if incomplete {
                     changed = true;
                     classified.push(JsonlFamilyInventoryMember::Pending {
                         identity,
                         leaf: JsonlFamilyPendingLeaf::bind_observed(
                             leaf.source_path,
                             leaf.authority_path,
-                            leaf.observation,
+                            leaf.observation
+                                .expect("incomplete quarantined leaf has an admitted observation"),
                             leaf.proof,
                             leaf.quarantined_source,
                         ),

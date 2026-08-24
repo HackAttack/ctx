@@ -4,9 +4,10 @@ use std::{
 };
 
 use ctx_history_capture_runtime::{
-    CaptureLifecycleSink, DocumentRecordSpool, ReplacementDocumentTree, SourceBackedRouteError,
-    SourceBackedRouteErrorKind, SourceBackedRouteResult, SourceBackedRouteSelection,
-    SourceBackedRouteWatchTargets, SourceBackedSelectorAuthority,
+    CaptureLifecycleSink, DocumentRecordSpool, ReplacementDocumentTree,
+    SourceBackedRecordRejectionDrafts, SourceBackedRouteError, SourceBackedRouteErrorKind,
+    SourceBackedRouteResult, SourceBackedRouteSelection, SourceBackedRouteWatchTargets,
+    SourceBackedSelectorAuthority,
 };
 use ctx_history_core::{CaptureProvider, CertifiedSource, TypedKey};
 use ctx_history_source_discovery::{LingmaDiscoveredInventory, LingmaDiscoveryUnavailable};
@@ -29,7 +30,10 @@ use crate::{
         PARSER_REVISION as ASTRBOT_SOURCE_BACKED_PARSER_REVISION,
     },
     provider::source_backed::family::document::ChangedDocumentSink,
-    provider::source_backed::{combine_primary_and_cleanup_route_errors, route_error},
+    provider::source_backed::{
+        combine_primary_and_cleanup_route_errors, route_error, sqlite_rejection_draft,
+        SourceBackedRecordRejectionClass,
+    },
     provider_sources::SqliteSourceReadSnapshot,
 };
 
@@ -211,19 +215,27 @@ where
         sink: &mut ChangedDocumentSink<'_, '_, L, S>,
     ) -> SourceBackedRouteResult<CertifiedSource> {
         let mut sink_failure = None;
-        let certificate = scan_astrbot_snapshot_v0(leaf, snapshot, &mut |record| {
-            if let Err(error) = sink.emit_core_record(record) {
-                let detail = error.to_string();
-                sink_failure = Some(error);
-                return Err(
+        let mut rejections = SourceBackedRecordRejectionDrafts::default();
+        let certificate = scan_astrbot_snapshot_v0(
+            leaf,
+            snapshot,
+            &mut |record| {
+                if let Err(error) = sink.emit_core_record(record) {
+                    let detail = error.to_string();
+                    sink_failure = Some(error);
+                    return Err(
                     crate::provider::providers::astrbot::native_path::source_backed::AstrBotSourceBackedErrorV0::Capture(
                         CaptureError::InvalidPayload(detail),
                     ),
                 );
-            }
-            Ok(())
-        });
-        astrbot_scan_route_result(sink_failure, certificate)
+                }
+                Ok(())
+            },
+            &mut rejections,
+        );
+        let certificate = astrbot_scan_route_result(sink_failure, certificate)?;
+        sink.record_rejections(rejections);
+        Ok(certificate)
     }
 }
 
@@ -385,6 +397,16 @@ where
                     return Err(abort_shelley_inventory_scan(scan, primary));
                 }
             };
+            for rejection in page.rejections {
+                sink.record_rejection(sqlite_rejection_draft(
+                    leaf.source(),
+                    CaptureProvider::Shelley,
+                    leaf.database_path(),
+                    u64::try_from(rejection.rowid).unwrap_or_default(),
+                    SourceBackedRecordRejectionClass::UnsupportedRecord,
+                    rejection.reason,
+                ));
+            }
             for document in page.documents {
                 if let Err(primary) = sink.emit_core_record(document) {
                     return Err(abort_shelley_inventory_scan(scan, primary));
@@ -550,17 +572,25 @@ where
         sink: &mut ChangedDocumentSink<'_, '_, L, S>,
     ) -> SourceBackedRouteResult<CertifiedSource> {
         let mut sink_failure = None;
-        let certificate = scan_lingma_snapshot_v0(leaf, snapshot, &mut |record| {
-            if let Err(error) = sink.emit_core_record(record) {
-                let detail = error.to_string();
-                sink_failure = Some(error);
-                return Err(LingmaSourceBackedErrorV0::Capture(
-                    CaptureError::InvalidPayload(detail),
-                ));
-            }
-            Ok(())
-        });
-        lingma_scan_route_result(sink_failure, certificate)
+        let mut rejections = SourceBackedRecordRejectionDrafts::default();
+        let certificate = scan_lingma_snapshot_v0(
+            leaf,
+            snapshot,
+            &mut |record| {
+                if let Err(error) = sink.emit_core_record(record) {
+                    let detail = error.to_string();
+                    sink_failure = Some(error);
+                    return Err(LingmaSourceBackedErrorV0::Capture(
+                        CaptureError::InvalidPayload(detail),
+                    ));
+                }
+                Ok(())
+            },
+            &mut rejections,
+        );
+        let certificate = lingma_scan_route_result(sink_failure, certificate)?;
+        sink.record_rejections(rejections);
+        Ok(certificate)
     }
 }
 
@@ -704,8 +734,10 @@ pub(crate) fn sqlite_source_route_error_kind(
         SourceBackedRouteErrorKind::SourceChanged
     } else if error.is_snapshot_capacity_failure() {
         SourceBackedRouteErrorKind::Unavailable
-    } else if error.is_systemic_resource_failure() || error.is_busy_or_locked() {
+    } else if error.is_systemic_resource_failure() {
         SourceBackedRouteErrorKind::ResourceUnavailable
+    } else if sqlite_provider_artifact_is_busy_or_locked(error) {
+        SourceBackedRouteErrorKind::Unavailable
     } else if error.is_ctx_owned_corruption() {
         SourceBackedRouteErrorKind::Internal
     } else if error.is_provider_corruption() || error.is_provider_path_unavailable() {
@@ -715,6 +747,20 @@ pub(crate) fn sqlite_source_route_error_kind(
     } else {
         SourceBackedRouteErrorKind::InvalidSource
     }
+}
+
+fn sqlite_provider_artifact_is_busy_or_locked(
+    error: &crate::provider_sources::SqliteSourceAccessError,
+) -> bool {
+    error.is_busy_or_locked()
+        && error.diagnostic().is_some_and(|diagnostic| {
+            matches!(
+                diagnostic.artifact,
+                crate::provider_sources::SqliteArtifactKind::ProviderDatabase
+                    | crate::provider_sources::SqliteArtifactKind::ProviderWal
+                    | crate::provider_sources::SqliteArtifactKind::ProviderSharedMemory
+            )
+        })
 }
 
 pub(crate) fn sqlite_capture_route_error(
@@ -728,8 +774,7 @@ pub(crate) fn sqlite_capture_route_error(
             Some(SourceBackedRouteErrorKind::ResourceUnavailable)
         }
         CaptureError::Sqlite(error)
-            if crate::provider_sources::rusqlite_resource_failure(error)
-                || crate::provider_sources::rusqlite_busy_or_locked(error) =>
+            if crate::provider_sources::rusqlite_resource_failure(error) =>
         {
             Some(SourceBackedRouteErrorKind::ResourceUnavailable)
         }

@@ -235,6 +235,78 @@ fn record_for_only_message(source: &OpenedSource) -> ctx_history_core::CoreRecor
 }
 
 #[test]
+fn row_local_projection_failure_becomes_a_record_rejection() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let path = temp.path().join("row-local.db");
+    write_database(&path, "session", "message", "body");
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "update messages set id = ?1 where id = 'message'",
+            ["x".repeat(70 * 1024)],
+        )
+        .unwrap();
+    let frozen = bind_inventory(
+        crate::test_provider_sqlite_data_root(),
+        inventory(b"row-local", vec![database("project", &path)]),
+    )
+    .unwrap();
+    let source = open_source(frozen.databases.into_iter().next().unwrap()).unwrap();
+    let candidate = super::super::query::next_candidate(
+        source.connection().unwrap(),
+        &source.schema,
+        &CrushNativeFrontier { after_rowid: None },
+    )
+    .unwrap()
+    .unwrap();
+    let CrushLoadedRow {
+        row,
+        session: Some(session),
+        ..
+    } = super::super::query::load_message_batch(
+        source.connection().unwrap(),
+        &source.schema,
+        &[candidate],
+    )
+    .unwrap()
+    .remove(&candidate.rowid)
+    .unwrap()
+    .unwrap()
+    else {
+        panic!("expected one parented Crush message row");
+    };
+    let CrushRecordProjection::Message(projection) = project_message(&row, Some(&session)).unwrap()
+    else {
+        panic!("expected the oversized identity row to reach Core projection");
+    };
+
+    let error = core_record(&source, &row, &session, &projection).unwrap_err();
+    assert!(crush_row_projection_error(&error));
+    assert!(finish_opened_source(source).unwrap());
+}
+
+#[test]
+fn row_local_projection_filter_preserves_core_invariants() {
+    assert!(crush_row_projection_error(
+        &CrushSourceBackedErrorV0::Projection(ProjectionContractError::FieldTooLarge {
+            field: "typed_key_utf8",
+            actual: 2,
+            maximum: 1,
+        })
+    ));
+    for error in [
+        CrushSourceBackedErrorV0::Projection(ProjectionContractError::SourceChanged),
+        CrushSourceBackedErrorV0::Projection(ProjectionContractError::InvalidDerivedIdentity),
+        CrushSourceBackedErrorV0::CoreRecord(CoreRecordError::Projection(
+            ProjectionContractError::SourceChanged,
+        )),
+        CrushSourceBackedErrorV0::CoreRecord(CoreRecordError::InvalidSessionRelationship),
+    ] {
+        assert!(!crush_row_projection_error(&error), "{error:?}");
+    }
+}
+
+#[test]
 fn source_backed_message_round_trips_full_policy_body_and_structured_content() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let path = temp.path().join("full-body.db");

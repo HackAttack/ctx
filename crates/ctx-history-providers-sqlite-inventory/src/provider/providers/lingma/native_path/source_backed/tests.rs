@@ -177,6 +177,62 @@ fn cold_scan_is_bounded_deterministic_and_emits_valid_stable_core() {
 }
 
 #[test]
+fn row_local_projection_failure_rejects_only_its_chat_record() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let path = temp.path().join("local.db");
+    let connection = create_database(&path);
+    insert_row(
+        &connection,
+        &"x".repeat(70 * 1024),
+        "bad-request",
+        "bad prompt",
+        None,
+    );
+    insert_row(
+        &connection,
+        "healthy-session",
+        "healthy-request",
+        "healthy prompt",
+        None,
+    );
+    drop(connection);
+    let opening = inventory(vec![database(&path, "vscode:stable:row-local")]);
+    let closing = opening.clone();
+
+    let scan =
+        scan_lingma_source_backed_v0(crate::test_provider_sqlite_data_root(), opening, || {
+            Ok(closing)
+        })
+        .unwrap();
+    let records = all_records(&scan);
+    let counts = scan.databases()[0].certificate.counts();
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].content.meaningful_text(), "healthy prompt");
+    assert_eq!(counts.complete_records, 2);
+    assert_eq!(counts.retained_records, 1);
+    assert_eq!(counts.rejected_records, 1);
+    assert_eq!(counts.indexed_documents, 1);
+}
+
+#[test]
+fn row_local_projection_filter_preserves_core_invariants() {
+    assert!(lingma_row_projection_error(
+        &LingmaSourceBackedErrorV0::EmptySelectedBody
+    ));
+    for error in [
+        LingmaSourceBackedErrorV0::Projection(ProjectionContractError::SourceChanged),
+        LingmaSourceBackedErrorV0::Projection(ProjectionContractError::InvalidDerivedIdentity),
+        LingmaSourceBackedErrorV0::CoreRecord(CoreRecordError::Projection(
+            ProjectionContractError::SourceChanged,
+        )),
+        LingmaSourceBackedErrorV0::CoreRecord(CoreRecordError::InvalidIdentityRelationship),
+    ] {
+        assert!(!lingma_row_projection_error(&error), "{error:?}");
+    }
+}
+
+#[test]
 fn finite_inventory_certifies_complete_bodies_and_order_independent_ids() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let first_path = temp.path().join("vscode-local.db");

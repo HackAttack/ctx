@@ -18,7 +18,7 @@ const INVENTORY_AUTHORITY_NAMESPACE: &str = "lingma.installed-client-profile-ver
 const INVENTORY_REVISION_KIND: &str = "lingma-finite-database-inventory-v0";
 #[cfg(test)]
 const INVENTORY_DISCOVERY_REVISION: &str = "lingma-installed-database-discovery-v0";
-pub(crate) const PARSER_REVISION: &str = "lingma-source-backed-core-v2-neutral-core";
+pub(crate) const PARSER_REVISION: &str = "lingma-source-backed-core-v3-record-rejections";
 const NATIVE_SESSION_NAMESPACE: &str = "lingma.session";
 const NATIVE_REQUEST_NAMESPACE: &str = "lingma.chat-record.request";
 const NATIVE_POSITION_KIND: &str = "lingma.chat-record.scan-ordinal";
@@ -62,3 +62,18 @@ pub(crate) enum LingmaSourceBackedErrorV0 {
 }
 
 pub(crate) type LingmaSourceBackedResultV0<T> = Result<T, LingmaSourceBackedErrorV0>;
+
+fn lingma_row_projection_error(error: &LingmaSourceBackedErrorV0) -> bool {
+    matches!(
+        error,
+        LingmaSourceBackedErrorV0::Projection(ProjectionContractError::EmptyField {
+            field: "typed_key_utf8",
+        }) | LingmaSourceBackedErrorV0::Projection(ProjectionContractError::FieldTooLarge {
+            field: "typed_key_utf8" | "typed_composite_key",
+            ..
+        }) | LingmaSourceBackedErrorV0::CoreRecord(CoreRecordError::FieldTooLarge {
+            field: "normalized_body" | "structured_content" | "selected_content",
+            ..
+        }) | LingmaSourceBackedErrorV0::EmptySelectedBody
+    )
+}
