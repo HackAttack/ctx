@@ -301,7 +301,7 @@ metadata-only runs, complete structured diff/output retention, and stable ctx
 citations with provider/session identity.
 
 Custom history importers and history-source plugins use the public
-`ctx-history-jsonl-v1` contract instead of a native provider storage family, but
+`ctx-history-jsonl-v2` contract instead of a native provider storage family, but
 they should follow the same content policy: complete accepted conversation and
 structured tool content is stored, meaningful text is indexed, and unsupported
 binary/provider-private material is explicitly omitted.

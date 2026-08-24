@@ -11,6 +11,70 @@ mod tests {
 "#;
 
     #[test]
+    fn persisted_custom_v1_authority_is_decodable_but_only_replaceable_by_v2() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_root = temp.path().join("data");
+        let old_path = temp.path().join("legacy.jsonl");
+        let replacement_path = temp.path().join("replacement.jsonl");
+        fs::write(&old_path, b"\n").unwrap();
+        fs::write(&replacement_path, b"\n").unwrap();
+
+        let old_lineage = encode_hex(&[0x11; 32]);
+        let old = authority_for(
+            1,
+            &[CatalogEntry {
+                provider: CaptureProvider::Custom.as_str().to_owned(),
+                source_format: RETIRED_CUSTOM_V1_SOURCE_FORMAT.to_owned(),
+                path: old_path,
+                catalog_lineage: old_lineage.clone(),
+                route_identity: None,
+                relocate_from: None,
+                enabled: true,
+            }],
+        )
+        .unwrap();
+        let decoded = ExplicitSourceCatalogAuthority::from_json(&old.to_json()).unwrap();
+        let error = decoded
+            .admission_discovery_report(&data_root)
+            .expect_err("retired v1 authority must never become executable");
+        assert!(
+            error.to_string().contains(
+                "retired ctx-history-jsonl-v1; rewrite the source as ctx-history-jsonl-v2"
+            ),
+            "{error:#}"
+        );
+
+        let replacement =
+            upsert_explicit_source(&data_root, &custom_source(replacement_path)).unwrap();
+        let old_route =
+            ctx_history_index::SourceRouteIdentity::from_sha256("22".repeat(32)).unwrap();
+        let replacement_route =
+            ctx_history_index::SourceRouteIdentity::from_sha256("33".repeat(32)).unwrap();
+        let retirements = ExplicitSourceCatalogAuthority::replacement_route_retirements(
+            Some((
+                &decoded,
+                &[ExplicitSourceCatalogRouteBinding {
+                    catalog_lineage: old_lineage,
+                    route_identity: old_route.as_str().to_owned(),
+                }],
+            )),
+            Some((
+                &replacement.authority,
+                &[ExplicitSourceCatalogRouteBinding {
+                    catalog_lineage: replacement.catalog_lineage_hex(),
+                    route_identity: replacement_route.as_str().to_owned(),
+                }],
+            )),
+        )
+        .unwrap();
+
+        assert_eq!(
+            retirements,
+            BTreeMap::from([(replacement_route, vec![old_route])])
+        );
+    }
+
+    #[test]
     fn exact_source_registration_is_an_inline_request_overlay() {
         let temp = tempfile::tempdir().unwrap();
         let data_root = temp.path().join("data");

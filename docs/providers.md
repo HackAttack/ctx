@@ -29,12 +29,14 @@ codex, grok-build, deepseek-harness, claude, cursor, pi, opencode, github-copilo
 
 Aliases are accepted for common naming differences, for example `grok`, `dsh`, `deepseek_harness`, `claude-code`, `gemini-cli`, `github-copilot`, `droid`, `augment`, `qoder-cn`, and `roo-code`. The shorter name `deepseek` is not a DeepSeek Harness alias.
 
-Custom history is separate: `ctx import --input-format ctx-history-jsonl-v1
+Custom history is separate: `ctx import --input-format ctx-history-jsonl-v2
 --path <file>` reads an explicit JSONL interchange file from any exporter, and
 history-source plugin manifests can register a durable provider-owned file.
 The optional `provider_native_v1` lineage contract accepts typed relationships
-and exact native copied-from selectors; legacy files and command-only plugins
-remain lineage/origin unknown.
+and exact native-event copied-from selectors inside the v2 schema; the proof
+name does not introduce a second session ID. The v1 schema is unsupported and
+is neither accepted as an alias nor translated. Command-only plugins remain
+lineage/origin unknown.
 
 Exact MCP server/tool attribution is a separate, narrower event capability.
 Supported provider import does not automatically qualify it. The complete

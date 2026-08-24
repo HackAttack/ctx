@@ -526,6 +526,8 @@ pub struct SearchEventMetadata {
     pub session_relationship: Option<ProviderNativeSessionRelationship>,
     pub event_copy: Option<ProviderNativeEventCopy>,
     pub provider: String,
+    pub provider_key: Option<String>,
+    pub source_id: Option<String>,
     pub source_format: String,
     pub provider_session_id: Option<String>,
     pub agent_scope: Option<AgentScope>,
@@ -537,6 +539,11 @@ pub struct SearchEventMetadata {
 
 impl From<&EventRecord> for SearchEventMetadata {
     fn from(event: &EventRecord) -> Self {
+        let (provider_key, source_id) = event
+            .custom_source_identity()
+            .map_or((None, None), |(provider_key, source_id)| {
+                (Some(provider_key.to_owned()), Some(source_id.to_owned()))
+            });
         Self {
             event_id: event.event_id.as_uuid(),
             session_id: event.session_id.as_uuid(),
@@ -545,6 +552,8 @@ impl From<&EventRecord> for SearchEventMetadata {
             session_relationship: event.session_relationship,
             event_copy: event.event_copy.clone(),
             provider: event.provider.clone(),
+            provider_key,
+            source_id,
             source_format: event.source_format.clone(),
             provider_session_id: event.provider_session_id.clone(),
             agent_scope: event.agent_scope,

@@ -183,18 +183,7 @@ pub(super) fn event_type_union_query(
 }
 
 pub(super) fn custom_source_identity(event: &EventRecord) -> Option<(&str, &str)> {
-    if event.provider != "custom" {
-        return None;
-    }
-    let Some(TypedKey::Composite(values)) = event.native_event_id.as_ref() else {
-        return None;
-    };
-    let [TypedKey::Utf8(provider_key), TypedKey::Utf8(source_id), TypedKey::Utf8(_)] =
-        values.as_slice()
-    else {
-        return None;
-    };
-    Some((provider_key, source_id))
+    event.custom_source_identity()
 }
 
 pub(super) fn source_identity_values_match(

@@ -230,6 +230,8 @@ pub fn search_result_json(
         "more_matches_in_session": (result_scope == "session")
             .then_some(hit.more_matches_in_session),
         "provider": event.provider,
+        "provider_key": event.provider_key,
+        "source_id": event.source_id,
         "provider_session_id": event.provider_session_id,
         "source_format": event.source_format,
         "parent_ctx_session_id": event.parent_session_id,

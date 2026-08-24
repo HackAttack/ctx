@@ -66,6 +66,8 @@ pub struct ShowSessionArgs {
     pub id: Option<String>,
     pub provider: Option<ProviderArg>,
     pub provider_session: Option<String>,
+    pub provider_key: Option<String>,
+    pub source_id: Option<String>,
     pub mode: TranscriptMode,
     pub max_events: Option<usize>,
     pub format: OutputFormat,
@@ -94,6 +96,8 @@ pub struct LocateSessionArgs {
     pub id: Option<String>,
     pub provider: Option<ProviderArg>,
     pub provider_session: Option<String>,
+    pub provider_key: Option<String>,
+    pub source_id: Option<String>,
     pub format: JsonOutputFormat,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]

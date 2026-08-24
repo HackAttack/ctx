@@ -4,8 +4,8 @@ use ctx_history_cli::{
     list_events_selection_from_request, ContentScopeArg, EventContentProjection,
     EventContentProjectionArg, EventQueryDirection, EventQueryScope, EventQueryWireRequest,
     JsonOutputFormat, ListEventsArgs, ListEventsContentProjection, ListEventsDirection,
-    ListEventsRequest, ListEventsScope, RefreshMode, SearchArgs, SearchBackend, SearchBackendArg,
-    SearchRequest,
+    ListEventsRequest, ListEventsScope, LocateRequest, OutputFormat, RefreshMode, SearchArgs,
+    SearchBackend, SearchBackendArg, SearchRequest, ShowRequest, TranscriptMode,
 };
 use ctx_history_index::{CoreEventRangeDirection, CoreEventRangeScope, SearchContentScope};
 use ctx_history_read_application::SearchBackend as ExecutionSearchBackend;
@@ -169,4 +169,44 @@ fn neutral_search_backend_is_explicit_and_not_reconstructed_from_defaults() {
     let execution = ctx_history_read_application::SearchRequest::from(request);
     assert_eq!(execution.backend, Some(ExecutionSearchBackend::Semantic));
     assert_eq!(execution.content_scope, SearchContentScope::Calls);
+}
+
+#[test]
+fn show_and_locate_requests_preserve_custom_route_qualifiers() {
+    let show = ShowRequest::Session {
+        id: None,
+        provider: None,
+        provider_session: Some("provider-session".to_owned()),
+        provider_key: Some("amp".to_owned()),
+        source_id: Some("threads".to_owned()),
+        mode: TranscriptMode::Lite,
+        max_events: None,
+        format: OutputFormat::Json,
+        out: None,
+    };
+    assert!(matches!(
+        show,
+        ShowRequest::Session {
+            provider_key: Some(ref provider_key),
+            source_id: Some(ref source_id),
+            ..
+        } if provider_key == "amp" && source_id == "threads"
+    ));
+
+    let locate = LocateRequest::Session {
+        id: None,
+        provider: None,
+        provider_session: Some("provider-session".to_owned()),
+        provider_key: Some("amp".to_owned()),
+        source_id: Some("threads".to_owned()),
+        format: OutputFormat::Json,
+    };
+    assert!(matches!(
+        locate,
+        LocateRequest::Session {
+            provider_key: Some(ref provider_key),
+            source_id: Some(ref source_id),
+            ..
+        } if provider_key == "amp" && source_id == "threads"
+    ));
 }

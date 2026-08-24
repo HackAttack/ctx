@@ -59,6 +59,8 @@ A result can include:
 
 - ctx-owned event and session IDs;
 - the provider-owned session ID when known;
+- the exporter-declared `provider_key` and `source_id` for custom history
+  sources; human output labels these results as `provider_key/source_id`;
 - title, Core-backed snippet, one-based final rank, result scope, and match reasons;
 - the backend-provided `retrieval_score`, which is diagnostic and can be
   non-monotonic after query-coverage and root-diversity shaping;

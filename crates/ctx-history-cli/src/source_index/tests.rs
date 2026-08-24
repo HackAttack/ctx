@@ -811,7 +811,7 @@ fn show_schema_v1_reads_complete_normalized_core_content() {
     write_test_generation(temp.path());
     let index = open_index(temp.path()).unwrap();
     let session = index
-        .sessions_by_provider_session_id(TEST_SESSION_ID, Some("codex"))
+        .sessions_by_provider_session_id(TEST_SESSION_ID, Some("codex"), None, None)
         .unwrap()
         .into_iter()
         .next()
@@ -1051,7 +1051,7 @@ fn show_provider_session_resolution_is_ambiguous_until_provider_qualified() {
     let index = open_index(temp.path()).unwrap();
 
     let matches = index
-        .sessions_by_provider_session_id(TEST_SESSION_ID, None)
+        .sessions_by_provider_session_id(TEST_SESSION_ID, None, None, None)
         .unwrap();
     assert_eq!(matches.len(), 2);
     let error = resolve_show_session(&index, None, Some(TEST_SESSION_ID), None).unwrap_err();
@@ -1061,7 +1061,9 @@ fn show_provider_session_resolution_is_ambiguous_until_provider_qualified() {
         assert!(detail.contains(&session.session_id.to_string()), "{detail}");
     }
     assert!(
-        detail.contains("pass --provider or a ctx session ID"),
+        detail.contains(
+            "pass --provider, --provider-key/--source-id for custom history, or a ctx session ID"
+        ),
         "{detail}"
     );
 
