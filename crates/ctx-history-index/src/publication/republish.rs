@@ -48,6 +48,7 @@ pub(crate) use clone::{
 pub(crate) enum CurrentRepublishOutcome {
     Published(ActiveGenerationPointer),
     CommittedVisible {
+        #[cfg_attr(not(test), allow(dead_code))]
         pointer: ActiveGenerationPointer,
         recovery: RepublishRecovery,
     },

@@ -85,7 +85,7 @@ RUST_FORMAT_TARGETS = [
     "//crates/ctx-history-index-query:writer_integration_tests",
     "//crates/ctx-history-snapshot-reader:unit_tests",
     "//crates/ctx-history-read-application:unit_tests",
-    "//crates/ctx-history-index:source_backed_recovery_tests",
+    "//crates/ctx-history-index-qualification:source_backed_recovery_tests",
     "//crates/ctx-history-index:unit_tests",
     "//crates/ctx-history-jsonl:unit_tests",
     "//crates/ctx-history-native-jsonl-parsers:unit_tests",

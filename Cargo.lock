@@ -1223,6 +1223,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctx-history-index-qualification"
+version = "1.1.0"
+dependencies = [
+ "ctx-history-core",
+ "ctx-history-index",
+ "serde_json",
+ "tantivy",
+ "tempfile",
+]
+
+[[package]]
 name = "ctx-history-index-query"
 version = "1.1.0"
 dependencies = [

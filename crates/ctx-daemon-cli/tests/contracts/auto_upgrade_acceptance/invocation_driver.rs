@@ -112,9 +112,9 @@ fn live_switch_to_source_refresh_only_terminalizes_a_prepared_upgrade() {
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
                 .is_some_and(|state| {
                     state["status"] == "error"
-                        && state["error"]
-                            .as_str()
-                            .is_some_and(|error| error.contains("mode changed to source-refresh-only"))
+                        && state["error"].as_str().is_some_and(|error| {
+                            error.contains("mode changed to source-refresh-only")
+                        })
                 })
         },
     );

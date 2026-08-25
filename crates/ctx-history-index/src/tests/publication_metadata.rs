@@ -1,6 +1,7 @@
 use std::{cell::Cell, panic::AssertUnwindSafe};
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
+use ctx_history_index_generation::acquire_retained_generation_read_lease;
 use tantivy::{
     collector::Count, indexer::NoMergePolicy, query::TermQuery, schema::IndexRecordOption,
 };
@@ -504,6 +505,36 @@ fn one_durable_lease_retains_an_exact_old_generation_without_changing_peer_slots
         VerifiedIndex::open_pinned_generation(temp.path(), &first.receipt().generation_id),
         Err(IndexError::PinnedGenerationNotRetained { .. })
     ));
+    assert_eq!(generation_directories(temp.path()).len(), 2);
+}
+
+#[test]
+fn candidate_certification_accepts_aliases_held_by_a_process_reader() {
+    let temp = tempdir().unwrap();
+    let first_source = source("process-reader-first.jsonl");
+    let first = publish_with_metadata(temp.path(), &first_source, 1, "first", b"first");
+    let lease = acquire_generation_retention_lease(
+        temp.path(),
+        &first.receipt().generation_id,
+        "process_reader_test",
+        &"c".repeat(64),
+    )
+    .unwrap();
+
+    let second_source = source("process-reader-second.jsonl");
+    publish_with_metadata(temp.path(), &second_source, 2, "second", b"second");
+    let third_source = source("process-reader-third.jsonl");
+    publish_with_metadata(temp.path(), &third_source, 3, "third", b"third");
+    let process_lease = acquire_retained_generation_read_lease(temp.path(), &lease).unwrap();
+    assert!(release_generation_retention_lease(temp.path(), &lease).unwrap());
+
+    let fourth_source = source("process-reader-fourth.jsonl");
+    publish_with_metadata(temp.path(), &fourth_source, 4, "fourth", b"fourth");
+    assert_eq!(generation_directories(temp.path()).len(), 3);
+
+    drop(process_lease);
+    let fifth_source = source("process-reader-fifth.jsonl");
+    publish_with_metadata(temp.path(), &fifth_source, 5, "fifth", b"fifth");
     assert_eq!(generation_directories(temp.path()).len(), 2);
 }
 

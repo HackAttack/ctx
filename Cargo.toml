@@ -35,6 +35,7 @@ members = [
     "crates/ctx-history-platform",
     "crates/ctx-history-cli",
     "crates/ctx-history-index",
+    "crates/ctx-history-index-qualification",
     "crates/ctx-history-index-format",
     "crates/ctx-history-index-generation",
     "crates/ctx-history-index-query",

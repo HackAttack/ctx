@@ -16,9 +16,15 @@ use ctx_history_platform::platform_security::ensure_private_directory;
 
 use crate::{
     active_index_files, load_active_generation_pointer, manifest_path,
-    physical::physical_integrity_digest_from_parts, physical_integrity_audit, slot_path,
-    ActiveGenerationPointer, DurableMmapDirectory, GenerationError as IndexError, GenerationSlot,
-    PhysicalIntegrityAudit, Result, INDEX_GENERATIONS_DIRECTORY, MANIFEST_DIRECTORY,
+    physical::physical_integrity_digest_from_parts,
+    physical_integrity_audit,
+    retention::{
+        acquire_existing_generation_directory_read_authority,
+        ExistingGenerationDirectoryReadAuthority,
+    },
+    slot_path, ActiveGenerationPointer, DurableMmapDirectory, GenerationError as IndexError,
+    GenerationRetentionLease, GenerationSlot, PhysicalIntegrityAudit, Result,
+    INDEX_GENERATIONS_DIRECTORY, MANIFEST_DIRECTORY,
 };
 
 // Version 5 deliberately drops the active-pointer identity. A certification
