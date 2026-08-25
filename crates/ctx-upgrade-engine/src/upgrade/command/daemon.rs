@@ -140,9 +140,13 @@ where
             semantic_enabled: current.semantic_enabled(),
         };
         let plan = build_upgrade_plan(engine, lock.as_ref().unwrap(), policy, None, true)?;
-        let semantic_repair_required =
-            semantic_install_required(engine.semantic_layout, &plan, data_root)?;
-        if !plan.update_available && !semantic_repair_required {
+        let repairs = classify_repair_requirements(
+            engine.semantic_layout,
+            &plan,
+            data_root,
+            policy.semantic_enabled,
+        )?;
+        if !plan.update_available && !repairs.any() {
             write_state_checked_locked(
                 data_root,
                 lock.as_ref().unwrap(),
@@ -197,7 +201,9 @@ where
         } else {
             None
         };
-        let runtime_artifact = if plan.update_available && plan.semantic_provisioning.is_none() {
+        let runtime_artifact = if (plan.update_available || repairs.legacy_runtime)
+            && plan.semantic_provisioning.is_none()
+        {
             match (
                 plan.metadata.onnxruntime.as_ref(),
                 plan.onnxruntime_artifact_url(),
@@ -219,7 +225,7 @@ where
             None
         };
         let mut semantic_artifacts = Vec::new();
-        if semantic_repair_required {
+        if repairs.catalog {
             let provisioning = plan
                 .semantic_provisioning
                 .as_ref()

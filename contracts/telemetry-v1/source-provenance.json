@@ -16,7 +16,7 @@
     "crates/ctx-client-observability/src/analytics/sender.rs": "c50a45a1db9554a4fe6000e97baf731d3bc25a1536f6d950450b141f50661eb2",
     "crates/ctx-cli/src/upgrade/command.rs": "0e0929c0cc854bf3d79637b293159dde3a6bd09fe06d5067e6506d2e036a5e10",
     "crates/ctx-cli/src/upgrade/ports.rs": "08e16fd1d1ad294cad261d0355d0a63ae24c0c9420b127d9739505fbb5696650",
-    "crates/ctx-upgrade-engine/src/upgrade/command/daemon.rs": "294ee5c5b425747ecdc01648476c1686fabc1e221d927b640b56e8f5eaea2386",
+    "crates/ctx-upgrade-engine/src/upgrade/command/daemon.rs": "0606db67fbadfec3c830571b99da65edbe77a4275700b68e72c05223580a790a",
     "crates/ctx-upgrade-engine/src/upgrade/state.rs": "77657769f52ab3dbefa7a66c2f714bf4bc8309bada5792a6ca2c473647a29dd8"
   }
 }

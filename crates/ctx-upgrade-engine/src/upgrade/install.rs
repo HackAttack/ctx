@@ -33,7 +33,6 @@ pub use marker::{
     unmanaged_install_conversion_guidance, InstallMarker,
 };
 pub use marker::{managed_install_marker_for_current_exe, ManagedInstallMarker};
-pub(super) use runtime::semantic_install_required;
 pub(super) use transaction::ApplyResult;
 #[cfg(windows)]
 pub(in crate::upgrade) use transaction::HelperOutcome;
@@ -44,6 +43,42 @@ pub(super) use transaction::{PendingRecovery, TerminalRecovery};
 use self::lock::canonical_executable;
 pub(in crate::upgrade) use self::lock::InstallationLock;
 use super::{ReleaseProcessPort, SemanticLayoutPort, UpgradePlan};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RepairRequirements {
+    pub(super) catalog: bool,
+    pub(super) legacy_runtime: bool,
+}
+
+impl RepairRequirements {
+    pub(super) fn any(self) -> bool {
+        self.catalog || self.legacy_runtime
+    }
+}
+
+pub(super) fn classify_repair_requirements(
+    layout: &dyn SemanticLayoutPort,
+    plan: &UpgradePlan,
+    data_root: &Path,
+    semantic_enabled: bool,
+) -> Result<RepairRequirements> {
+    let catalog = runtime::semantic_install_required(layout, plan, data_root)?;
+    let legacy_runtime = if !plan.update_available
+        && plan.latest_version == plan.current_version
+        && semantic_enabled
+        && plan.semantic_provisioning.is_none()
+        && plan.metadata.onnxruntime.is_some()
+    {
+        runtime::legacy_runtime_install_required(plan, data_root)?
+    } else {
+        false
+    };
+    debug_assert!(!(catalog && legacy_runtime));
+    Ok(RepairRequirements {
+        catalog,
+        legacy_runtime,
+    })
+}
 
 #[cfg(unix)]
 pub(in crate::upgrade) fn discard_legacy_previous_binary(install_path: &Path) -> Result<()> {

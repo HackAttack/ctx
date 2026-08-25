@@ -14,8 +14,8 @@ use ctx_history_platform::platform_security::{
 
 use super::download::DownloadedArtifact;
 use super::install::{
-    apply_artifact, capture_install_snapshot, current_install_path, pending_recovery,
-    recover_interrupted_install, remove_terminal_recovery, semantic_install_required, ApplyResult,
+    apply_artifact, capture_install_snapshot, classify_repair_requirements, current_install_path,
+    pending_recovery, recover_interrupted_install, remove_terminal_recovery, ApplyResult,
     InstallRecovery, PendingRecovery, TerminalRecovery,
 };
 #[cfg(unix)]
@@ -517,9 +517,13 @@ fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
     let attempt = begin_manual_attempt_locked(data_root, &upgrade_lock, "manual_apply")?;
     let result = (|| -> Result<UpgradeOutcome> {
         let plan = build_upgrade_plan(engine, &upgrade_lock, policy, channel_override, true)?;
-        let semantic_repair_required =
-            semantic_install_required(engine.semantic_layout, &plan, data_root)?;
-        if !plan.update_available && !semantic_repair_required {
+        let repairs = classify_repair_requirements(
+            engine.semantic_layout,
+            &plan,
+            data_root,
+            policy.semantic_enabled,
+        )?;
+        if !plan.update_available && !repairs.any() {
             write_state_checked_locked(
                 data_root,
                 &upgrade_lock,
@@ -573,6 +577,11 @@ fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
                         "ctx {} would upgrade to {}.",
                         plan.current_version, plan.latest_version
                     )
+                } else if repairs.legacy_runtime {
+                    format!(
+                        "ctx {} would repair its signed legacy ONNX Runtime installation.",
+                        plan.current_version
+                    )
                 } else {
                     format!(
                         "ctx {} would provision signed Semantic model and runtime assets.",
@@ -601,7 +610,8 @@ fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
         } else {
             None
         };
-        let mut runtime_artifact = if plan.update_available && plan.semantic_provisioning.is_none()
+        let mut runtime_artifact = if (plan.update_available || repairs.legacy_runtime)
+            && plan.semantic_provisioning.is_none()
         {
             match (
                 plan.metadata.onnxruntime.as_ref(),
@@ -625,7 +635,7 @@ fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
             None
         };
         let mut semantic_artifacts = Vec::new();
-        if semantic_repair_required {
+        if repairs.catalog {
             let provisioning = plan
                 .semantic_provisioning
                 .as_ref()
@@ -696,6 +706,9 @@ fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
                     plan.latest_version,
                     plan.install_path.display()
                 )
+            } else if repairs.legacy_runtime {
+                "scheduled signed legacy ONNX Runtime repair; replacement will finish after this process exits"
+                    .to_owned()
             } else {
                 "scheduled signed Semantic asset repair; replacement will finish after this process exits"
                     .to_owned()
@@ -737,6 +750,11 @@ fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
                 plan.current_version,
                 plan.latest_version,
                 plan.install_path.display()
+            )
+        } else if repairs.legacy_runtime {
+            format!(
+                "repaired signed legacy ONNX Runtime installation for ctx {}",
+                plan.current_version
             )
         } else {
             format!(
