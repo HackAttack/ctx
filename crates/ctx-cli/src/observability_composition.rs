@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(provenance["repository"], "ctxrs/ctx");
         assert_eq!(
             provenance["base_commit"],
-            "b33107ed37ead44e20df85da789258826f9724ae"
+            "d429e3211aa232de07777c188d0390d4c78dd0ff"
         );
         assert_eq!(provenance["provenance_kind"], "content_addressed_candidate");
         assert_eq!(
