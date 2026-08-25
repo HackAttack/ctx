@@ -23,10 +23,10 @@ enumeration still return the complete excluded records.
 Ordinary results include primary and subagent sessions. When history carries an
 exact root-session claim, ctx groups sessions by that claim and returns one best
 result per root task before repeating a root; a session without that claim is
-its own group. Primary-session evidence gets a slight preference only when it
-is nearly as relevant; stronger child-session evidence can win. Human output
-labels the result window as relevance ordered and identifies the selected
-agent scope. Each result's `Event` row shows the short ctx event ID and the
+its own group. Agent scope is result metadata or an explicit filter; it does
+not silently rerank relevance. Human output labels the result window as
+relevance ordered and identifies the selected agent scope. Each result's
+`Event` row shows the short ctx event ID and the
 matched event's exact
 UTC RFC 3339 millisecond timestamp; an indexed event without a timestamp says
 `time unavailable`. These timestamps do not change result ordering.
@@ -61,9 +61,9 @@ A result can include:
 - the provider-owned session ID when known;
 - the exporter-declared `provider_key` and `source_id` for custom history
   sources; human output labels these results as `provider_key/source_id`;
-- title, Core-backed snippet, one-based final rank, result scope, and match reasons;
+- title, Core-backed snippet, one-based final rank, and result scope;
 - the backend-provided `retrieval_score`, which is diagnostic and can be
-  non-monotonic after query-coverage and root-diversity shaping;
+  non-monotonic after query-coverage and family shaping;
 - compatibility session importance and the additional-match count for session
   results; like `retrieval_score`, session importance is not an ordering contract;
 - provider, event sequence, timestamp, workspace, and working directory;
@@ -73,6 +73,14 @@ A result can include:
 Search result IDs are ctx-owned. Commands accept complete IDs or unambiguous
 prefixes of at least eight hex characters. Provider-owned IDs are metadata;
 provider lookup must be explicit.
+
+After filters and active-session exclusion, default search selects one exact
+event champion per exact session. It then reads the generation-owned direct
+claims coalesced across that session and diversifies in stable rounds by the
+literal provider root when one was claimed; a session with no root claim is
+its own ranking family. Search does not infer roots by walking parents, build
+copy components, or collapse similar content. `--events` and explicit
+`--session` searches remain dense and skip this shaping.
 
 `--verbose` keeps the complete event and session IDs and additionally shows the
 stored event sequence plus available workspace/working-directory, branch,
@@ -297,7 +305,7 @@ appends retained activity invocation protocol, server, tool, and present
 arguments; result status, present text, and present structured content; and
 literal fact values after the event body and provider-native structured
 content. These values participate in ordinary lexical matching, ranking,
-snippets, text match reasons, and semantic source text. A result using the
+snippets, and semantic source text. A result using the
 `normalized_body` capture disposition relies on the event's ordinary body,
 which enters the projection exactly once.
 
