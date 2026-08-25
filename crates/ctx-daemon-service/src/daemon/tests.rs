@@ -127,6 +127,7 @@ fn daemon_watch_test_catalog_for_paths(
                 catalog_support: ProviderCatalogSupport::None,
                 status: ProviderSourceStatus::Available,
                 unsupported_reason: None,
+                route_provenance: Default::default(),
             },
             SourceBackedSelectorAuthority::DiscoveredWinner,
             SourceBackedRouteDriver::new(|_| Ok(()), |_| false, |_| true),
@@ -154,6 +155,7 @@ fn daemon_watch_test_catalog_with_provider_root_group(
             catalog_support: ProviderCatalogSupport::None,
             status: ProviderSourceStatus::Available,
             unsupported_reason: None,
+            route_provenance: Default::default(),
         },
         SourceBackedSelectorAuthority::DiscoveredWinner,
         SourceBackedRouteDriver::new(|_| Ok(()), |_| false, |_| true),
@@ -171,6 +173,7 @@ fn daemon_watch_test_catalog_with_provider_root_group(
         provider: CaptureProvider::Codex,
         path: path.parent().expect("history path parent").to_path_buf(),
         group: Some(group.to_owned()),
+        kind: None,
     };
     registry
         .set_applied_provider_roots(
@@ -531,6 +534,7 @@ fn write_observation_fixture_generation(
                 .expect("provider-root fixture file parent")
                 .to_path_buf(),
             group: Some(group.to_owned()),
+            kind: None,
         };
         writer.set_applied_provider_roots(
             true,

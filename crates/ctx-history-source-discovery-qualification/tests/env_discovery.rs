@@ -1,27 +1,26 @@
+mod support;
+
 use ctx_history_core::CaptureProvider;
+use ctx_history_source_discovery::*;
 use rusqlite::Connection;
 
-use super::super::{
-    DiscoveryContext, DiscoveryPlatform, DiscoveryPlatformDirs, ProviderImportSupport,
-    ProviderSourceStatus,
-};
-use super::support::{
+use support::{
     shared_provider_history_fixture, tempdir, write_junie_discovery_session,
     write_kimi_discovery_wire, write_lingma_discovery_db, write_mistral_vibe_discovery_session,
     write_mux_discovery_session, write_pi_discovery_session, write_qwen_discovery_chat,
-    write_task_json_discovery_task, CwdGuard, EnvGuard, ENV_LOCK,
+    write_task_json_discovery_task, CwdGuard, EnvGuard, ENV_LOCK, TEST_PROVIDER_PROBES,
 };
 
-fn discover_provider_sources(home: &std::path::Path) -> Vec<super::super::ProviderSource> {
-    super::super::discover_provider_sources(&super::super::TEST_PROVIDER_PROBES, home)
+fn discover_provider_sources(home: &std::path::Path) -> Vec<ProviderSource> {
+    ctx_history_source_discovery::discover_provider_sources(&TEST_PROVIDER_PROBES, home)
 }
 
 fn discover_provider_sources_for_provider(
     home: &std::path::Path,
     provider: CaptureProvider,
-) -> Vec<super::super::ProviderSource> {
-    super::super::discover_provider_sources_for_provider(
-        &super::super::TEST_PROVIDER_PROBES,
+) -> Vec<ProviderSource> {
+    ctx_history_source_discovery::discover_provider_sources_for_provider(
+        &TEST_PROVIDER_PROBES,
         home,
         provider,
     )
@@ -30,9 +29,9 @@ fn discover_provider_sources_for_provider(
 fn discover_provider_sources_for_provider_report(
     home: &std::path::Path,
     provider: CaptureProvider,
-) -> super::super::DiscoveryReport {
-    super::super::discover_provider_sources_for_provider_report(
-        &super::super::TEST_PROVIDER_PROBES,
+) -> DiscoveryReport {
+    ctx_history_source_discovery::discover_provider_sources_for_provider_report(
+        &TEST_PROVIDER_PROBES,
         home,
         provider,
     )
@@ -41,9 +40,9 @@ fn discover_provider_sources_for_provider_report(
 fn discover_provider_sources_for_provider_with_context(
     context: &DiscoveryContext,
     provider: CaptureProvider,
-) -> super::super::DiscoveryReport {
-    super::super::discover_provider_sources_for_provider_with_context(
-        &super::super::TEST_PROVIDER_PROBES,
+) -> DiscoveryReport {
+    ctx_history_source_discovery::discover_provider_sources_for_provider_with_context(
+        &TEST_PROVIDER_PROBES,
         context,
         provider,
     )
@@ -53,9 +52,9 @@ fn discover_provider_sources_for_provider_with_projects(
     home: &std::path::Path,
     provider: CaptureProvider,
     projects: &[std::path::PathBuf],
-) -> Vec<super::super::ProviderSource> {
-    super::super::discover_provider_sources_for_provider_with_projects(
-        &super::super::TEST_PROVIDER_PROBES,
+) -> Vec<ProviderSource> {
+    ctx_history_source_discovery::discover_provider_sources_for_provider_with_projects(
+        &TEST_PROVIDER_PROBES,
         home,
         provider,
         projects,

@@ -66,6 +66,7 @@ pub fn prepare_source_backed_history_source(
             catalog_support: ProviderCatalogSupport::None,
             status: ProviderSourceStatus::Available,
             unsupported_reason: None,
+            route_provenance: Default::default(),
         },
     })
 }

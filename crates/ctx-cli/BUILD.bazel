@@ -309,14 +309,9 @@ test_suite(
     tests = ["//crates/ctx-cli-contract-tests:hosted_uninstall_fence_tests"],
 )
 
-ctx_cli_integration_test(
+test_suite(
     name = "index_tests",
-    src = "tests/index.rs",
-    extra_crates = ["anstream"],
-    test_support = [
-        "base",
-        "fixtures",
-    ],
+    tests = ["//crates/ctx-cli-qualification:index_tests"],
 )
 
 test_suite(
@@ -343,13 +338,6 @@ ctx_cli_integration_test(
 ctx_cli_integration_test(
     name = "status_store_cutover_tests",
     src = "tests/status_store_cutover.rs",
-)
-
-ctx_cli_integration_test(
-    name = "stats_tests",
-    src = "tests/stats.rs",
-    extra_crates = ["rusqlite"],
-    tags = ["cli-contract", "privacy"],
 )
 
 test_suite(

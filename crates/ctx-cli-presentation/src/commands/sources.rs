@@ -30,13 +30,22 @@ pub struct SourcesArgs {
 
 #[derive(Debug, Subcommand, Clone)]
 pub enum SourcesCommand {
-    #[command(about = "Register a named Claude or Codex home")]
+    #[command(about = "Register a named provider history root")]
     Add {
         #[arg(help = "Stable local name, for example personal or work")]
         name: String,
-        #[arg(long, value_parser = crate::parse_provider_arg, hide_possible_values = true)]
+        #[arg(
+            long,
+            value_parser = crate::parse_provider_arg,
+            hide_possible_values = true,
+            help = "History provider; configured-root support is provider-specific"
+        )]
         provider: crate::ProviderArg,
-        #[arg(long, value_name = "DIRECTORY", help = "Provider home directory")]
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Existing provider history root (file or directory, depending on provider)"
+        )]
         root: PathBuf,
         #[arg(
             long = "source-group",
@@ -44,10 +53,21 @@ pub enum SourcesCommand {
             help = "Optional search group, for example personal or work"
         )]
         source_group: Option<String>,
+        #[arg(
+            long,
+            value_name = "KIND",
+            help = "OpenHands layout: current-conversations or legacy-persistence"
+        )]
+        kind: Option<ctx_history_cli::ProviderRootKind>,
+        #[arg(
+            long,
+            help = "Atomically replace an existing same-provider root; omitting --source-group clears its group"
+        )]
+        replace: bool,
     },
-    #[command(about = "Remove a named provider home")]
+    #[command(about = "Remove a named provider history root")]
     Remove {
-        #[arg(help = "Configured provider-root name")]
+        #[arg(help = "Configured history-root name")]
         name: String,
     },
 }
@@ -111,7 +131,7 @@ pub fn run_sources(
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{error::ErrorKind, CommandFactory, Parser};
 
     use super::*;
 
@@ -122,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn sources_add_accepts_source_group_and_rejects_the_unreleased_scope_spelling() {
+    fn sources_add_accepts_provider_specific_history_roots_and_source_groups() {
         let parsed = TestCli::try_parse_from([
             "ctx",
             "add",
@@ -138,9 +158,15 @@ mod tests {
         assert!(matches!(
             parsed.sources.command,
             Some(SourcesCommand::Add {
+                provider,
+                root,
                 source_group: Some(ref group),
+                kind: None,
+                replace: false,
                 ..
-            }) if group == "work"
+            }) if provider.capture_provider() == ctx_history_core::CaptureProvider::Claude
+                && root == std::path::Path::new("/tmp/claude")
+                && group == "work"
         ));
 
         let error = TestCli::try_parse_from([
@@ -156,5 +182,126 @@ mod tests {
         ])
         .unwrap_err();
         assert!(error.to_string().contains("--scope"));
+
+        let openhands = TestCli::try_parse_from([
+            "ctx",
+            "add",
+            "openhands-current",
+            "--provider",
+            "openhands",
+            "--root",
+            "/tmp/openhands",
+            "--kind",
+            "current-conversations",
+        ])
+        .unwrap();
+        assert!(matches!(
+            openhands.sources.command,
+            Some(SourcesCommand::Add {
+                kind: Some(ctx_history_cli::ProviderRootKind::OpenHandsCurrentConversations),
+                ..
+            })
+        ));
+
+        assert!(TestCli::try_parse_from([
+            "ctx",
+            "add",
+            "openhands-current",
+            "--provider",
+            "openhands",
+            "--root",
+            "/tmp/openhands",
+            "--kind",
+            "Current-Conversations",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn sources_add_replace_parses_complete_group_replacement_semantics() {
+        let cleared = TestCli::try_parse_from([
+            "ctx",
+            "add",
+            "work",
+            "--provider",
+            "claude",
+            "--root",
+            "/tmp/history",
+            "--replace",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cleared.sources.command,
+            Some(SourcesCommand::Add {
+                source_group: None,
+                kind: None,
+                replace: true,
+                ..
+            })
+        ));
+
+        let set = TestCli::try_parse_from([
+            "ctx",
+            "add",
+            "work",
+            "--provider",
+            "claude",
+            "--root",
+            "/tmp/history",
+            "--source-group",
+            "team",
+            "--replace",
+        ])
+        .unwrap();
+        assert!(matches!(
+            set.sources.command,
+            Some(SourcesCommand::Add {
+                source_group: Some(ref group),
+                kind: None,
+                replace: true,
+                ..
+            }) if group == "team"
+        ));
+    }
+
+    #[test]
+    fn sources_add_replace_still_requires_provider_and_root() {
+        let provider_error =
+            TestCli::try_parse_from(["ctx", "add", "work", "--root", "/tmp/history", "--replace"])
+                .unwrap_err();
+        assert_eq!(provider_error.kind(), ErrorKind::MissingRequiredArgument);
+
+        let root_error =
+            TestCli::try_parse_from(["ctx", "add", "work", "--provider", "claude", "--replace"])
+                .unwrap_err();
+        assert_eq!(root_error.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn sources_mutation_help_is_provider_neutral_and_path_kind_aware() {
+        let mut command = TestCli::command();
+        let add_help = command
+            .find_subcommand_mut("add")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        let normalized_help = add_help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            add_help.contains("named provider history root"),
+            "{add_help}"
+        );
+        assert!(add_help.contains("--root <PATH>"), "{add_help}");
+        assert!(
+            add_help.contains("file or directory, depending on provider"),
+            "{add_help}"
+        );
+        assert!(!add_help.contains("Claude or Codex home"), "{add_help}");
+        assert!(!add_help.contains("home directory"), "{add_help}");
+        assert!(add_help.contains("--replace"), "{add_help}");
+        assert!(
+            normalized_help.contains("omitting --source-group clears its group"),
+            "{add_help}"
+        );
+        assert!(command.find_subcommand("update").is_none());
     }
 }

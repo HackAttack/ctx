@@ -57,8 +57,9 @@ struct VerifiedCandidate {
 }
 
 impl GenerationWriter {
-    /// Rebinds opaque owner metadata to an exact reused generation without
-    /// changing its logical or physical index payload.
+    /// Rebinds opaque owner metadata without changing the logical index payload.
+    /// Current-format publications preserve their generation identity; a
+    /// migrated publication first installs its required current manifest anchor.
     pub fn republish_current_publication_metadata(
         self,
         expected_generation_id: &str,
@@ -76,13 +77,14 @@ impl GenerationWriter {
             .ok_or(IndexError::WriterInvariant(
                 "publication metadata republish requires an active generation",
             ))?;
-        let generation_id = self
-            .base_publication
-            .as_ref()
-            .ok_or(IndexError::WriterInvariant(
-                "publication metadata republish requires a base publication",
-            ))?
-            .generation_id();
+        let base_publication =
+            self.base_publication
+                .as_ref()
+                .ok_or(IndexError::WriterInvariant(
+                    "publication metadata republish requires a base publication",
+                ))?;
+        let generation_id = base_publication.generation_id();
+        let requires_current_manifest_anchor = base_publication.requires_current_manifest_anchor();
         if generation_id != expected_generation_id
             || pointer.active().generation_id() != expected_generation_id
         {
@@ -93,6 +95,11 @@ impl GenerationWriter {
                 actual: publication_metadata.len(),
                 maximum: MAX_PUBLICATION_METADATA_BYTES,
             });
+        }
+        if requires_current_manifest_anchor {
+            let published =
+                self.commit_with_publication_metadata(|_| true, move |_| Ok(publication_metadata))?;
+            return Ok(published.into_parts().2);
         }
         let outcome = republish_current_with_publication_metadata(
             &self.root,

@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 impl GenerationManifest {
     #[cfg(any(test, feature = "test-support"))]
@@ -34,12 +34,32 @@ impl GenerationManifest {
     }
 
     pub fn from_parts_with_record_aggregates_and_provider_roots(
+        sources: Vec<CertifiedSource>,
+        core_record_aggregates: Vec<SourceCoreRecordAggregate>,
+        source_routes: Vec<SourceRouteSnapshot>,
+        automatic_provider_discovery: bool,
+        provider_root_config_digest: String,
+        provider_roots: Vec<AppliedProviderRoot>,
+    ) -> Result<Self> {
+        Self::from_parts_with_record_aggregates_and_provider_roots_and_detached_authorities(
+            sources,
+            core_record_aggregates,
+            source_routes,
+            automatic_provider_discovery,
+            provider_root_config_digest,
+            provider_roots,
+            Vec::new(),
+        )
+    }
+
+    pub fn from_parts_with_record_aggregates_and_provider_roots_and_detached_authorities(
         mut sources: Vec<CertifiedSource>,
         mut core_record_aggregates: Vec<SourceCoreRecordAggregate>,
         mut source_routes: Vec<SourceRouteSnapshot>,
         automatic_provider_discovery: bool,
         provider_root_config_digest: String,
         mut provider_roots: Vec<AppliedProviderRoot>,
+        mut detached_released_provider_roots: Vec<DetachedReleasedProviderRootAuthority>,
     ) -> Result<Self> {
         sources.sort_by(|left, right| {
             source_sort_key(left.observation().source())
@@ -52,25 +72,56 @@ impl GenerationManifest {
             return Err(IndexError::NonCanonicalManifestSources);
         }
         source_routes.sort_by(|left, right| left.route_identity.cmp(&right.route_identity));
-        let retained_route_ids = source_routes
+        let retained_routes = source_routes
             .iter()
-            .map(|route| route.route_identity().clone())
-            .collect::<BTreeSet<_>>();
+            .map(|route| {
+                (
+                    route.route_identity().clone(),
+                    route
+                        .sources()
+                        .iter()
+                        .map(source_token)
+                        .collect::<BTreeSet<_>>(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         provider_roots = provider_roots
             .into_iter()
             .map(|root| {
-                AppliedProviderRoot::with_source_identity(
+                let routes = root
+                    .routes()
+                    .iter()
+                    .filter(|route| retained_routes.contains_key(*route))
+                    .cloned()
+                    .collect();
+                let exact_source_memberships = root
+                    .exact_source_memberships()
+                    .iter()
+                    .filter_map(|membership| {
+                        let route_sources = retained_routes.get(membership.route_identity())?;
+                        let source_tokens = membership
+                            .source_tokens()
+                            .iter()
+                            .filter(|source| route_sources.contains(*source))
+                            .cloned()
+                            .collect();
+                        Some(AppliedProviderRootSourceMembership::exact(
+                            membership.route_identity().clone(),
+                            source_tokens,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                AppliedProviderRoot::with_source_identity_and_connector_binding(
                     root.definition().clone(),
                     root.source_identity(),
-                    root.routes()
-                        .iter()
-                        .filter(|route| retained_route_ids.contains(*route))
-                        .cloned()
-                        .collect(),
+                    root.connector_binding().cloned(),
+                    routes,
                 )
+                .and_then(|root| root.with_exact_source_memberships(exact_source_memberships))
             })
             .collect::<Result<Vec<_>>>()?;
         provider_roots.sort_by(|left, right| left.definition.id.cmp(&right.definition.id));
+        detached_released_provider_roots.sort_by(|left, right| left.id().cmp(right.id()));
         core_record_aggregates.sort_by(|left, right| {
             left.source_identity_digest
                 .cmp(&right.source_identity_digest)
@@ -101,6 +152,7 @@ impl GenerationManifest {
             automatic_provider_discovery,
             provider_root_config_digest,
             provider_roots,
+            detached_released_provider_roots,
         };
         manifest.validate_contract()?;
         Ok(manifest)
@@ -134,6 +186,7 @@ impl GenerationManifest {
             && self.automatic_provider_discovery == other.automatic_provider_discovery
             && self.provider_root_config_digest == other.provider_root_config_digest
             && self.provider_roots == other.provider_roots
+            && self.detached_released_provider_roots == other.detached_released_provider_roots
     }
 
     pub(crate) fn apply_validated_source_replacements(
@@ -202,6 +255,7 @@ impl GenerationManifest {
             automatic_provider_discovery: self.automatic_provider_discovery,
             provider_root_config_digest: self.provider_root_config_digest.clone(),
             provider_roots: self.provider_roots.clone(),
+            detached_released_provider_roots: self.detached_released_provider_roots.clone(),
         })
     }
 
@@ -231,6 +285,12 @@ impl GenerationManifest {
         &self.provider_roots
     }
 
+    /// Non-selectable released authority retained for a compatible future
+    /// re-add after an active root has been removed.
+    pub fn detached_released_provider_roots(&self) -> &[DetachedReleasedProviderRootAuthority] {
+        &self.detached_released_provider_roots
+    }
+
     pub fn provider_root(&self, id: &str) -> Option<&AppliedProviderRoot> {
         self.provider_roots
             .binary_search_by(|candidate| candidate.definition.id.as_str().cmp(id))
@@ -257,22 +317,26 @@ impl GenerationManifest {
         }) {
             return Err(IndexError::UnknownProviderRootGroup(unknown.clone()));
         }
-        let mut tokens = self
-            .provider_roots
-            .iter()
-            .filter(|root| {
-                root_ids.iter().any(|id| id == &root.definition.id)
-                    || root
-                        .definition
-                        .group
-                        .as_ref()
-                        .is_some_and(|group| source_groups.contains(group))
-            })
-            .flat_map(|root| root.routes.iter())
-            .filter_map(|route| self.source_route(route))
-            .flat_map(SourceRouteSnapshot::sources)
-            .map(source_token)
-            .collect::<Vec<_>>();
+        let mut tokens = Vec::new();
+        for root in self.provider_roots.iter().filter(|root| {
+            root_ids.iter().any(|id| id == &root.definition.id)
+                || root
+                    .definition
+                    .group
+                    .as_ref()
+                    .is_some_and(|group| source_groups.contains(group))
+        }) {
+            for route_id in root.routes() {
+                let Some(route) = self.source_route(route_id) else {
+                    continue;
+                };
+                if let Some(exact) = root.exact_source_tokens_for_route(route_id) {
+                    tokens.extend(exact.iter().cloned());
+                } else {
+                    tokens.extend(route.sources().iter().map(source_token));
+                }
+            }
+        }
         tokens.sort();
         tokens.dedup();
         Ok(tokens)
@@ -305,37 +369,92 @@ impl GenerationManifest {
                 "root definitions are not bounded, strictly sorted, and unique".to_owned(),
             ));
         }
+        if self.detached_released_provider_roots.len() > MAX_DETACHED_RELEASED_PROVIDER_ROOTS
+            || self
+                .detached_released_provider_roots
+                .windows(2)
+                .any(|pair| pair[0].id() >= pair[1].id())
+        {
+            return Err(IndexError::InvalidProviderRoots(
+                "detached released root authorities are not bounded, strictly sorted, and unique"
+                    .to_owned(),
+            ));
+        }
+        for authority in &self.detached_released_provider_roots {
+            authority.validate_contract()?;
+            if self.provider_root(authority.id()).is_some() {
+                return Err(IndexError::InvalidProviderRoots(format!(
+                    "detached released root authority {} remains active",
+                    authority.id()
+                )));
+            }
+        }
         let definitions = self
             .provider_roots
             .iter()
             .map(|root| root.definition.clone())
             .collect::<Vec<_>>();
+        if let Some((left, right)) = definitions.iter().enumerate().find_map(|(index, left)| {
+            definitions[index + 1..]
+                .iter()
+                .find(|right| left.openhands_selected_histories_overlap(right))
+                .map(|right| (left, right))
+        }) {
+            return Err(IndexError::InvalidProviderRoots(format!(
+                "OpenHands roots {} and {} have overlapping legacy/current paths",
+                left.id, right.id
+            )));
+        }
         if provider_source_config_digest(self.automatic_provider_discovery, &definitions)
             != self.provider_root_config_digest
         {
             return Err(IndexError::InvalidProviderRootConfigDigest);
         }
-        let mut provider_owned_routes = Vec::new();
+        let mut provider_owned_routes =
+            BTreeMap::<SourceRouteIdentity, Vec<Option<BTreeSet<String>>>>::new();
         for root in &self.provider_roots {
             root.validate_contract()?;
             for route_id in root.routes() {
-                if self.source_route(route_id).is_none() {
+                let Some(route) = self.source_route(route_id) else {
                     return Err(IndexError::ProviderRootRouteNotRetained {
                         root_id: root.definition.id.clone(),
                         route_id: route_id.as_str().to_owned(),
                     });
+                };
+                let exact = root.exact_source_tokens_for_route(route_id);
+                if let Some(exact) = exact {
+                    let route_sources = route
+                        .sources()
+                        .iter()
+                        .map(source_token)
+                        .collect::<BTreeSet<_>>();
+                    for source in exact {
+                        if !route_sources.contains(source) {
+                            return Err(IndexError::InvalidProviderRoots(format!(
+                                "root {} exact source membership is absent from route {}",
+                                root.definition.id,
+                                route_id.as_str()
+                            )));
+                        }
+                    }
                 }
-                provider_owned_routes.push(route_id.clone());
+                provider_owned_routes
+                    .entry(route_id.clone())
+                    .or_default()
+                    .push(exact.map(|sources| sources.iter().cloned().collect()));
             }
         }
-        provider_owned_routes.sort();
-        if let Some(duplicate) = provider_owned_routes
-            .windows(2)
-            .find(|pair| pair[0] == pair[1])
-        {
-            return Err(IndexError::SourceRouteOwnedByMultipleProviderRoots {
-                route_id: duplicate[0].as_str().to_owned(),
-            });
+        for (route_id, owners) in provider_owned_routes {
+            for (index, left) in owners.iter().enumerate() {
+                if owners[index + 1..].iter().any(|right| match (left, right) {
+                    (Some(left), Some(right)) => !left.is_disjoint(right),
+                    _ => true,
+                }) {
+                    return Err(IndexError::SourceRouteOwnedByMultipleProviderRoots {
+                        route_id: route_id.as_str().to_owned(),
+                    });
+                }
+            }
         }
         if self
             .core_record_aggregates

@@ -341,7 +341,7 @@ Returns:
 
 - `schema_version`;
 - `scope`, either `default` or `all`;
-- `automatic_discovery`, whether inferred provider homes are enabled;
+- `automatic_discovery`, whether inferred provider history roots are enabled;
 - `hidden_missing_sources`;
 - `sources[]`;
 - `issues[]`;
@@ -364,7 +364,7 @@ Each built-in provider source includes:
 For a configured row, `selection.root` is the exact case-sensitive configured
 name and `selection.group` is its configured group or null. For an automatic
 row, both values are null. History-source plugin rows retain their plugin
-identity fields and do not have configured provider-root selection metadata.
+identity fields and do not have configured history root selection metadata.
 
 `status` is `available`, `empty`, `unknown`, `missing`, or `unsupported`.
 `import_support` is `native`, `explicit`, or `unsupported`. `native_import`
@@ -381,27 +381,52 @@ empty, or unknown rows and otherwise null.
 produce a source row. It is additive to `sources[]`, contains at most 64 rows,
 and each row includes `provider`, nullable `path`, stable `code`, `message`,
 and `message_truncated`. Messages are capped at 512 UTF-8 bytes. Stable issue
-codes are `no_disk_history`, `selector_unreconstructible`, and
-`insufficient_official_evidence`. `issues_truncated` is true when additional
+codes are `no_disk_history`, `selector_unreconstructible`,
+`insufficient_official_evidence`, `configured_root_conflict`, and
+`configured_root_missing`.
+A `configured_root_conflict` row additionally contains nullable
+`conflict_kind` (`configured_configured` or `automatic_configured`) and
+`configured_roots`, a possibly empty array of the recoverable configured
+`name` and `path` pairs involved. The existing top-level nullable `path` remains
+the path reported by discovery. `issues_truncated` is true when additional
 issue rows were omitted. Invalid history-source plugin manifests remain
 non-importable rows in `sources[]`; they are not provider discovery issues.
+A `configured_root_missing` row represents a durable configured root that
+cannot safely produce a concrete source route while absent. Its
+`configured_root` member is always present: when the persisted definition is
+recoverable it is an object containing `name`, `path`, and nullable `group`;
+otherwise it is null. The member is absent, rather than null, on every other
+issue code. Recoverable missing-root rows are ordered before automatic issues
+so all 64 valid configured roots remain represented at the issue limit; the
+root remains configured until restored, replaced, or removed.
 
-Named provider-root mutations have a separate schema-version-1 JSON result:
+Named provider history root mutations have a separate schema-version-1 JSON
+result:
 
 ```bash
 ctx sources add personal --provider claude --root /path/to/claude --source-group work --format json
+ctx sources add personal --provider claude --root /path/to/moved-claude --replace --format json
+ctx sources add openhands-cli --provider openhands --root /path/to/conversations --kind current-conversations --format json
 ctx sources remove personal --format json
 ```
 
 Both successful shapes contain exactly `schema_version`, `operation`,
 `changed`, and `root`. `operation` is `"add"` or `"remove"`; `root` contains
-`name`, `provider`, canonical absolute `path`, and nullable `group`. Repeating
-an add with the same name and identical canonical settings is idempotent and
-returns `changed: false`. Reusing the name with different settings fails and
-requires an explicit remove first. A successful remove returns `changed: true`
-and the removed root; removing an absent name is an error, not a successful
-no-op. Root names and non-null groups use 1 to 64 ASCII letters, digits,
-hyphens, or underscores and remain case-sensitive.
+`name`, `provider`, canonical absolute `path`, and nullable `group`. For an
+OpenHands root only, `root` additionally contains `kind` with the exact value
+`"current-conversations"` or `"legacy-persistence"`; the member is omitted,
+not null, for every other provider. Repeating an add with the same name and
+identical canonical settings is idempotent and returns `changed: false`.
+Reusing the name with different settings fails unless the add includes
+`--replace`. A same-provider replacement atomically writes the new canonical
+path, kind, and complete group state while retaining `operation: "add"`;
+supplying `--source-group` sets the group and omitting it clears the group. It
+does not expose an intermediate removed definition. A provider mismatch under
+the stable name is rejected. With an absent name, `--replace` performs an
+ordinary add. A successful remove returns `changed: true` and the removed root;
+removing an absent name is an error, not a successful no-op. Root names and
+non-null groups use 1 to 64 ASCII letters, digits, hyphens, or underscores and
+remain case-sensitive.
 
 ## Import
 
@@ -973,7 +998,7 @@ The MCP `sources` tool returns `schema_version`, `automatic_discovery`,
 provider rows use the same `selection` objects as CLI JSON, so configured
 `root` values and non-null configured `group` values enumerate candidates for
 MCP search `source_roots` and `source_groups`. Automatic rows have null `root` and
-`group`; plugin rows do not participate in configured provider-root selection.
+`group`; plugin rows do not participate in configured history root selection.
 The bounded `issues` and `issues_truncated` fields retain the CLI contract.
 
 Tool-level argument validation failures set `isError: true`, preserve the

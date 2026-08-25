@@ -15,7 +15,7 @@ use ctx_history_core::{
     AgentScope, CertifiedSource, CoreActivity, CoreRecord, CoreRecordError, EventIdentityInput,
     LiteralFactKind, NativeItemKey, NativeSessionKey, ProjectionContractError,
     ProviderDeclaredFact, ProviderNativeSessionRelationship, ScannedSourceCounts,
-    SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId, TypedKey,
+    SessionIdentityInput, SourceAnchor, SourceAnchorScope, SourceKey, StableEntityId, TypedKey,
     CORE_ACTIVITY_REVISION,
 };
 use sha2::{Digest, Sha256};
@@ -202,9 +202,18 @@ impl ShelleySourceBackedAdapter {
 }
 
 /// Discovers exactly `<cwd>/shelley.db` and no remembered or recursive roots.
+#[cfg(test)]
 pub(crate) fn discover_shelley_source_backed_exact_cwd(
     data_root: &Path,
     cwd: &Path,
+) -> ShelleySourceBackedResult<Option<ShelleySourceBackedAdapter>> {
+    discover_shelley_source_backed_exact_cwd_scoped(data_root, cwd, SourceAnchorScope::Unqualified)
+}
+
+pub(crate) fn discover_shelley_source_backed_exact_cwd_scoped(
+    data_root: &Path,
+    cwd: &Path,
+    source_scope: SourceAnchorScope,
 ) -> ShelleySourceBackedResult<Option<ShelleySourceBackedAdapter>> {
     let exact_cwd = fs::canonicalize(cwd).map_err(CaptureError::from)?;
     let cwd_metadata = fs::symlink_metadata(&exact_cwd).map_err(CaptureError::from)?;
@@ -225,23 +234,30 @@ pub(crate) fn discover_shelley_source_backed_exact_cwd(
     let (source_root, sqlite_snapshot) = open_root_authorized_snapshot(data_root, &database_path)?;
     sqlite_snapshot.finish()?;
     source_root.revalidate()?;
-    let anchor = SourceAnchor::provider_native(
-        SHELLEY_SOURCE_ANCHOR_NAMESPACE,
-        TypedKey::utf8(SHELLEY_SOURCE_ANCHOR_KEY)?,
-    )?;
-    let source = SourceKey::derive(
-        ctx_history_core::CaptureProvider::Shelley.as_str(),
-        SHELLEY_SQLITE_SOURCE_FORMAT,
-        SHELLEY_SOURCE_SCHEMA_VARIANT,
-        1,
-        anchor,
-    )?;
+    let source = shelley_source_key_scoped(source_scope)?;
     Ok(Some(ShelleySourceBackedAdapter {
         #[cfg(test)]
         data_root: data_root.to_path_buf(),
         database_path,
         source,
     }))
+}
+
+fn shelley_source_key_scoped(
+    source_scope: SourceAnchorScope,
+) -> ShelleySourceBackedResult<SourceKey> {
+    let anchor = SourceAnchor::provider_native(
+        SHELLEY_SOURCE_ANCHOR_NAMESPACE,
+        TypedKey::utf8(SHELLEY_SOURCE_ANCHOR_KEY)?,
+    )?;
+    Ok(SourceKey::derive_scoped(
+        ctx_history_core::CaptureProvider::Shelley.as_str(),
+        SHELLEY_SQLITE_SOURCE_FORMAT,
+        SHELLEY_SOURCE_SCHEMA_VARIANT,
+        1,
+        anchor,
+        source_scope,
+    )?)
 }
 
 pub(crate) struct ShelleySourceBackedScan {

@@ -1065,6 +1065,24 @@ fn mcp_unknown_source_selector_fails_without_echoing_its_contents() {
     assert!(!serde_json::to_string(result).unwrap().contains(rejected));
 }
 
+fn write_maximum_missing_openclaw_roots(temp: &TempDir) -> Vec<String> {
+    let root = data_root(temp);
+    fs::create_dir_all(&root).unwrap();
+    let mut config = String::new();
+    for index in (0..64).rev() {
+        let name = format!("openclaw-{index:02}");
+        let path = temp.path().join(format!("missing-{name}"));
+        config.push_str(&format!(
+            "[sources.roots.{name}]\nprovider = \"openclaw\"\npath = {}\n\n",
+            json!(path),
+        ));
+    }
+    fs::write(root.join("config.toml"), config).unwrap();
+    (0..64)
+        .map(|index| format!("openclaw-{index:02}"))
+        .collect()
+}
+
 #[test]
 fn mcp_sources_matches_cli_discovery_issues() {
     let temp = tempdir();
@@ -1110,6 +1128,62 @@ fn mcp_sources_matches_cli_discovery_issues() {
             && issue["code"] == "selector_unreconstructible"
             && issue["message_truncated"] == false
     }));
+}
+
+#[test]
+fn mcp_sources_preserves_every_maximum_missing_root_under_automatic_issue_pressure() {
+    let temp = tempdir();
+    let expected_names = write_maximum_missing_openclaw_roots(&temp);
+    let cli = json_output(
+        ctx(&temp)
+            .env("CLAUDE_CONFIG_DIR", "relative-account")
+            .args(["sources", "--format=json"]),
+    );
+    let responses = mcp_roundtrip_with_env(
+        &temp,
+        &[
+            json!({
+                "jsonrpc": "2.0",
+                "id": "init",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": { "name": "ctx-test", "version": "0" }
+                }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": "sources",
+                "method": "tools/call",
+                "params": {
+                    "name": "sources",
+                    "arguments": {}
+                }
+            }),
+        ],
+        &[("CLAUDE_CONFIG_DIR", "relative-account")],
+    );
+    let mcp = &responses[1]["result"]["structuredContent"];
+
+    assert_eq!(cli["issues_truncated"], true, "{cli:#}");
+    assert_eq!(mcp["issues_truncated"], cli["issues_truncated"]);
+    assert_eq!(mcp["issues"], cli["issues"]);
+    let issues = mcp["issues"].as_array().unwrap();
+    assert_eq!(issues.len(), 64, "{mcp:#}");
+    let actual_names = issues
+        .iter()
+        .map(|issue| {
+            assert_eq!(issue["code"], "configured_root_missing", "{issue:#}");
+            issue
+                .get("configured_root")
+                .and_then(|root| root.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| panic!("missing configured_root object in {issue:#}"))
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual_names, expected_names);
 }
 
 #[test]

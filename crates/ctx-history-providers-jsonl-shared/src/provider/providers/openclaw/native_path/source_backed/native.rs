@@ -405,6 +405,7 @@ impl SessionState {
         native_session_family: &OpenClawNativeSessionFamily,
         imported_at: DateTime<Utc>,
         direct_session_id: StableEntityId,
+        source_anchor_scope: SourceAnchorScope,
     ) -> Result<Self> {
         let agent_id = super::super::super::openclaw_agent_id(path)
             .map(|value| super::super::capped_text(&value));
@@ -432,11 +433,25 @@ impl SessionState {
             };
         let parent_session_id = parent_provider_session_id
             .as_deref()
-            .map(|related| related_session_identity(related, native_session_id, direct_session_id))
+            .map(|related| {
+                related_session_identity(
+                    related,
+                    native_session_id,
+                    direct_session_id,
+                    source_anchor_scope,
+                )
+            })
             .transpose()?;
         let root_session_id = root_provider_session_id
             .as_deref()
-            .map(|related| related_session_identity(related, native_session_id, direct_session_id))
+            .map(|related| {
+                related_session_identity(
+                    related,
+                    native_session_id,
+                    direct_session_id,
+                    source_anchor_scope,
+                )
+            })
             .transpose()?;
         Ok(Self {
             provider_session_id,

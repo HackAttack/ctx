@@ -188,6 +188,7 @@ pub(super) struct TestLifecycleActivity {
     pub(super) begin_source_replacements: usize,
     pub(super) begin_source_appends: usize,
     pub(super) retained_sources: usize,
+    pub(super) deleted_sources: usize,
 }
 
 impl TestLifecycle {
@@ -444,6 +445,7 @@ impl CaptureLifecycleSink for TestLifecycle {
         deletion: CertifiedSourceDeletion,
         _inventory: CertifiedSourceInventory,
     ) -> Result<()> {
+        self.activity.deleted_sources = self.activity.deleted_sources.saturating_add(1);
         self.records
             .retain(|record| !record.source.exact_descriptor_eq(deletion.source()));
         Ok(())

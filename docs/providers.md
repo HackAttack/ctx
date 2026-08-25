@@ -60,26 +60,46 @@ precedence and checks only the winning official root. A replacement environment
 or persistent-config value replaces the lower-priority default; it is not added
 beside it. Multiple roots are emitted only for current coexisting stores such as
 installed clients, persisted profiles, or configured agents. See
-[`provider-support-matrix.json`](provider-support-matrix.json) for every row.
+[`provider-support-matrix.json`](provider-support-matrix.json) for every row;
+each provider's `configured_root` object publishes whether named roots are
+enabled or intentionally limited to automatic discovery and exact import, plus
+the required path kind and expansion strategy when enabled.
 
-Claude and Codex additionally support explicitly configured named homes for
-the common work/personal or multi-profile case. Use `ctx sources add <name>
---provider claude|codex --root <home> [--source-group <group>]`, or edit
-`[sources.roots.<name>]` in `config.toml`. Named homes are additive to that
-provider's environment/default winner and do not affect discovery for any
-other provider. A named home that resolves to the inferred physical home
-annotates it rather than duplicating it. Claude homes expand to `projects`;
-Codex homes expand independently to `sessions`, `archived_sessions`, and
-`history.jsonl` so one unavailable path or home cannot hide a healthy peer.
+Providers with an enabled configured-root capability additionally support
+explicitly named history roots for work/personal, multi-profile, and moved-root
+cases. Use `ctx sources add <name> --provider <provider> --root <path>
+[--source-group <group>]`, or edit `[sources.roots.<name>]` in `config.toml`.
+The provider capability determines whether `<path>` must be a file or directory
+and how it expands into history sources. Named history roots are additive to
+that provider's environment/default winner and do not affect discovery for any
+other provider. A named root that resolves to the inferred physical root
+annotates it rather than duplicating it. For example, a Claude history root
+directory expands to `projects`; a Codex history root directory expands
+independently to `sessions`, `archived_sessions`, and `history.jsonl` so one
+unavailable source cannot hide a healthy peer.
+
+OpenHands is the conditional exception to the provider-neutral command shape:
+its configured root requires `--kind current-conversations` for the direct
+current conversations directory or `--kind legacy-persistence` for the
+released recursive persistence layout. The equivalent OpenHands config table
+requires the same exact `kind` string. The current kind admits only current
+`<conversation>/events/event-*.json` files. Nested automatic/configured roots
+and ancestor-related configured legacy/current roots fail closed instead of
+indexing overlapping history twice.
+
+To move an existing root or change its group atomically, repeat `sources add`
+with the same name and provider plus `--replace`. Supplying `--source-group`
+sets the complete desired group; omitting it during replacement clears the
+group. The safe editor rejects changing the provider under a stable name.
 Set `[sources] automatic = false` only when all automatic provider discovery
-should stop and every active Claude/Codex home should come from named
+should stop and every active configured history root should come from named
 configuration; this does not delete already indexed history.
 
-The configured name is the durable local identity of an additional home, not
-only a label. Keep the name and update its path when the same home moves; choose
-a new name for an unrelated home. Reusing a removed name intentionally reuses
-its logical namespace, while changing only its group does not rotate source or
-citation identities.
+The configured name is the durable local identity of an additional history
+root, not only a label. Keep the name and atomically replace its path when the
+same root moves; choose a new name for an unrelated root. Reusing a removed
+name intentionally reuses its logical namespace, while changing only its group
+does not rotate source or citation identities.
 
 One-shot flags, API constructor paths, old launch directories, container host
 mounts, copies, and unreconstructible selectors are not automatic. Import one

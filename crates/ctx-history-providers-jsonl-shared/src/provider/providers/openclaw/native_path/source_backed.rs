@@ -9,8 +9,8 @@ use ctx_history_capture_model::normalization::{
 };
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, AgentScope, CaptureProvider, CoreRecord,
-    EventIdentityInput, EventType, NativeItemKey, ProviderNativeSessionRelationship, SourceKey,
-    StableEntityId, TypedKey,
+    EventIdentityInput, EventType, NativeItemKey, ProviderNativeSessionRelationship,
+    SourceAnchorScope, SourceKey, StableEntityId, TypedKey,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,12 +58,27 @@ const MAX_TERMINAL_CALL_IDS: usize = 4096;
 const MAX_TERMINAL_LINKAGE_IDS: usize = MAX_TERMINAL_CALL_IDS * 2;
 const MAX_SELECTOR_CALL_ID_BYTES: usize = 16 * 1024;
 
-#[derive(Debug, Clone, Copy, Default)]
-struct OpenClawJsonlAdapter<R>(PhantomData<fn() -> R>);
+#[derive(Debug, Clone, Copy)]
+struct OpenClawJsonlAdapter<R> {
+    source_anchor_scope: SourceAnchorScope,
+    runtime: PhantomData<fn() -> R>,
+}
 
 pub(crate) fn openclaw_source_backed_adapter_v0<R: JsonlProviderRuntime>(
 ) -> Arc<dyn JsonlFamilyAdapter<Runtime = R>> {
-    Arc::new(OpenClawJsonlAdapter(PhantomData))
+    openclaw_source_backed_adapter_v0_with_source_root_lineage(None)
+}
+
+pub(crate) fn openclaw_source_backed_adapter_v0_with_source_root_lineage<
+    R: JsonlProviderRuntime,
+>(
+    source_root_lineage: Option<[u8; 32]>,
+) -> Arc<dyn JsonlFamilyAdapter<Runtime = R>> {
+    Arc::new(OpenClawJsonlAdapter {
+        source_anchor_scope: source_root_lineage
+            .map_or(SourceAnchorScope::Unqualified, SourceAnchorScope::Lineage),
+        runtime: PhantomData,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,7 +167,7 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for OpenClawJsonlAdapter<R> {
                     "OpenClaw inventory repeats a native session identity".to_owned(),
                 ));
             }
-            let source = source_key(&native_session_id)?;
+            let source = source_key_scoped(&native_session_id, self.source_anchor_scope)?;
             let transcript = Arc::new(authority.open_file(&transcript_relative_path)?);
             let compound = admit_compound(
                 &authority,
@@ -236,6 +251,7 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for OpenClawJsonlAdapter<R> {
             &binding.native_session_family,
             imported_at,
             session_id,
+            self.source_anchor_scope,
         )?;
         let replacement_session = session.checkpoint();
         let restored = checkpoint
@@ -289,14 +305,23 @@ struct FallbackEventIdentity {
 
 type FallbackEventIdentityState<R> = JsonlAppendOccurrenceState<[u8; 32], IndexBaseEventLookup<R>>;
 
+#[cfg(test)]
 fn source_key(native_session_id: &str) -> Result<SourceKey> {
-    SourceKey::derive_provider_native(
+    source_key_scoped(native_session_id, SourceAnchorScope::Unqualified)
+}
+
+fn source_key_scoped(
+    native_session_id: &str,
+    source_anchor_scope: SourceAnchorScope,
+) -> Result<SourceKey> {
+    SourceKey::derive_provider_native_scoped(
         CaptureProvider::OpenClaw.as_str(),
         OPENCLAW_SOURCE_FORMAT,
         SOURCE_SCHEMA_VARIANT,
         1,
         SOURCE_ANCHOR_NAMESPACE,
         TypedKey::utf8(native_session_id).map_err(contract)?,
+        source_anchor_scope,
     )
     .map_err(contract)
 }
@@ -315,11 +340,12 @@ fn related_session_identity(
     related: &str,
     direct: &str,
     direct_session_id: StableEntityId,
+    source_anchor_scope: SourceAnchorScope,
 ) -> Result<StableEntityId> {
     if related == direct {
         return Ok(direct_session_id);
     }
-    let source = source_key(related)?;
+    let source = source_key_scoped(related, source_anchor_scope)?;
     session_identity(&source, related)
 }
 

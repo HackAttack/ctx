@@ -12,7 +12,14 @@ pub(super) fn register_codex_session_tree_route(
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
-    register_codex_session_tree_routes_with_identity(registry, vec![source], selection, None, false)
+    register_codex_session_tree_routes_with_identity(
+        registry,
+        vec![source],
+        selection,
+        None,
+        None,
+        false,
+    )
 }
 
 pub(in crate::source_backed) fn register_configured_codex_session_tree_route(
@@ -20,12 +27,14 @@ pub(in crate::source_backed) fn register_configured_codex_session_tree_route(
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
     source_root_lineage: Option<[u8; 32]>,
+    route_role: &ProviderRouteRole,
 ) -> SourceBackedCoordinatorResult<()> {
     register_codex_session_tree_routes_with_identity(
         registry,
         vec![source],
         selection,
         source_root_lineage,
+        Some(route_role),
         true,
     )
 }
@@ -35,12 +44,14 @@ pub(in crate::source_backed) fn register_configured_codex_session_tree_routes(
     sources: Vec<ProviderSource>,
     selection: SourceBackedRouteSelection,
     source_root_lineage: Option<[u8; 32]>,
+    route_role: &ProviderRouteRole,
 ) -> SourceBackedCoordinatorResult<()> {
     register_codex_session_tree_routes_with_identity(
         registry,
         sources,
         selection,
         source_root_lineage,
+        Some(route_role),
         true,
     )
 }
@@ -50,7 +61,9 @@ pub(in crate::source_backed) fn register_codex_session_tree_routes(
     sources: Vec<ProviderSource>,
     selection: SourceBackedRouteSelection,
 ) -> SourceBackedCoordinatorResult<()> {
-    register_codex_session_tree_routes_with_identity(registry, sources, selection, None, false)
+    register_codex_session_tree_routes_with_identity(
+        registry, sources, selection, None, None, false,
+    )
 }
 
 fn register_codex_session_tree_routes_with_identity(
@@ -58,6 +71,7 @@ fn register_codex_session_tree_routes_with_identity(
     mut sources: Vec<ProviderSource>,
     selection: SourceBackedRouteSelection,
     source_root_lineage: Option<[u8; 32]>,
+    route_role: Option<&ProviderRouteRole>,
     provider_root_identity: bool,
 ) -> SourceBackedCoordinatorResult<()> {
     if sources.is_empty() {
@@ -108,7 +122,13 @@ fn register_codex_session_tree_routes_with_identity(
         driver,
     )?;
     if provider_root_identity {
-        route.apply_provider_root_route_identity(source_root_lineage)?;
+        let route_role = route_role.ok_or_else(|| {
+            invalid_route(
+                CaptureProvider::Codex,
+                "configured Codex session route has no explicit route role",
+            )
+        })?;
+        route.apply_provider_root_route_identity(source_root_lineage, route_role)?;
     }
     route.registration_sources = sources;
     route.codex_generation_participant = Some(participant);
@@ -191,6 +211,7 @@ pub(in crate::source_backed) fn register_configured_codex_prompt_history_source_
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
     source_root_lineage: Option<[u8; 32]>,
+    route_role: &ProviderRouteRole,
 ) -> SourceBackedCoordinatorResult<()> {
     let catalog_lineage =
         source_root_lineage.unwrap_or(CODEX_PROMPT_HISTORY_DEFAULT_CATALOG_LINEAGE_V0);
@@ -209,7 +230,7 @@ pub(in crate::source_backed) fn register_configured_codex_prompt_history_source_
         SourceBackedSelectorAuthority::DiscoveredWinner,
         driver,
     )?;
-    route.apply_provider_root_route_identity(source_root_lineage)?;
+    route.apply_provider_root_route_identity(source_root_lineage, route_role)?;
     registry.register(route);
     Ok(())
 }

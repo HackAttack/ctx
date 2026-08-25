@@ -5,6 +5,8 @@ use ctx_history_core::{CoreRecord, LiteralFactKind};
 
 #[path = "jsonl_publication/claude_cursor.rs"]
 mod claude_cursor;
+#[path = "jsonl_publication/copilot.rs"]
+mod copilot;
 #[path = "jsonl_publication/gemini_retrieval_exclusion.rs"]
 mod gemini_retrieval_exclusion;
 #[path = "jsonl_publication/jsonl_shared_publication.rs"]
@@ -23,6 +25,26 @@ fn has_literal_fact(record: &CoreRecord, kind: LiteralFactKind, value: &str) -> 
         .iter()
         .flat_map(|activity| activity.facts.iter())
         .any(|fact| fact.kind == kind && fact.value == value)
+}
+
+fn fixture_provider_source_at(
+    provider: ctx_history_core::CaptureProvider,
+    source_format: &'static str,
+    import_support: ProviderImportSupport,
+    path: impl Into<std::path::PathBuf>,
+) -> ProviderSource {
+    ProviderSource {
+        provider,
+        path: path.into(),
+        exists: true,
+        source_format,
+        source_kind: ProviderSourceKind::NativeHistory,
+        import_support,
+        catalog_support: ProviderCatalogSupport::None,
+        status: ProviderSourceStatus::Available,
+        unsupported_reason: None,
+        route_provenance: Default::default(),
+    }
 }
 
 fn test_provider_probes() -> StaticProviderProbeCatalog {

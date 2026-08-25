@@ -85,6 +85,7 @@ fn openclaw_registry(root: &Path) -> SourceBackedProviderRegistry {
             catalog_support: ProviderCatalogSupport::None,
             status: ProviderSourceStatus::Available,
             unsupported_reason: None,
+            route_provenance: Default::default(),
         },
         SourceBackedRouteSelection::Automatic,
     )
@@ -152,6 +153,7 @@ fn custom_provider_source(path: &Path) -> ProviderSource {
         catalog_support: ProviderCatalogSupport::None,
         status: ProviderSourceStatus::Available,
         unsupported_reason: None,
+        route_provenance: Default::default(),
     }
 }
 
@@ -242,6 +244,7 @@ fn pi_registry(root: &Path) -> SourceBackedProviderRegistry {
             catalog_support: ProviderCatalogSupport::None,
             status: ProviderSourceStatus::Available,
             unsupported_reason: None,
+            route_provenance: Default::default(),
         },
         SourceBackedRouteSelection::Automatic,
     )

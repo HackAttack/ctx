@@ -18,9 +18,8 @@ use super::{
 use chrono::{DateTime, Utc};
 use ctx_history_capture_runtime::SourceBackedRouteErrorKind;
 use ctx_history_capture_runtime::{
-    CaptureLifecycleSink, ImmutableCaptureSnapshot, SourceBackedGenerationSink,
-    SourceBackedRecordRejectionDrafts, SourceBackedRevalidationTarget, SourceBackedRouteError,
-    SourceBackedRouteResult,
+    SourceBackedGenerationSink, SourceBackedRecordRejectionDrafts, SourceBackedRevalidationTarget,
+    SourceBackedRouteError, SourceBackedRouteResult,
 };
 use ctx_history_core::{
     CaptureProvider, CertifiedSource, CertifiedSourceDeletion, CertifiedSourceInventory,
@@ -66,7 +65,9 @@ use errors::{
     route_scan,
 };
 mod ownership;
-use ownership::base_sources_for_root;
+use ownership::{
+    base_sources_for_route, quarantined_member_is_route_local, route_local_disposition_counts,
+};
 mod membership;
 pub use membership::{JsonlFamilyAppendTrustContract, JsonlFamilyMembershipObservation};
 mod projector;
@@ -119,16 +120,6 @@ pub enum JsonlFamilyInventoryMode {
     /// must remain absent, and newly discovered members are deferred to the
     /// next refresh.
     FrozenOpeningAllowAdditions,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JsonlFamilyBaseScope {
-    /// Compatibility mode for family adapters whose source identity is unique
-    /// across every route for that provider/schema tuple.
-    ProviderFamily,
-    /// Reuse only sources previously committed by this exact route. Adapters
-    /// whose explicit and automatic routes can overlap must select this mode.
-    Route,
 }
 
 /// One exact workset member opened beneath a retained provider root. Shared
@@ -265,10 +256,6 @@ pub trait JsonlFamilyAdapter: Send + Sync {
 
     fn inventory_mode(&self) -> JsonlFamilyInventoryMode {
         JsonlFamilyInventoryMode::Exact
-    }
-
-    fn base_scope(&self) -> JsonlFamilyBaseScope {
-        JsonlFamilyBaseScope::ProviderFamily
     }
 
     fn discover(

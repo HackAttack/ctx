@@ -155,6 +155,19 @@ pub(crate) fn validate_selected_provider(
         ));
     }
     if let Some(issue) = report.issues.first() {
+        if issue.kind == DiscoveryIssueKind::ConfiguredRootConflict {
+            let location = issue
+                .path
+                .as_deref()
+                .map(|path| format!(" at {}", path.display()))
+                .unwrap_or_default();
+            return Err(anyhow!(
+                "{} configured history roots conflict{location}: {}; repair the persisted configuration with `ctx sources remove <name>` or `ctx sources add <name> --provider {} --root <different-path> --replace`; use `[sources] automatic=false` when named roots should replace automatic discovery",
+                guidance.display_name,
+                issue.reason,
+                provider.as_str(),
+            ));
+        }
         let summary = match issue.kind {
             DiscoveryIssueKind::NoDiskHistory => {
                 format!("{} has no disk history selected", guidance.display_name)
@@ -167,6 +180,11 @@ pub(crate) fn validate_selected_provider(
                 "{} has no official automatic history location established",
                 guidance.display_name
             ),
+            DiscoveryIssueKind::ConfiguredRootMissing => format!(
+                "{} configured history root is missing",
+                guidance.display_name
+            ),
+            DiscoveryIssueKind::ConfiguredRootConflict => unreachable!(),
         };
         return Err(anyhow!(
             "{summary}: {}; use `{}`",
@@ -214,6 +232,44 @@ mod tests {
             validate_ingest_request(&request).unwrap(),
             IngestRoute::ExplicitPath
         );
+    }
+
+    #[test]
+    fn configured_root_conflicts_recommend_persistent_repairs() {
+        struct Conflict;
+        impl SourceDiscoveryPort for Conflict {
+            fn discover_all(&self) -> Result<DiscoveryReport> {
+                unreachable!()
+            }
+            fn discover_provider(&self, _: CaptureProvider) -> Result<DiscoveryReport> {
+                unreachable!()
+            }
+            fn provider_selection_guidance(&self, _: CaptureProvider) -> ProviderSelectionGuidance {
+                ProviderSelectionGuidance {
+                    display_name: "claude".to_owned(),
+                    manual_path_command: "ctx import --provider claude --path <path>".to_owned(),
+                }
+            }
+        }
+        let report = DiscoveryReport {
+            sources: Vec::new(),
+            issues: vec![ctx_history_capture_model::DiscoveryIssue {
+                provider: CaptureProvider::Claude,
+                path: Some("/provider/claude".into()),
+                kind: DiscoveryIssueKind::ConfiguredRootConflict,
+                reason: "distinct configured roots resolve to the same physical provider root",
+            }],
+        };
+
+        let error = validate_selected_provider(&Conflict, CaptureProvider::Claude, &report)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("/provider/claude"), "{error}");
+        assert!(error.contains("ctx sources remove <name>"), "{error}");
+        assert!(error.contains("--replace"), "{error}");
+        assert!(error.contains("[sources] automatic=false"), "{error}");
+        assert!(!error.contains("ctx import"), "{error}");
     }
 
     #[test]

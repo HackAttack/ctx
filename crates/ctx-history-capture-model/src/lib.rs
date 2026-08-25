@@ -39,13 +39,20 @@ pub use progress::{
     SourceRecordProgressSnapshot,
 };
 pub use provider_root::{
-    provider_source_config_digest, ProviderRootDefinition, ProviderRootSourceIdentity,
-    MAX_CONFIGURED_PROVIDER_ROOTS, MAX_PROVIDER_ROOT_SELECTOR_BYTES,
+    provider_root_encoded_path_len, provider_root_path_within_limit, provider_source_config_digest,
+    ProviderRootConnectorBinding, ProviderRootDefinition, ProviderRootKind,
+    ProviderRootSourceIdentity, ReleasedProviderRootAutomaticRole, RetainedProviderRootAuthority,
+    MAX_CONFIGURED_PROVIDER_ROOTS, MAX_PROVIDER_ROOT_ENCODED_PATH_BYTES,
+    MAX_PROVIDER_ROOT_SELECTOR_BYTES,
 };
 pub use record::RecordDigest;
-pub use route::{SourceRouteIdentity, SourceRouteIdentityError};
+pub use route::{
+    ProviderRouteRole, ProviderRouteRoleError, SourceRouteIdentity, SourceRouteIdentityError,
+    MAX_PROVIDER_ROUTE_ROLE_BYTES,
+};
 pub use source::{
     DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport, ProviderCatalogSupport,
     ProviderDefaultLocation, ProviderImportSupport, ProviderSource, ProviderSourceFailureKind,
-    ProviderSourceKind, ProviderSourceSpec, ProviderSourceStatus, ProviderSourceStatusReason,
+    ProviderSourceKind, ProviderSourceRouteProvenance, ProviderSourceSpec, ProviderSourceStatus,
+    ProviderSourceStatusReason,
 };

@@ -361,6 +361,38 @@ fn import_progress_json_goes_to_stderr_without_polluting_stdout() {
 }
 
 #[test]
+fn provider_import_uses_named_root_when_automatic_discovery_is_disabled() {
+    let temp = tempdir();
+    let named_root = temp.path().join("work-codex");
+    copy_dir_all(
+        Path::new(&provider_history_fixture("codex-sessions")),
+        &named_root.join("sessions"),
+    );
+    fs::create_dir_all(data_root(&temp)).unwrap();
+    fs::write(
+        data_root(&temp).join("config.toml"),
+        format!(
+            "[sources]\nautomatic = false\n\n[sources.roots.work]\nprovider = \"codex\"\npath = {:?}\n",
+            named_root.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    let report = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "codex",
+        "--format=json",
+        "--progress",
+        "none",
+    ]));
+
+    assert_eq!(report["outcome"], "success", "{report:#}");
+    assert_eq!(report["sources"][0]["status"], "published", "{report:#}");
+    assert_eq!(report["sources"][0]["successful_routes"], 1, "{report:#}");
+}
+
+#[test]
 fn warm_no_op_import_progress_keeps_per_run_bytes_unknown() {
     let temp = tempdir();
     copy_dir_all(

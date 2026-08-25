@@ -45,6 +45,30 @@ impl GenerationWriter {
         Ok(())
     }
 
+    /// Replaces the provisional provider-root selector snapshot after every
+    /// selected route has reached a terminal outcome. This is limited to the
+    /// no-active-stage boundary so a route can never observe selector aliases
+    /// changing beneath its savepoint.
+    pub fn finalize_applied_provider_roots(
+        &mut self,
+        automatic_provider_discovery: bool,
+        config_digest: String,
+        roots: Vec<AppliedProviderRoot>,
+    ) -> Result<()> {
+        self.validate_source_route_plan_complete()?;
+        if self.active_source_route_stage.is_some()
+            || self.active_source_route_cohort_stage.is_some()
+            || self.applied_provider_roots.is_none()
+        {
+            return Err(IndexError::InvalidSourceRoutePlan(
+                "provider-root finalization requires installed roots outside a route stage"
+                    .to_owned(),
+            ));
+        }
+        self.applied_provider_roots = Some((automatic_provider_discovery, config_digest, roots));
+        Ok(())
+    }
+
     /// Authorizes exact locked-base routes to disappear as part of a
     /// provider-root topology transition.
     ///
@@ -326,6 +350,50 @@ impl GenerationWriter {
         Ok(())
     }
 
+    /// Opens an outer savepoint that makes several selected route stages one
+    /// publication unit. Inner route stages still produce independent failure
+    /// diagnostics, but their index writes remain uncommitted until the cohort
+    /// succeeds as a whole.
+    pub fn begin_source_route_cohort_stage(
+        &mut self,
+        cohort_identity: SourceRouteIdentity,
+    ) -> Result<()> {
+        if self.active_source_route_stage.is_some()
+            || self.active_source_route_cohort_stage.is_some()
+        {
+            return Err(IndexError::InvalidSourceRoutePlan(
+                "source route cohort staging is already active".to_owned(),
+            ));
+        }
+        let plan = self.source_route_plan.as_ref().ok_or_else(|| {
+            IndexError::InvalidSourceRoutePlan(
+                "route cohort staging requires a route plan".to_owned(),
+            )
+        })?;
+        if !plan.selected.contains(&cohort_identity) || plan.completed.contains(&cohort_identity) {
+            return Err(IndexError::InvalidSourceRoutePlan(format!(
+                "route {} cannot anchor an incomplete route cohort",
+                cohort_identity.as_str()
+            )));
+        }
+        self.active_source_route_cohort_stage = Some(SourceRouteStageCheckpoint {
+            route_identity: cohort_identity,
+            source_route_plan: plan.clone(),
+            complete_inventories: self.complete_inventories.clone(),
+            pending: self.pending.clone(),
+            deletions: self.deletions.clone(),
+            route_deletions: self.route_deletions.clone(),
+            observed_missing_routes: self.observed_missing_routes.clone(),
+            route_publication_revalidation_len: self.route_publication_revalidations.len(),
+            partially_reconciled_routes: self.partially_reconciled_routes.clone(),
+            partial_source_route_deltas: self.partial_source_route_deltas.clone(),
+            source_identities: self.source_identities.clone(),
+            changed_session_insertions: Vec::new(),
+            changed_session_updates: Vec::new(),
+        });
+        Ok(())
+    }
+
     /// Returns the complete source/deletion certificates added by the active
     /// route since its savepoint was opened.
     ///
@@ -370,8 +438,10 @@ impl GenerationWriter {
                 ));
             }
         }
-        if let Some(writer) = self.writer.as_mut() {
-            writer.commit()?;
+        if self.active_source_route_cohort_stage.is_none() {
+            if let Some(writer) = self.writer.as_mut() {
+                writer.commit()?;
+            }
         }
         if self.partially_reconciled_routes.contains(route_identity) {
             let checkpoint = self.active_source_route_stage.as_ref().ok_or_else(|| {
@@ -392,7 +462,17 @@ impl GenerationWriter {
             self.partial_source_route_deltas
                 .insert(route_identity.clone(), delta);
         }
-        self.active_source_route_stage = None;
+        let checkpoint = self.active_source_route_stage.take().ok_or_else(|| {
+            IndexError::SourceRouteStagingNotActive(route_identity.as_str().into())
+        })?;
+        if let Some(cohort) = self.active_source_route_cohort_stage.as_mut() {
+            cohort
+                .changed_session_insertions
+                .extend(checkpoint.changed_session_insertions);
+            cohort
+                .changed_session_updates
+                .extend(checkpoint.changed_session_updates);
+        }
         self.source_route_plan
             .as_mut()
             .ok_or(IndexError::WriterInvariant(
@@ -400,6 +480,68 @@ impl GenerationWriter {
             ))?
             .completed
             .insert(route_identity.clone());
+        Ok(())
+    }
+
+    /// Commits every inner route stage in the active cohort as one writer
+    /// transaction after the coordinator has observed complete success.
+    pub fn finish_source_route_cohort_stage(&mut self) -> Result<()> {
+        if self.active_source_route_stage.is_some()
+            || self.active_source_route_cohort_stage.is_none()
+        {
+            return Err(IndexError::InvalidSourceRoutePlan(
+                "route cohort completion requires an active outer stage and no inner stage"
+                    .to_owned(),
+            ));
+        }
+        if let Some(writer) = self.writer.as_mut() {
+            writer.commit()?;
+        }
+        self.active_source_route_cohort_stage = None;
+        Ok(())
+    }
+
+    /// Discards every inner route stage in the active cohort, restoring the
+    /// exact route plan and candidate state from before its first member.
+    pub fn rollback_source_route_cohort_stage(&mut self) -> Result<()> {
+        if self.active_source_route_stage.is_some() {
+            return Err(IndexError::InvalidSourceRoutePlan(
+                "cannot roll back a route cohort while an inner stage is active".to_owned(),
+            ));
+        }
+        let checkpoint = self
+            .active_source_route_cohort_stage
+            .take()
+            .ok_or_else(|| {
+                IndexError::InvalidSourceRoutePlan(
+                    "route cohort rollback requires an active outer stage".to_owned(),
+                )
+            })?;
+        if let Some(writer) = self.writer.as_mut() {
+            writer.rollback()?;
+            writer.set_merge_policy(Box::new(LexicalMergePolicy::default()));
+        }
+        self.complete_inventories = checkpoint.complete_inventories;
+        self.source_route_plan = Some(checkpoint.source_route_plan);
+        self.pending = checkpoint.pending;
+        self.deletions = checkpoint.deletions;
+        self.route_deletions = checkpoint.route_deletions;
+        self.observed_missing_routes = checkpoint.observed_missing_routes;
+        self.route_publication_revalidations
+            .truncate(checkpoint.route_publication_revalidation_len);
+        self.partially_reconciled_routes = checkpoint.partially_reconciled_routes;
+        self.partial_source_route_deltas = checkpoint.partial_source_route_deltas;
+        self.source_identities = checkpoint.source_identities;
+        for (session_uuid, prior) in checkpoint.changed_session_updates.into_iter().rev() {
+            self.changed_sessions.insert(session_uuid, prior);
+        }
+        for session_uuid in checkpoint.changed_session_insertions {
+            if self.changed_sessions.remove(&session_uuid).is_none() {
+                return Err(IndexError::WriterInvariant(
+                    "route cohort rollback lost a changed-session registry insertion",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -642,7 +784,9 @@ impl GenerationWriter {
     }
 
     pub(crate) fn validate_source_route_plan_complete(&self) -> Result<()> {
-        if self.active_source_route_stage.is_some() {
+        if self.active_source_route_stage.is_some()
+            || self.active_source_route_cohort_stage.is_some()
+        {
             return Err(IndexError::InvalidSourceRoutePlan(
                 "cannot publish while route staging is active".to_owned(),
             ));

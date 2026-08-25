@@ -180,8 +180,8 @@ pub use route::{
 };
 pub use route::{
     jsonl_family_driver, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyAppendTrustContract,
-    JsonlFamilyBaseScope, JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition,
-    JsonlFamilyInventory, JsonlFamilyInventoryMember, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
+    JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition, JsonlFamilyInventory,
+    JsonlFamilyInventoryMember, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
     JsonlFamilyLeafDisposition, JsonlFamilyMembershipObservation, JsonlFamilyOpenedMember,
     JsonlFamilyOptimizedLeafOutcome, JsonlFamilyPendingLeaf, JsonlFamilyPhysicalSourceIdentity,
     JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyProjectorPreflightError,

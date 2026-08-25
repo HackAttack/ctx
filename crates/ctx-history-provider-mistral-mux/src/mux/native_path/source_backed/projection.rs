@@ -674,13 +674,23 @@ mod tests {
         let parent_session_id = metadata
             .parent_provider_session_id
             .as_deref()
-            .map(super::super::related_session_identity)
+            .map(|parent| {
+                super::super::related_session_identity(
+                    parent,
+                    ctx_history_core::SourceAnchorScope::Unqualified,
+                )
+            })
             .transpose()
             .unwrap();
         let root_session_id = metadata
             .root_provider_session_id
             .as_deref()
-            .map(super::super::related_session_identity)
+            .map(|root| {
+                super::super::related_session_identity(
+                    root,
+                    ctx_history_core::SourceAnchorScope::Unqualified,
+                )
+            })
             .transpose()
             .unwrap()
             .or(parent_session_id)

@@ -1,5 +1,32 @@
 use super::*;
 
+#[test]
+fn source_and_related_session_identities_are_root_scoped() {
+    let released = source_key("same-session").unwrap();
+    let compatibility = source_key_scoped("same-session", SourceAnchorScope::Unqualified).unwrap();
+    let first = source_key_scoped("same-session", SourceAnchorScope::Lineage([1; 32])).unwrap();
+    let second = source_key_scoped("same-session", SourceAnchorScope::Lineage([2; 32])).unwrap();
+
+    assert!(released.exact_descriptor_eq(&compatibility));
+    assert_ne!(first.identity(), second.identity());
+    assert_ne!(
+        related_session_identity(
+            "parent",
+            "child",
+            session_identity(&first, "child").unwrap(),
+            SourceAnchorScope::Lineage([1; 32]),
+        )
+        .unwrap(),
+        related_session_identity(
+            "parent",
+            "child",
+            session_identity(&second, "child").unwrap(),
+            SourceAnchorScope::Lineage([2; 32]),
+        )
+        .unwrap()
+    );
+}
+
 fn assert_unknown_lineage(index: &Value, family: &OpenClawNativeSessionFamily) {
     let source = source_key("child").unwrap();
     let session_id = session_identity(&source, "child").unwrap();
@@ -10,6 +37,7 @@ fn assert_unknown_lineage(index: &Value, family: &OpenClawNativeSessionFamily) {
         family,
         DateTime::<Utc>::UNIX_EPOCH,
         session_id,
+        SourceAnchorScope::Unqualified,
     )
     .unwrap();
 
@@ -45,6 +73,7 @@ fn admitted_session(index: Option<&[u8]>) -> (SessionState, OpenClawNativeSessio
         &family,
         DateTime::<Utc>::UNIX_EPOCH,
         session_id,
+        SourceAnchorScope::Unqualified,
     )
     .unwrap();
     (session, family)
@@ -64,6 +93,7 @@ fn exact_resolved_family_emits_delegated_scope() {
         },
         DateTime::<Utc>::UNIX_EPOCH,
         session_id,
+        SourceAnchorScope::Unqualified,
     )
     .unwrap();
 
@@ -90,6 +120,7 @@ fn contradictory_family_omits_relationship_instead_of_fallback_kind() {
         },
         DateTime::<Utc>::UNIX_EPOCH,
         session_id,
+        SourceAnchorScope::Unqualified,
     )
     .unwrap();
 
@@ -165,6 +196,7 @@ fn absent_lineage_family_establishes_primary_scope() {
         &OpenClawNativeSessionFamily::Absent,
         DateTime::<Utc>::UNIX_EPOCH,
         session_id,
+        SourceAnchorScope::Unqualified,
     )
     .unwrap();
 

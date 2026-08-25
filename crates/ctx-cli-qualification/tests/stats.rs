@@ -1,3 +1,4 @@
+#[path = "../../ctx-cli-contract-tests/tests/contracts/support/mod.rs"]
 mod support;
 
 use std::fs;

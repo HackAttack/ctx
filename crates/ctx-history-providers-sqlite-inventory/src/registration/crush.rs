@@ -10,15 +10,16 @@ use crate::lifecycle::{
 };
 use crate::provider::providers::crush::native_path::source_backed::BoundDatabase;
 use crate::provider::providers::crush::native_path::source_backed::{
-    bind_inventory as bind_crush_inventory, finish_opened_source as finish_crush_source,
-    scan_source as scan_crush_source, CrushSourceBackedErrorV0, CRUSH_PARSER_REVISION,
+    bind_inventory_scoped as bind_crush_inventory_scoped,
+    finish_opened_source as finish_crush_source, scan_source as scan_crush_source,
+    CrushSourceBackedErrorV0, CRUSH_PARSER_REVISION,
 };
 use crate::provider::source_backed::combine_primary_and_cleanup_route_errors;
 use crate::{
     CrushProjectDatabaseV0, CrushProjectInventorySourceV0, ProviderSource,
     CRUSH_SQLITE_SOURCE_FORMAT,
 };
-use ctx_history_core::{CaptureProvider, CertifiedSource};
+use ctx_history_core::{CaptureProvider, CertifiedSource, SourceAnchorScope};
 
 use super::shared::{
     sqlite_inventory_authority_fingerprint, SqliteInventoryCatalog, SqliteInventoryCatalogLeaf,
@@ -26,7 +27,7 @@ use super::shared::{
 };
 use super::{
     sqlite_capture_route_error, sqlite_inventory_watch_targets, sqlite_source_route_error,
-    sqlite_source_route_error_kind, SqliteInventoryRegistration,
+    sqlite_source_route_error_kind, SqliteInventoryCoverage, SqliteInventoryRegistration,
 };
 use crate::provider_sources::SqliteSourceReadSnapshot;
 
@@ -36,6 +37,7 @@ use super::shared::SqliteInventorySnapshotCounters;
 pub struct CrushInventoryProvider<I> {
     data_root: PathBuf,
     inventory: Arc<I>,
+    source_scope: SourceAnchorScope,
 }
 
 impl<I, L, S> SqliteInventoryProvider<L, S> for CrushInventoryProvider<I>
@@ -51,9 +53,10 @@ where
     }
 
     fn discover(&self) -> SourceBackedRouteResult<SqliteInventoryCatalog<Self::Leaf>> {
-        let inventory = bind_crush_inventory(
+        let inventory = bind_crush_inventory_scoped(
             &self.data_root,
             self.inventory.observe().map_err(crush_route_error)?,
+            self.source_scope,
         )
         .map_err(crush_route_error)?;
         let authority_fingerprint = sqlite_inventory_authority_fingerprint(&inventory.observation)?;
@@ -175,6 +178,35 @@ where
     L: CaptureLifecycleSink + 'static,
     S: DocumentRecordSpool,
 {
+    crush_registration_scoped(
+        source,
+        selection,
+        data_root,
+        inventory,
+        SourceAnchorScope::Unqualified,
+        SqliteInventoryCoverage::Complete,
+    )
+}
+
+pub fn crush_registration_scoped<I, L, S>(
+    source: ProviderSource,
+    selection: SourceBackedRouteSelection,
+    data_root: &Path,
+    inventory: Arc<I>,
+    source_scope: SourceAnchorScope,
+    coverage: SqliteInventoryCoverage,
+) -> SqliteInventoryRegistration<
+    impl ReplacementDocumentTree<
+        Lifecycle = L,
+        Spool = S,
+        RouteControl = crate::ProviderRouteControlExpectation,
+    >,
+>
+where
+    I: CrushProjectInventorySourceV0 + Send + Sync + 'static,
+    L: CaptureLifecycleSink + 'static,
+    S: DocumentRecordSpool,
+{
     let watch_inventory = Arc::clone(&inventory);
     let adapter = SqliteInventoryDocumentAdapter::new(
         data_root,
@@ -183,8 +215,10 @@ where
         CrushInventoryProvider {
             data_root: data_root.to_path_buf(),
             inventory,
+            source_scope,
         },
-    );
+    )
+    .with_coverage(coverage);
     SqliteInventoryRegistration::new(
         source,
         selection,

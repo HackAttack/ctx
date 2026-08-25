@@ -437,7 +437,9 @@ impl<E: JsonlFamilyError> JsonlReader<E> {
             })
         };
         file.seek(SeekFrom::Start(complete_prefix_end))?;
-        let (reader, physical) = if whole_record {
+        let (reader, physical) = if skip_scan {
+            (None, None)
+        } else if whole_record {
             (Some(BufReader::new(file)), None)
         } else {
             (

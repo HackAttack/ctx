@@ -18,10 +18,52 @@ use crate::{
 use ctx_history_source_discovery::{DiscoveryContext, DiscoveryPlatform, DiscoveryPlatformDirs};
 
 use super::{
-    discovery::{open_root_authorized_snapshot_with_hook, source_key, AstrBotSourceIdentityV0},
+    discovery::{
+        open_root_authorized_snapshot_with_hook, source_key, source_key_scoped,
+        AstrBotSourceIdentityV0,
+    },
     parsing::scan_astrbot_source_backed_v0,
     *,
 };
+
+#[test]
+fn root_scope_composes_with_astrbot_slots_and_preserves_unqualified_identity() {
+    use ctx_history_core::{CaptureProvider, SourceAnchor, SourceAnchorScope, SourceKey};
+
+    let selected = AstrBotSourceIdentityV0::SelectedCore;
+    let released = SourceKey::derive(
+        CaptureProvider::AstrBot.as_str(),
+        crate::ASTRBOT_SQLITE_SOURCE_FORMAT,
+        SOURCE_SCHEMA_VARIANT,
+        SOURCE_IDENTITY_VERSION,
+        SourceAnchor::provider_native(
+            SELECTED_SOURCE_NAMESPACE,
+            TypedKey::utf8("selected-core").unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let unqualified = source_key_scoped(&selected, SourceAnchorScope::Unqualified).unwrap();
+    assert!(released.exact_descriptor_eq(&unqualified));
+    assert_eq!(
+        released.identity().encode_canonical().unwrap(),
+        unqualified.identity().encode_canonical().unwrap()
+    );
+
+    let first = source_key_scoped(&selected, SourceAnchorScope::Lineage([0x11; 32])).unwrap();
+    let second = source_key_scoped(&selected, SourceAnchorScope::Lineage([0x22; 32])).unwrap();
+    assert_ne!(
+        super::identity::stable_session_id(&first, "shared-conversation").unwrap(),
+        super::identity::stable_session_id(&second, "shared-conversation").unwrap()
+    );
+
+    let sibling = source_key_scoped(
+        &AstrBotSourceIdentityV0::LauncherInstance("shared-launcher-client".to_owned()),
+        SourceAnchorScope::Lineage([0x11; 32]),
+    )
+    .unwrap();
+    assert_ne!(first.identity(), sibling.identity());
+}
 
 fn create_database(path: &Path, session: &str, text: &str) {
     fs::create_dir_all(path.parent().expect("database parent")).expect("create parent");

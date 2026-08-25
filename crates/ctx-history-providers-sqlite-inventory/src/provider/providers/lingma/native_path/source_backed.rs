@@ -1,4 +1,7 @@
-use ctx_history_core::{CoreRecordError, ProjectionContractError};
+use ctx_history_core::{
+    CaptureProvider, CoreRecordError, ProjectionContractError, SourceAnchor, SourceAnchorScope,
+    SourceKey, TypedKey,
+};
 use thiserror::Error;
 
 use crate::{provider_sources::SqliteSourceAccessError, CaptureError};
@@ -32,7 +35,7 @@ const MAX_INVENTORY_DATABASES: usize = 1_024;
 const INVENTORY_REVISION_DOMAIN: &[u8] = b"ctx-lingma-source-backed-inventory-v0\0";
 
 #[derive(Debug, Error)]
-pub(crate) enum LingmaSourceBackedErrorV0 {
+pub enum LingmaSourceBackedErrorV0 {
     #[error(transparent)]
     Capture(#[from] CaptureError),
     #[error(transparent)]
@@ -61,7 +64,26 @@ pub(crate) enum LingmaSourceBackedErrorV0 {
     EmptySelectedBody,
 }
 
-pub(crate) type LingmaSourceBackedResultV0<T> = Result<T, LingmaSourceBackedErrorV0>;
+pub type LingmaSourceBackedResultV0<T> = Result<T, LingmaSourceBackedErrorV0>;
+
+pub fn lingma_source_key(catalog_lineage: TypedKey) -> LingmaSourceBackedResultV0<SourceKey> {
+    lingma_source_key_scoped(catalog_lineage, SourceAnchorScope::Unqualified)
+}
+
+fn lingma_source_key_scoped(
+    catalog_lineage: TypedKey,
+    source_scope: SourceAnchorScope,
+) -> LingmaSourceBackedResultV0<SourceKey> {
+    let anchor = SourceAnchor::provider_native(SOURCE_ANCHOR_NAMESPACE, catalog_lineage)?;
+    Ok(SourceKey::derive_scoped(
+        CaptureProvider::Lingma.as_str(),
+        crate::LINGMA_SQLITE_SOURCE_FORMAT,
+        SOURCE_SCHEMA_VARIANT,
+        1,
+        anchor,
+        source_scope,
+    )?)
+}
 
 fn lingma_row_projection_error(error: &LingmaSourceBackedErrorV0) -> bool {
     matches!(

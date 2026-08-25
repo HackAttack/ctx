@@ -127,6 +127,7 @@ fn gemini_provider_source(root: &Path) -> ProviderSource {
         catalog_support: ProviderCatalogSupport::None,
         status: ProviderSourceStatus::Available,
         unsupported_reason: None,
+        route_provenance: Default::default(),
     }
 }
 

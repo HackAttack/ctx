@@ -1,34 +1,33 @@
-use super::super::super::{
-    context::DiscoveryPlatformDirs, specs::provider_source_spec, types::ProviderImportSupport,
-};
-use super::super::dedupe_report;
-use rusqlite::Connection;
-use std::fs;
+mod support;
 
-use super::*;
+use ctx_history_core::CaptureProvider;
+use ctx_history_source_discovery::*;
+use rusqlite::Connection;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use support::TEST_PROVIDER_PROBES;
+
+const MAX_FINITE_SELECTOR_ENTRIES: usize = 128;
+const MAX_DIRECT_DIRECTORY_ENTRIES: usize = 1_024;
+const MAX_PROJECT_ANCESTORS: usize = 64;
 
 fn resolve(context: &DiscoveryContext, spec: &ProviderSourceSpec) -> DiscoveryReport {
-    super::resolve(
-        &crate::provider_sources::TEST_PROVIDER_PROBES,
+    discover_provider_sources_for_provider_with_context(
+        &TEST_PROVIDER_PROBES,
         context,
-        spec,
+        spec.provider,
     )
 }
 
-fn provider_source_for_path(
-    provider: CaptureProvider,
-    path: PathBuf,
-) -> crate::provider_sources::ProviderSource {
-    crate::provider_sources::provider_source_for_path(
-        &crate::provider_sources::TEST_PROVIDER_PROBES,
-        provider,
-        path,
-    )
+fn provider_source_for_path(provider: CaptureProvider, path: PathBuf) -> ProviderSource {
+    ctx_history_source_discovery::provider_source_for_path(&TEST_PROVIDER_PROBES, provider, path)
 }
 
 fn tempdir() -> tempfile::TempDir {
-    crate::test_support_paths::tempdir()
-        .expect("temporary directory should support resolver fixtures")
+    support::tempdir()
 }
 
 fn context(root: &Path, platform: DiscoveryPlatform) -> DiscoveryContext {
@@ -56,6 +55,18 @@ fn spec(provider: CaptureProvider) -> &'static ProviderSourceSpec {
 fn write(path: &Path, bytes: &[u8]) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, bytes).unwrap();
+}
+
+fn assert_automatic_role(source: &ProviderSource, components: &[&[u8]]) {
+    let expected =
+        ctx_history_capture_model::ProviderRouteRole::from_dynamic(components.iter().copied())
+            .expect("expected test role should be bounded");
+    assert_eq!(
+        source.route_provenance.automatic_route_role(),
+        Some(&expected),
+        "unexpected route role for {}",
+        source.path.display()
+    );
 }
 
 fn write_firebender_chat_history_db(path: &Path) {
@@ -524,6 +535,10 @@ fn mux_root_is_one_raw_supported_winner_when_active_and_archive_history_coexist(
         (&custom.join("sessions"), ProviderSourceStatus::Available)
     );
     assert!(supported.unsupported_reason.is_none());
+    assert!(matches!(
+        supported.route_provenance,
+        ctx_history_capture_model::ProviderSourceRouteProvenance::Unroled
+    ));
     assert!(report
         .sources
         .iter()
@@ -648,6 +663,127 @@ fn cline_selects_one_owned_legacy_root_and_only_installed_microsoft_hosts() {
         .iter()
         .all(|item| !item.path.starts_with(config.join("Cursor"))
             && !item.path.starts_with(context.home().join(".cline"))));
+    let selected_source = native
+        .iter()
+        .find(|source| source.path == selected)
+        .expect("selected Cline data root");
+    assert_automatic_role(selected_source, &[b"task-store", b"selected-data-root"]);
+    let base_source = native
+        .iter()
+        .find(|source| source.path == code)
+        .expect("stable VS Code base Cline store");
+    assert_automatic_role(base_source, &[b"task-store", b"vscode", b"stable", b"base"]);
+    let profile_source = native
+        .iter()
+        .find(|source| source.path == profile)
+        .expect("stable VS Code profile Cline store");
+    assert_automatic_role(
+        profile_source,
+        &[
+            b"task-store",
+            b"vscode",
+            b"stable",
+            b"profile",
+            b"native-id",
+            b"utf8",
+            b"profile-a",
+        ],
+    );
+}
+
+#[test]
+fn cline_unicode_profile_ids_have_distinct_stable_roles() {
+    let temp = tempdir();
+    let context = context(temp.path(), DiscoveryPlatform::Linux);
+    let profiles = context
+        .platform_dirs()
+        .config
+        .as_ref()
+        .unwrap()
+        .join("Code/User/profiles");
+    let snow = profiles
+        .join("profile-雪")
+        .join("globalStorage/saoudrizwan.claude-dev");
+    let fire = profiles
+        .join("profile-火")
+        .join("globalStorage/saoudrizwan.claude-dev");
+    write(&snow.join("tasks/snow/ui_messages.json"), b"[]");
+    write(&fire.join("tasks/fire/ui_messages.json"), b"[]");
+
+    let report = resolve(&context, spec(CaptureProvider::Cline));
+    let snow_source = report
+        .sources
+        .iter()
+        .find(|source| source.path == snow)
+        .expect("Unicode snow profile should be discovered");
+    let fire_source = report
+        .sources
+        .iter()
+        .find(|source| source.path == fire)
+        .expect("Unicode fire profile should be discovered");
+    assert_automatic_role(
+        snow_source,
+        &[
+            b"task-store",
+            b"vscode",
+            b"stable",
+            b"profile",
+            b"native-id",
+            b"utf8",
+            "profile-雪".as_bytes(),
+        ],
+    );
+    assert_automatic_role(
+        fire_source,
+        &[
+            b"task-store",
+            b"vscode",
+            b"stable",
+            b"profile",
+            b"native-id",
+            b"utf8",
+            "profile-火".as_bytes(),
+        ],
+    );
+    assert_ne!(
+        snow_source.route_provenance.automatic_route_role(),
+        fire_source.route_provenance.automatic_route_role()
+    );
+}
+
+#[test]
+fn cline_stable_and_insiders_base_stores_have_distinct_order_independent_roles() {
+    let temp = tempdir();
+    let context = context(temp.path(), DiscoveryPlatform::Windows);
+    let config = context.platform_dirs().config.as_ref().unwrap();
+    let stable = config.join("Code/User/globalStorage/saoudrizwan.claude-dev");
+    let insiders = config.join("Code - Insiders/User/globalStorage/saoudrizwan.claude-dev");
+    write(&stable.join("tasks/stable/ui_messages.json"), b"[]");
+    write(&insiders.join("tasks/insiders/ui_messages.json"), b"[]");
+
+    let report = resolve(&context, spec(CaptureProvider::Cline));
+    let stable_source = report
+        .sources
+        .iter()
+        .find(|source| source.path == stable)
+        .expect("stable Cline host store");
+    let insiders_source = report
+        .sources
+        .iter()
+        .find(|source| source.path == insiders)
+        .expect("Cline Insiders host store");
+    assert_automatic_role(
+        stable_source,
+        &[b"task-store", b"vscode", b"stable", b"base"],
+    );
+    assert_automatic_role(
+        insiders_source,
+        &[b"task-store", b"vscode", b"insiders", b"base"],
+    );
+    assert_ne!(
+        stable_source.route_provenance.automatic_route_role(),
+        insiders_source.route_provenance.automatic_route_role()
+    );
 }
 
 #[test]
@@ -808,7 +944,7 @@ fn cline_common_data_root_publishes_separate_sdk_and_legacy_routes() {
         b"[]",
     );
 
-    let report = dedupe_report(resolve(&context, spec(CaptureProvider::Cline)));
+    let report = resolve(&context, spec(CaptureProvider::Cline));
     let sdk = source(&report, "cline_sdk_session_store");
     let legacy = source(&report, "cline_task_directory_json");
     assert_eq!(sdk.path, data);
@@ -816,6 +952,11 @@ fn cline_common_data_root_publishes_separate_sdk_and_legacy_routes() {
     assert_eq!(sdk.import_support, ProviderImportSupport::Native);
     assert_eq!(legacy.path, sdk.path);
     assert_eq!(legacy.status, ProviderSourceStatus::Available);
+    assert_automatic_role(legacy, &[b"task-store", b"selected-data-root"]);
+    assert!(matches!(
+        sdk.route_provenance,
+        ctx_history_capture_model::ProviderSourceRouteProvenance::Unroled
+    ));
 
     let explicit = provider_source_for_path(CaptureProvider::Cline, sdk.path.clone());
     assert_eq!(explicit.path, sdk.path);
@@ -873,7 +1014,7 @@ fn cline_db_only_catalog_selects_the_common_data_root_automatically_and_exactly(
         .unwrap();
     drop(connection);
 
-    let report = dedupe_report(resolve(&context, spec(CaptureProvider::Cline)));
+    let report = resolve(&context, spec(CaptureProvider::Cline));
     let automatic = source(&report, "cline_sdk_session_store");
     assert_eq!(automatic.path, data);
     assert_eq!(automatic.status, ProviderSourceStatus::Available);
@@ -928,6 +1069,49 @@ fn cline_profile_enumeration_is_finite_and_sorted() {
         .collect::<Vec<_>>();
     assert_eq!(profiles.len(), MAX_FINITE_SELECTOR_ENTRIES);
     assert!(profiles.windows(2).all(|pair| pair[0].path < pair[1].path));
+    assert!(profiles
+        .iter()
+        .all(|source| source.route_provenance.automatic_route_role().is_some()));
+}
+
+#[test]
+fn cline_oversized_native_profile_id_keeps_its_source_with_a_bounded_stable_role() {
+    let temp = tempdir();
+    let context = context(temp.path(), DiscoveryPlatform::Linux);
+    let profile_id = "p".repeat(240);
+    let root = context
+        .platform_dirs()
+        .config
+        .as_ref()
+        .unwrap()
+        .join("Code/User/profiles")
+        .join(&profile_id)
+        .join("globalStorage/saoudrizwan.claude-dev");
+    write(&root.join("tasks/t/ui_messages.json"), b"[]");
+
+    let first = resolve(&context, spec(CaptureProvider::Cline));
+    let source = first
+        .sources
+        .iter()
+        .find(|source| source.path == root)
+        .expect("oversized provider-native profile should remain selected");
+    let role = source
+        .route_provenance
+        .automatic_route_role()
+        .expect("oversized profile should retain an automatic role");
+    assert!(role.as_bytes().len() <= ctx_history_capture_model::MAX_PROVIDER_ROUTE_ROLE_BYTES);
+    assert!(role
+        .as_bytes()
+        .windows(b"native-id-sha256".len())
+        .any(|window| window == b"native-id-sha256"));
+    assert!(role
+        .as_bytes()
+        .windows(b"utf8".len())
+        .any(|window| window == b"utf8"));
+    assert_eq!(
+        first.sources,
+        resolve(&context, spec(CaptureProvider::Cline)).sources
+    );
 }
 
 #[test]
@@ -957,7 +1141,7 @@ fn supported_exact_paths_match_explicit_source_identity_inputs() {
         CaptureProvider::Mux,
         CaptureProvider::Cline,
     ] {
-        let report = dedupe_report(resolve(&context, spec(provider)));
+        let report = resolve(&context, spec(provider));
         let automatic = report
             .sources
             .iter()

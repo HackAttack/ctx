@@ -6,8 +6,8 @@ use std::{
 
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, CaptureProvider, CertifiedSource, CoreRecord,
-    CoreRecordError, EventIdentityInput, NativeItemKey, ProjectionContractError, SourceKey,
-    StableEntityId, TypedKey,
+    CoreRecordError, EventIdentityInput, NativeItemKey, ProjectionContractError, SourceAnchorScope,
+    SourceKey, StableEntityId, TypedKey,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;

@@ -10,7 +10,8 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use ctx_history_core::{
-    derive_native_session_id, CaptureProvider, SourceKey, StableEntityId, TypedKey,
+    derive_native_session_id, CaptureProvider, SourceAnchorScope, SourceKey, StableEntityId,
+    TypedKey,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -85,14 +86,30 @@ struct MuxBinding {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct MuxJsonlAdapter<B>(PhantomData<fn() -> B>);
+pub(crate) struct MuxJsonlAdapter<B> {
+    source_anchor_scope: SourceAnchorScope,
+    binding: PhantomData<fn() -> B>,
+}
 
 pub(crate) fn mux_jsonl_adapter<B>(
 ) -> Arc<dyn JsonlFamilyAdapter<Runtime = ProviderJsonlRuntime<B>>>
 where
     B: ProviderRuntimeBinding,
 {
-    Arc::new(MuxJsonlAdapter(PhantomData))
+    mux_jsonl_adapter_with_source_root_lineage(None)
+}
+
+pub(crate) fn mux_jsonl_adapter_with_source_root_lineage<B>(
+    source_root_lineage: Option<[u8; 32]>,
+) -> Arc<dyn JsonlFamilyAdapter<Runtime = ProviderJsonlRuntime<B>>>
+where
+    B: ProviderRuntimeBinding,
+{
+    Arc::new(MuxJsonlAdapter {
+        source_anchor_scope: source_root_lineage
+            .map_or(SourceAnchorScope::Unqualified, SourceAnchorScope::Lineage),
+        binding: PhantomData,
+    })
 }
 
 impl<B> JsonlFamilyAdapter for MuxJsonlAdapter<B>
@@ -163,7 +180,7 @@ where
         let mut exact_dependencies = Vec::new();
         let mut sources = HashSet::with_capacity(native_sources.len());
         for native in native_sources {
-            let (source, binding) = bind_source(&authority, &native)?;
+            let (source, binding) = bind_source(&authority, &native, self.source_anchor_scope)?;
             if !sources.insert(source.exact_descriptor_digest()) {
                 return Err(CaptureError::InvalidPayload(format!(
                     "Mux native session {:?} resolves more than once",
@@ -250,6 +267,7 @@ where
 fn bind_source(
     authority: &Arc<ProviderSourceRoot>,
     native: &MuxSessionSource,
+    source_anchor_scope: SourceAnchorScope,
 ) -> Result<(SourceKey, MuxBinding)> {
     let archive = observe_optional(authority, native.archive_path.as_deref())?;
     let chat = observe_optional(authority, native.chat_path.as_deref())?;
@@ -271,17 +289,17 @@ fn bind_source(
         DateTime::<Utc>::UNIX_EPOCH,
         metadata_bytes.as_deref(),
     )?;
-    let source = source_key(&metadata.provider_session_id)?;
+    let source = source_key_scoped(&metadata.provider_session_id, source_anchor_scope)?;
     let session_id = session_identity(&source, &metadata.provider_session_id)?;
     let parent_session_id = metadata
         .parent_provider_session_id
         .as_deref()
-        .map(related_session_identity)
+        .map(|parent| related_session_identity(parent, source_anchor_scope))
         .transpose()?;
     let root_session_id = metadata
         .root_provider_session_id
         .as_deref()
-        .map(related_session_identity)
+        .map(|root| related_session_identity(root, source_anchor_scope))
         .transpose()?
         .or(parent_session_id)
         .unwrap_or(session_id);
@@ -363,14 +381,23 @@ fn compound_revision_digest(
     Ok(digest.finalize().into())
 }
 
+#[cfg(test)]
 fn source_key(native_session_id: &str) -> Result<SourceKey> {
-    SourceKey::derive_provider_native(
+    source_key_scoped(native_session_id, SourceAnchorScope::Unqualified)
+}
+
+fn source_key_scoped(
+    native_session_id: &str,
+    source_anchor_scope: SourceAnchorScope,
+) -> Result<SourceKey> {
+    SourceKey::derive_provider_native_scoped(
         CaptureProvider::Mux.as_str(),
         MUX_SOURCE_FORMAT,
         SOURCE_SCHEMA_VARIANT,
         1,
         SOURCE_ANCHOR_NAMESPACE,
         TypedKey::utf8(native_session_id).map_err(contract)?,
+        source_anchor_scope,
     )
     .map_err(contract)
 }
@@ -385,8 +412,11 @@ fn session_identity(source: &SourceKey, native_session_id: &str) -> Result<Stabl
     .map_err(contract)
 }
 
-fn related_session_identity(native_session_id: &str) -> Result<StableEntityId> {
-    let source = source_key(native_session_id)?;
+fn related_session_identity(
+    native_session_id: &str,
+    source_anchor_scope: SourceAnchorScope,
+) -> Result<StableEntityId> {
+    let source = source_key_scoped(native_session_id, source_anchor_scope)?;
     session_identity(&source, native_session_id)
 }
 

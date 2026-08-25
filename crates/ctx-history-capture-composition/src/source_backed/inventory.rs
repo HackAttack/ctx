@@ -636,6 +636,7 @@ MiMoCode|mimocode_sqlite|mimocode_sqlite|true|true|DiscoveredWinner|none|Provide
             catalog_support: crate::ProviderCatalogSupport::None,
             status: ProviderSourceStatus::Available,
             unsupported_reason: None,
+            route_provenance: Default::default(),
         }
     }
 

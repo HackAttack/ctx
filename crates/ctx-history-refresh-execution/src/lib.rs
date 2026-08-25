@@ -22,10 +22,10 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use ctx_history_capture::{
-    automatic_source_backed_route_identity,
-    build_automatic_source_backed_registry_from_report_with_root_identities,
-    discover_provider_sources_with_context_and_work_budget, provider_paths_equivalent,
-    released_provider_home, source_backed_refresh_work_budget,
+    automatic_provider_root_coexistence_route_identity,
+    automatic_provider_root_coexistence_source_lineage, automatic_source_backed_route_identity,
+    build_automatic_source_backed_registry_from_report_with_retained_roots,
+    discover_provider_sources_with_context_and_work_budget, source_backed_refresh_work_budget,
     source_backed_refresh_writer_options, validate_provider_source_roots_outside_data_root,
     DiscoveryContext, SourceBackedAutomaticRegistryIssue, SourceBackedAutomaticUnavailableReason,
     SourceBackedCoordinatorError,
@@ -41,7 +41,7 @@ use ctx_history_capture::{
 use ctx_history_capture_model::DiscoveryIssue;
 use ctx_history_capture_model::{
     DiscoveryIssueKind, DiscoveryReport, ProviderRootSourceIdentity, ProviderSource,
-    ProviderSourceStatus,
+    ProviderSourceStatus, RetainedProviderRootAuthority,
 };
 use ctx_history_capture_runtime::{CapturePublicationDisposition, ImmutableCaptureSnapshot};
 use ctx_history_core::{CaptureProvider, CertifiedSource, ScannedSourceCounts};
@@ -265,48 +265,104 @@ pub fn source_backed_watch_catalog(
         Err(IndexError::MissingActiveGenerationPointer) => None,
         Err(error) => return Err(error.into()),
     };
-    let provider_root_identities =
-        configured_provider_root_identities(&discovery, retained_generation.as_ref());
-    let mut build = build_automatic_source_backed_registry_from_report_with_root_identities(
+    let retained_provider_roots =
+        configured_retained_provider_roots(&discovery, retained_generation.as_ref())?;
+    let mut build = build_automatic_source_backed_registry_from_report_with_retained_roots(
         &discovery,
         data_root,
         report,
-        &provider_root_identities,
+        &retained_provider_roots,
     );
     build.discovery_duration = discovery_duration;
     Ok(build.registry.watch_catalog())
 }
 
-fn configured_provider_root_identities(
+fn configured_retained_provider_roots(
     discovery: &DiscoveryContext,
     retained_generation: Option<&VerifiedIndex>,
-) -> BTreeMap<String, ProviderRootSourceIdentity> {
-    discovery
-        .configured_provider_roots()
+) -> Result<BTreeMap<String, RetainedProviderRootAuthority>> {
+    let roots = discovery.configured_provider_roots();
+    let mut root_ids = BTreeSet::new();
+    if let Some(duplicate) = roots.iter().find(|root| !root_ids.insert(root.id.as_str())) {
+        bail!(
+            "configured provider root id {:?} is not unique",
+            duplicate.id
+        );
+    }
+    roots
         .iter()
-        .map(|root| {
+        .filter_map(|root| {
             let retained = retained_generation.and_then(|generation| {
                 generation
                     .manifest()
                     .provider_roots()
                     .iter()
-                    .find(|applied| {
-                        applied.definition().id == root.id
-                            && applied.definition().provider == root.provider
+                    .find(|applied| provider_root_retention_compatible(applied.definition(), root))
+            });
+            retained
+                .map(|applied| applied.retained_authority())
+                .or_else(|| {
+                    retained_generation.and_then(|generation| {
+                        generation
+                            .manifest()
+                            .detached_released_provider_roots()
+                            .iter()
+                            .find(|authority| authority.matches_definition(root))
+                            .map(|authority| Ok(authority.retained_authority()))
                     })
-                    .map(|applied| applied.source_identity())
-            });
-            let identity = retained.unwrap_or_else(|| {
-                if released_provider_home(discovery, root.provider)
-                    .as_deref()
-                    .is_some_and(|home| provider_paths_equivalent(home, &root.path))
-                {
-                    ProviderRootSourceIdentity::Released
-                } else {
-                    ProviderRootSourceIdentity::NamedV1
-                }
-            });
-            (root.id.clone(), identity)
+                })
+                .map(|authority| authority.map(|authority| (root.id.clone(), authority)))
+        })
+        .collect::<ctx_history_index::Result<BTreeMap<_, _>>>()
+        .map_err(Into::into)
+}
+
+fn provider_root_retention_compatible(
+    retained: &ctx_history_capture::ProviderRootDefinition,
+    current: &ctx_history_capture::ProviderRootDefinition,
+) -> bool {
+    retained.id == current.id
+        && retained.provider == current.provider
+        && retained.kind == current.kind
+}
+
+#[cfg(test)]
+fn incompatible_configured_provider_root_routes(
+    retained: &[ctx_history_index::AppliedProviderRoot],
+    desired: &[ctx_history_capture::ProviderRootDefinition],
+) -> BTreeSet<SourceRouteIdentity> {
+    retained
+        .iter()
+        .filter(|root| {
+            !desired
+                .iter()
+                .any(|current| provider_root_retention_compatible(root.definition(), current))
+        })
+        .flat_map(|root| {
+            root.routes()
+                .iter()
+                .filter(|route| root.exact_source_tokens_for_route(route).is_none())
+                .cloned()
+        })
+        .collect()
+}
+
+fn removed_configured_provider_root_routes(
+    retained: &[ctx_history_index::AppliedProviderRoot],
+    desired: &[ctx_history_capture::ProviderRootDefinition],
+) -> BTreeSet<SourceRouteIdentity> {
+    retained
+        .iter()
+        .filter(|root| {
+            !desired
+                .iter()
+                .any(|current| root.definition().id == current.id)
+        })
+        .flat_map(|root| {
+            root.routes()
+                .iter()
+                .filter(|route| root.exact_source_tokens_for_route(route).is_none())
+                .cloned()
         })
         .collect()
 }

@@ -1,9 +1,6 @@
-mod codex_child_independence;
-mod copilot;
 mod hermes;
 mod inventory;
 mod registry;
-mod sqlite_selected;
 
 use std::{
     fs,
@@ -12,9 +9,9 @@ use std::{
 };
 
 use ctx_history_core::{
-    derive_event_id, derive_session_id, AgentScope, CoreRecord, EventIdentityInput,
-    LiteralFactKind, NativeItemKey, NativeSessionKey, ScannedSourceCounts, SessionIdentityInput,
-    SourceAnchor, SourceInventoryObservation, SourceObservation, TypedKey,
+    derive_event_id, derive_session_id, AgentScope, CoreRecord, EventIdentityInput, NativeItemKey,
+    NativeSessionKey, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
+    SourceInventoryObservation, SourceObservation, TypedKey,
 };
 use ctx_history_index::VerifiedIndex;
 use tempfile::tempdir;
@@ -168,20 +165,6 @@ fn fixture_route_with_body_and_rejections(
     .unwrap()
 }
 
-fn literal_fact_values(record: &CoreRecord, kind: LiteralFactKind) -> impl Iterator<Item = &str> {
-    record
-        .content
-        .activity
-        .iter()
-        .flat_map(|activity| activity.facts.iter())
-        .filter(move |fact| fact.kind == kind)
-        .map(|fact| fact.value.as_str())
-}
-
-fn has_literal_fact(record: &CoreRecord, kind: LiteralFactKind, value: &str) -> bool {
-    literal_fact_values(record, kind).any(|candidate| candidate == value)
-}
-
 fn fixture_provider_source(
     provider: CaptureProvider,
     source_format: &'static str,
@@ -205,6 +188,7 @@ fn fixture_provider_source(
             ProviderSourceStatus::Available
         },
         unsupported_reason: None,
+        route_provenance: Default::default(),
     }
 }
 

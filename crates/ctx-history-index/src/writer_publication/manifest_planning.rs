@@ -66,13 +66,16 @@ impl GenerationWriter {
                 })
             })
             .unwrap_or_else(|| (true, provider_source_config_digest(true, &[]), Vec::new()));
-        GenerationManifest::from_parts_with_record_aggregates_and_provider_roots(
+        let detached_released_provider_roots =
+            detached_released_provider_root_authorities(self.base_manifest(), &provider_roots)?;
+        GenerationManifest::from_parts_with_record_aggregates_and_provider_roots_and_detached_authorities(
             sources,
             record_aggregates,
             source_routes,
             automatic_provider_discovery,
             provider_root_config_digest,
             provider_roots,
+            detached_released_provider_roots,
         )
     }
 
@@ -141,5 +144,138 @@ impl GenerationWriter {
                         .exact_descriptor_eq(&pending.source)
                 })
         })
+    }
+}
+
+fn detached_released_provider_root_authorities(
+    base: Option<&GenerationManifest>,
+    current: &[AppliedProviderRoot],
+) -> Result<Vec<DetachedReleasedProviderRootAuthority>> {
+    let Some(base) = base else {
+        return Ok(Vec::new());
+    };
+    let mut authorities = BTreeMap::new();
+    for authority in base.detached_released_provider_roots() {
+        if current
+            .iter()
+            .all(|root| root.definition().id != authority.id())
+        {
+            authorities.insert(authority.id().to_owned(), authority.clone());
+        }
+    }
+    for root in base.provider_roots() {
+        if current
+            .iter()
+            .any(|current| current.definition().id == root.definition().id)
+        {
+            continue;
+        }
+        if let Some(authority) = DetachedReleasedProviderRootAuthority::from_applied(root)? {
+            if authorities.contains_key(authority.id()) {
+                continue;
+            }
+            if authorities.len() == MAX_DETACHED_RELEASED_PROVIDER_ROOTS {
+                return Err(IndexError::InvalidProviderRoots(
+                    "detached released root authority capacity is exhausted".to_owned(),
+                ));
+            }
+            authorities.insert(authority.id().to_owned(), authority);
+        }
+    }
+    // Active roots consume a compatible authority. A same-name incompatible
+    // replacement is destructive, so it drops the old detached authority too.
+    Ok(authorities.into_values().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ctx_history_core::CaptureProvider;
+
+    fn released_root(id: impl Into<String>) -> AppliedProviderRoot {
+        let id = id.into();
+        AppliedProviderRoot::with_source_identity(
+            ProviderRootDefinition {
+                path: std::env::temp_dir().join(format!("ctx-detached-authority-{id}")),
+                group: None,
+                kind: None,
+                provider: CaptureProvider::Codex,
+                id,
+            },
+            ProviderRootSourceIdentity::Released,
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn detached_authority_capacity_rejects_manifest_planning_before_publication() {
+        let detached = (0..MAX_DETACHED_RELEASED_PROVIDER_ROOTS)
+            .map(|index| {
+                DetachedReleasedProviderRootAuthority::from_applied(&released_root(format!(
+                    "detached-{index}"
+                )))
+                .unwrap()
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let active = released_root("overflow");
+        let base = GenerationManifest::from_parts_with_record_aggregates_and_provider_roots_and_detached_authorities(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            true,
+            provider_source_config_digest(true, std::slice::from_ref(active.definition())),
+            vec![active],
+            detached,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            detached_released_provider_root_authorities(Some(&base), &[]),
+            Err(IndexError::InvalidProviderRoots(detail))
+                if detail == "detached released root authority capacity is exhausted"
+        ));
+        // The failed planning step has only read the predecessor, so no
+        // publication can replace it or discard the authority it protects.
+        assert_eq!(
+            base.detached_released_provider_roots().len(),
+            MAX_DETACHED_RELEASED_PROVIDER_ROOTS
+        );
+        assert_eq!(base.provider_roots().len(), 1);
+    }
+
+    #[test]
+    fn same_name_incompatible_replacement_discards_detached_authority() {
+        let detached = DetachedReleasedProviderRootAuthority::from_applied(&released_root("work"))
+            .unwrap()
+            .unwrap();
+        let base = GenerationManifest::from_parts_with_record_aggregates_and_provider_roots_and_detached_authorities(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            true,
+            provider_source_config_digest(true, &[]),
+            Vec::new(),
+            vec![detached],
+        )
+        .unwrap();
+        let replacement = AppliedProviderRoot::new(
+            ProviderRootDefinition {
+                id: "work".to_owned(),
+                provider: CaptureProvider::Claude,
+                path: std::env::temp_dir().join("ctx-detached-authority-replacement"),
+                group: None,
+                kind: None,
+            },
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert!(
+            detached_released_provider_root_authorities(Some(&base), &[replacement])
+                .unwrap()
+                .is_empty()
+        );
     }
 }

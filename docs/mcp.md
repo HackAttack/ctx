@@ -171,9 +171,9 @@ report `kind: "configured"`, their case-sensitive `root`, and nullable `group`;
 automatic rows report `kind: "automatic"` with null `root` and `group`. Agents
 can use those configured root and non-null group values as valid
 `search.source_roots` and `search.source_groups` candidates. `automatic_discovery`
-states whether inferred provider homes are enabled; stable issue codes and
-truncation markers retain the CLI JSON semantics. Plugin source rows do not
-participate in configured provider-root selection.
+states whether inferred provider history roots are enabled; stable issue codes
+and truncation markers retain the CLI JSON semantics. Plugin source rows do
+not participate in configured history root selection.
 
 Ordinary MCP search includes primary and subagent sessions, matching `ctx
 search`. Sessions with the same exact root-session claim are grouped together;

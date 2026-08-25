@@ -296,6 +296,7 @@ fn single_leaf_serial_jsonl_page_accounts_sessions_messages_and_tool_calls() {
         complete_inventories: &mut complete_inventories,
         route_index: 0,
         route_identity: test_route_identity(),
+        base_route_aliases: BTreeSet::new(),
         base_route_control: None,
         resources: SourceBackedRouteResources::production(1),
         logical_source_failures: &mut logical_source_failures,

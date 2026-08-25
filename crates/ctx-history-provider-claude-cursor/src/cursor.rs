@@ -11,7 +11,9 @@ pub use layout::{
     discover_cursor_transcripts, probe_cursor_transcript_availability, CursorDiscoveryIssueKind,
     CursorTranscriptAvailability,
 };
-pub(crate) use source_backed::cursor_jsonl_adapter;
+pub(crate) use source_backed::{
+    cursor_jsonl_adapter, cursor_jsonl_adapter_with_source_root_lineage,
+};
 
 #[cfg(test)]
 mod tests {

@@ -91,6 +91,15 @@ where
     cursor::cursor_jsonl_adapter::<B>()
 }
 
+pub fn cursor_jsonl_adapter_with_source_root_lineage<B>(
+    source_root_lineage: Option<[u8; 32]>,
+) -> Arc<dyn JsonlFamilyAdapter<Runtime = ProviderJsonlRuntime<B>>>
+where
+    B: ProviderRuntimeBinding,
+{
+    cursor::cursor_jsonl_adapter_with_source_root_lineage::<B>(source_root_lineage)
+}
+
 #[cfg(test)]
 mod neutral_preflight_tests {
     use super::*;

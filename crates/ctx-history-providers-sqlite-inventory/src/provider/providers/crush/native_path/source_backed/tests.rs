@@ -6,6 +6,43 @@ use serde_json::json;
 
 use super::*;
 
+#[test]
+fn root_scope_composes_with_crush_projects_and_preserves_unqualified_identity() {
+    use ctx_history_core::{CaptureProvider, SourceAnchorScope, SourceKey};
+
+    let project = TypedKey::utf8("shared-project").unwrap();
+    let released = SourceKey::derive(
+        CaptureProvider::Crush.as_str(),
+        crate::CRUSH_SQLITE_SOURCE_FORMAT,
+        CRUSH_SOURCE_SCHEMA_VARIANT,
+        1,
+        SourceAnchor::provider_native(CRUSH_SOURCE_ANCHOR_NAMESPACE, project.clone()).unwrap(),
+    )
+    .unwrap();
+    let unqualified =
+        crush_source_key_scoped(project.clone(), SourceAnchorScope::Unqualified).unwrap();
+    assert!(released.exact_descriptor_eq(&unqualified));
+    assert_eq!(
+        released.identity().encode_canonical().unwrap(),
+        unqualified.identity().encode_canonical().unwrap()
+    );
+
+    let first =
+        crush_source_key_scoped(project.clone(), SourceAnchorScope::Lineage([0x11; 32])).unwrap();
+    let second = crush_source_key_scoped(project, SourceAnchorScope::Lineage([0x22; 32])).unwrap();
+    assert_ne!(
+        crush_session_id(&first, "shared-session").unwrap(),
+        crush_session_id(&second, "shared-session").unwrap()
+    );
+
+    let sibling = crush_source_key_scoped(
+        TypedKey::utf8("sibling-project").unwrap(),
+        SourceAnchorScope::Lineage([0x11; 32]),
+    )
+    .unwrap();
+    assert_ne!(first.identity(), sibling.identity());
+}
+
 #[derive(Clone)]
 struct TestInventory {
     observation: Arc<Mutex<CrushProjectInventoryObservationV0>>,

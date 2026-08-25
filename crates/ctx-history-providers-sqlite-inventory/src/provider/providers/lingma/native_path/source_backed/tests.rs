@@ -13,6 +13,64 @@ use crate::provider::providers::lingma::native_path::{
     lingma_query_counters, reset_lingma_query_counters, LingmaQueryCounters,
 };
 
+#[test]
+fn root_scope_composes_with_lingma_databases_and_preserves_unqualified_identity() {
+    use ctx_history_core::{
+        derive_session_id, CaptureProvider, NativeSessionKey, SessionIdentityInput, SourceAnchor,
+        SourceAnchorScope, SourceKey,
+    };
+
+    let lineage = TypedKey::utf8("installed-client-profile-database").unwrap();
+    let released = SourceKey::derive(
+        CaptureProvider::Lingma.as_str(),
+        crate::LINGMA_SQLITE_SOURCE_FORMAT,
+        SOURCE_SCHEMA_VARIANT,
+        1,
+        SourceAnchor::provider_native(SOURCE_ANCHOR_NAMESPACE, lineage.clone()).unwrap(),
+    )
+    .unwrap();
+    let unqualified = LingmaDatabaseSourceV0::new("/tmp/lingma.db", lineage.clone())
+        .unwrap()
+        .source_key()
+        .unwrap();
+    assert!(released.exact_descriptor_eq(&unqualified));
+    assert_eq!(
+        released.identity().encode_canonical().unwrap(),
+        unqualified.identity().encode_canonical().unwrap()
+    );
+
+    let scoped = |lineage, root| {
+        LingmaDatabaseSourceV0::new_scoped(
+            "/tmp/lingma.db",
+            TypedKey::utf8(lineage).unwrap(),
+            SourceAnchorScope::Lineage(root),
+        )
+        .unwrap()
+        .source_key()
+        .unwrap()
+    };
+    let first = scoped("installed-client-profile-database", [0x11; 32]);
+    let second = scoped("installed-client-profile-database", [0x22; 32]);
+    let native = NativeSessionKey::native_id(
+        NATIVE_SESSION_NAMESPACE,
+        TypedKey::utf8("shared-session").unwrap(),
+    )
+    .unwrap();
+    let session = |source| {
+        derive_session_id(SessionIdentityInput {
+            source,
+            logical_session_kind: LOGICAL_SESSION_KIND,
+            native_session_key: &native,
+        })
+        .unwrap()
+    };
+    assert_ne!(session(&first), session(&second));
+    assert_ne!(
+        first.identity(),
+        scoped("sibling-client-profile-database", [0x11; 32]).identity()
+    );
+}
+
 fn create_database(path: &Path) -> Connection {
     let connection = Connection::open(path).unwrap();
     connection

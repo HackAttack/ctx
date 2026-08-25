@@ -72,14 +72,18 @@ fn history_config(daemon_enabled: bool, semantic_search_enabled: bool) -> config
         daemon_enabled,
         semantic_search_enabled,
         local_usage_enabled: false,
+        automatic_provider_discovery: true,
+        provider_roots: Vec::new(),
     })
 }
 
-const fn history_snapshot(daemon_enabled: bool, semantic_search_enabled: bool) -> HistoryCliConfig {
+fn history_snapshot(daemon_enabled: bool, semantic_search_enabled: bool) -> HistoryCliConfig {
     HistoryCliConfig {
         daemon_enabled,
         semantic_search_enabled,
         local_usage_enabled: false,
+        automatic_provider_discovery: true,
+        provider_roots: Vec::new(),
     }
 }
 

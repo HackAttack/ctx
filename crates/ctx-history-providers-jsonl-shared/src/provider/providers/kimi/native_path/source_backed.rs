@@ -23,8 +23,8 @@ use ctx_history_core::{
     derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
     ActivityResult, ActivityTextCapture, CaptureProvider, CoreActivity, CoreRecord,
     CoreRecordError, EventIdentityInput, EventType, LiteralFactKind, ProjectionContractError,
-    ProviderDeclaredFact, ProviderNativeSessionRelationship, SourceKey, StableEntityId, TypedKey,
-    CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
+    ProviderDeclaredFact, ProviderNativeSessionRelationship, SourceAnchorScope, SourceKey,
+    StableEntityId, TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -105,6 +105,7 @@ use records::core_record;
 struct KimiCompoundObservation {
     native: KimiWireObservation,
     source: SourceKey,
+    source_anchor_scope: SourceAnchorScope,
     relative_file_key: Vec<u8>,
 }
 
@@ -142,10 +143,23 @@ impl AdmittedKimiCompound {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct KimiJsonlAdapter<R>(PhantomData<fn() -> R>);
+struct KimiJsonlAdapter<R> {
+    source_anchor_scope: SourceAnchorScope,
+    runtime: PhantomData<fn() -> R>,
+}
 
 fn kimi_jsonl_adapter<R: JsonlProviderRuntime>() -> Arc<dyn JsonlFamilyAdapter<Runtime = R>> {
-    Arc::new(KimiJsonlAdapter(PhantomData))
+    kimi_jsonl_adapter_with_source_root_lineage(None)
+}
+
+fn kimi_jsonl_adapter_with_source_root_lineage<R: JsonlProviderRuntime>(
+    source_root_lineage: Option<[u8; 32]>,
+) -> Arc<dyn JsonlFamilyAdapter<Runtime = R>> {
+    Arc::new(KimiJsonlAdapter {
+        source_anchor_scope: source_root_lineage
+            .map_or(SourceAnchorScope::Unqualified, SourceAnchorScope::Lineage),
+        runtime: PhantomData,
+    })
 }
 
 impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for KimiJsonlAdapter<R> {
@@ -186,7 +200,8 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for KimiJsonlAdapter<R> {
         }
         let authority =
             Arc::new(ProviderSourceRoot::open(&inventory.source_root).map_err(capture_error)?);
-        let snapshot = bind_snapshot(inventory, &authority).map_err(capture_error)?;
+        let snapshot = bind_snapshot(inventory, &authority, self.source_anchor_scope)
+            .map_err(capture_error)?;
         let mut leaves = Vec::with_capacity(snapshot.leaves.len());
         for leaf in snapshot.leaves.into_values() {
             leaves.push(JsonlFamilyLeaf::observe(
@@ -235,6 +250,7 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for KimiJsonlAdapter<R> {
             leaf.authority(),
             &binding.relative_path,
             source_file.as_ref(),
+            self.source_anchor_scope,
         )
         .map_err(capture_error)?;
         if !admitted.compound.source.exact_descriptor_eq(leaf.source()) {
@@ -391,6 +407,14 @@ impl KimiSourceBackedCatalog {
     pub(crate) fn shared<R: JsonlProviderRuntime>() -> KimiSourceBackedResolver<R> {
         KimiSourceBackedResolver(kimi_jsonl_adapter())
     }
+
+    pub(crate) fn shared_with_source_root_lineage<R: JsonlProviderRuntime>(
+        source_root_lineage: Option<[u8; 32]>,
+    ) -> KimiSourceBackedResolver<R> {
+        KimiSourceBackedResolver(kimi_jsonl_adapter_with_source_root_lineage(
+            source_root_lineage,
+        ))
+    }
 }
 
 impl<R: JsonlProviderRuntime> KimiSourceBackedResolver<R> {
@@ -502,6 +526,7 @@ fn discover_kimi_directory(
 fn bind_snapshot(
     inventory: KimiInventory,
     authority: &ProviderSourceRoot,
+    source_anchor_scope: SourceAnchorScope,
 ) -> KimiSourceBackedResult<CatalogSnapshot> {
     let source_root = inventory.source_root;
     let mut leaves = BTreeMap::new();
@@ -511,7 +536,7 @@ fn bind_snapshot(
             .strip_prefix(&source_root)
             .map_err(|_| KimiSourceBackedError::SourceChanged)?
             .to_path_buf();
-        let admitted = admit_compound_leaf(authority, &relative_path)?;
+        let admitted = admit_compound_leaf(authority, &relative_path, source_anchor_scope)?;
         admitted.revalidate(authority)?;
         let compound = admitted.compound;
         let provider_session_id = compound.native.session.provider_session_id.clone();
@@ -534,9 +559,11 @@ fn bind_snapshot(
 fn admit_compound_leaf(
     authority: &ProviderSourceRoot,
     relative_path: &Path,
+    source_anchor_scope: SourceAnchorScope,
 ) -> KimiSourceBackedResult<AdmittedKimiCompound> {
     let wire = authority.open_file(relative_path)?;
-    let admitted = admit_compound_leaf_from_opened(authority, relative_path, &wire)?;
+    let admitted =
+        admit_compound_leaf_from_opened(authority, relative_path, &wire, source_anchor_scope)?;
     wire.revalidate()?;
     Ok(admitted)
 }
@@ -545,6 +572,7 @@ fn admit_compound_leaf_from_opened(
     authority: &ProviderSourceRoot,
     relative_path: &Path,
     wire: &OpenedProviderSourceFile,
+    source_anchor_scope: SourceAnchorScope,
 ) -> KimiSourceBackedResult<AdmittedKimiCompound> {
     let display_path = authority.named_path().join(relative_path);
     let (state_path, index_path) = auxiliary_paths(&display_path)?;
@@ -575,11 +603,12 @@ fn admit_compound_leaf_from_opened(
     if relative_file_key.is_empty() {
         return Err(KimiSourceBackedError::SourceChanged);
     }
-    let source = source_key(&native.session.provider_session_id)?;
+    let source = source_key_scoped(&native.session.provider_session_id, source_anchor_scope)?;
     Ok(AdmittedKimiCompound {
         compound: KimiCompoundObservation {
             native,
             source,
+            source_anchor_scope,
             relative_file_key,
         },
         state,
@@ -615,14 +644,23 @@ fn read_auxiliary_bytes(
     ))
 }
 
+#[cfg(test)]
 fn source_key(provider_session_id: &str) -> KimiSourceBackedResult<SourceKey> {
-    Ok(SourceKey::derive_provider_native(
+    source_key_scoped(provider_session_id, SourceAnchorScope::Unqualified)
+}
+
+fn source_key_scoped(
+    provider_session_id: &str,
+    source_anchor_scope: SourceAnchorScope,
+) -> KimiSourceBackedResult<SourceKey> {
+    Ok(SourceKey::derive_provider_native_scoped(
         CaptureProvider::KimiCodeCli.as_str(),
         KIMI_CODE_CLI_SOURCE_FORMAT,
         KIMI_SOURCE_SCHEMA_VARIANT,
         1,
         KIMI_SOURCE_ANCHOR_NAMESPACE,
         TypedKey::utf8(provider_session_id)?,
+        source_anchor_scope,
     )?)
 }
 
@@ -638,7 +676,32 @@ fn session_identity(
     )?)
 }
 
-fn lineage_session_identity(provider_session_id: &str) -> KimiSourceBackedResult<StableEntityId> {
-    let source = source_key(provider_session_id)?;
+fn lineage_session_identity(
+    provider_session_id: &str,
+    source_anchor_scope: SourceAnchorScope,
+) -> KimiSourceBackedResult<StableEntityId> {
+    let source = source_key_scoped(provider_session_id, source_anchor_scope)?;
     session_identity(&source, provider_session_id)
+}
+
+#[cfg(test)]
+mod source_scope_tests {
+    use super::*;
+
+    #[test]
+    fn source_and_lineage_session_identities_are_root_scoped() {
+        let released = source_key("same-session").unwrap();
+        let compatibility =
+            source_key_scoped("same-session", SourceAnchorScope::Unqualified).unwrap();
+        let first = source_key_scoped("same-session", SourceAnchorScope::Lineage([1; 32])).unwrap();
+        let second =
+            source_key_scoped("same-session", SourceAnchorScope::Lineage([2; 32])).unwrap();
+
+        assert!(released.exact_descriptor_eq(&compatibility));
+        assert_ne!(first.identity(), second.identity());
+        assert_ne!(
+            lineage_session_identity("parent", SourceAnchorScope::Lineage([1; 32])).unwrap(),
+            lineage_session_identity("parent", SourceAnchorScope::Lineage([2; 32])).unwrap()
+        );
+    }
 }

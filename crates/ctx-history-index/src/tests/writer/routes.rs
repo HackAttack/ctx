@@ -59,6 +59,7 @@ fn provider_root_metadata_change_with_source_replacement_reopens_exactly() {
         provider: CaptureProvider::Claude,
         path: PathBuf::from(path),
         group: Some("personal".to_owned()),
+        kind: None,
     };
     let initial_definition = definition("/home/example/.claude-personal");
 
@@ -131,6 +132,7 @@ fn valid_provider_root_removal_retires_its_last_route_without_a_replacement() {
         provider: CaptureProvider::Claude,
         path: PathBuf::from("/home/example/.claude-personal"),
         group: Some("personal".to_owned()),
+        kind: None,
     };
 
     let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
@@ -370,6 +372,155 @@ fn route_checkpoint_rolls_back_partial_route_and_keeps_prior_route_work() {
     assert!(published.manifest().source_route(&route_a).is_some());
     assert!(published.manifest().source_route(&route_b).is_some());
     assert!(published.manifest().source_route(&route_c).is_none());
+}
+
+#[test]
+fn route_cohort_rollback_discards_every_member_but_keeps_prior_route_work() {
+    let temp = tempdir().unwrap();
+    let base_source = source("cohort-base.jsonl");
+    let peer_source = source("cohort-peer.jsonl");
+    let first_source = source("cohort-first.jsonl");
+    let second_source = source("cohort-second.jsonl");
+    let base_route = SourceRouteIdentity::from_sha256("11".repeat(32)).unwrap();
+    let peer_route = SourceRouteIdentity::from_sha256("22".repeat(32)).unwrap();
+    let first_route = SourceRouteIdentity::from_sha256("33".repeat(32)).unwrap();
+    let second_route = SourceRouteIdentity::from_sha256("44".repeat(32)).unwrap();
+
+    let mut initial = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    initial.begin_source(base_source.clone()).unwrap();
+    initial
+        .add_core_record(document(&base_source, 1, "cohort retained base"))
+        .unwrap();
+    initial
+        .certify_source(certificate(&base_source, 1, 1))
+        .unwrap();
+    initial
+        .set_present_source_routes(vec![SourceRouteSnapshot::present(
+            base_route.clone(),
+            vec![base_source],
+        )
+        .unwrap()])
+        .unwrap();
+    initial.commit(|_| true).unwrap();
+
+    let mut writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    writer
+        .set_source_route_plan(
+            BTreeSet::from([
+                peer_route.clone(),
+                first_route.clone(),
+                second_route.clone(),
+            ]),
+            BTreeSet::from([base_route.clone()]),
+        )
+        .unwrap();
+
+    writer.begin_source_route_stage(peer_route.clone()).unwrap();
+    writer.begin_source(peer_source.clone()).unwrap();
+    writer
+        .add_core_record(document(&peer_source, 2, "cohort healthy peer"))
+        .unwrap();
+    writer
+        .certify_source(certificate(&peer_source, 2, 1))
+        .unwrap();
+    writer.finish_source_route_stage(&peer_route).unwrap();
+
+    writer
+        .begin_source_route_cohort_stage(first_route.clone())
+        .unwrap();
+    writer
+        .begin_source_route_stage(first_route.clone())
+        .unwrap();
+    writer.begin_source(first_source.clone()).unwrap();
+    writer
+        .add_core_record(document(&first_source, 3, "cohort provisional first"))
+        .unwrap();
+    writer
+        .certify_source(certificate(&first_source, 3, 1))
+        .unwrap();
+    writer.finish_source_route_stage(&first_route).unwrap();
+    writer
+        .begin_source_route_stage(second_route.clone())
+        .unwrap();
+    writer.begin_source(second_source.clone()).unwrap();
+    writer
+        .add_core_record(document(&second_source, 4, "cohort provisional second"))
+        .unwrap();
+    writer
+        .certify_source(certificate(&second_source, 4, 1))
+        .unwrap();
+    writer.finish_source_route_stage(&second_route).unwrap();
+    writer.rollback_source_route_cohort_stage().unwrap();
+
+    assert!(!writer
+        .carry_failed_source_route_from_base(&first_route)
+        .unwrap());
+    assert!(!writer
+        .carry_failed_source_route_from_base(&second_route)
+        .unwrap());
+    writer
+        .set_present_source_routes(vec![SourceRouteSnapshot::present(
+            peer_route.clone(),
+            vec![peer_source],
+        )
+        .unwrap()])
+        .unwrap();
+    writer.commit(|_| true).unwrap();
+
+    let published = VerifiedIndex::open(temp.path()).unwrap();
+    assert_eq!(published.count_term("retained").unwrap(), 1);
+    assert_eq!(published.count_term("healthy").unwrap(), 1);
+    assert_eq!(published.count_term("provisional").unwrap(), 0);
+    assert!(published.manifest().source_route(&base_route).is_some());
+    assert!(published.manifest().source_route(&peer_route).is_some());
+    assert!(published.manifest().source_route(&first_route).is_none());
+    assert!(published.manifest().source_route(&second_route).is_none());
+
+    let published_generation = published.generation_id().to_owned();
+    drop(published);
+    let abandoned_source = source("cohort-abandoned.jsonl");
+    let abandoned_route = SourceRouteIdentity::from_sha256("55".repeat(32)).unwrap();
+    {
+        let mut abandoned = GenerationWriter::open(temp.path(), WriterOptions::default())
+            .unwrap()
+            .into_writer()
+            .unwrap();
+        abandoned
+            .set_source_route_plan(
+                BTreeSet::from([abandoned_route.clone()]),
+                BTreeSet::from([base_route, peer_route]),
+            )
+            .unwrap();
+        abandoned
+            .begin_source_route_cohort_stage(abandoned_route.clone())
+            .unwrap();
+        abandoned
+            .begin_source_route_stage(abandoned_route.clone())
+            .unwrap();
+        abandoned.begin_source(abandoned_source.clone()).unwrap();
+        abandoned
+            .add_core_record(document(
+                &abandoned_source,
+                5,
+                "cohort abandoned provisional",
+            ))
+            .unwrap();
+        abandoned
+            .certify_source(certificate(&abandoned_source, 5, 1))
+            .unwrap();
+        abandoned
+            .finish_source_route_stage(&abandoned_route)
+            .unwrap();
+    }
+    let reopened = VerifiedIndex::open(temp.path()).unwrap();
+    assert_eq!(reopened.generation_id(), published_generation);
+    assert_eq!(reopened.count_term("abandoned").unwrap(), 0);
 }
 
 #[test]

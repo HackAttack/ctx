@@ -34,13 +34,13 @@ pub(super) fn build_merged_source_backed_registry_with_automatic_routes(
         catalog_route_bindings: previous_catalog_route_bindings,
         route_controls: previous_route_controls,
     } = published_state.open_published_state(data_root)?;
-    let provider_root_identities =
-        configured_provider_root_identities(discovery, retained_generation.as_ref());
-    let mut build = build_automatic_source_backed_registry_from_report_with_root_identities(
+    let retained_provider_roots =
+        configured_retained_provider_roots(discovery, retained_generation.as_ref())?;
+    let mut build = build_automatic_source_backed_registry_from_report_with_retained_roots(
         discovery,
         data_root,
         report,
-        &provider_root_identities,
+        &retained_provider_roots,
     );
     build.discovery_duration = discovery_duration;
     let requested_catalog_route_bindings = explicit_source_catalog
@@ -91,17 +91,20 @@ pub(super) fn build_merged_source_backed_registry_with_automatic_routes(
             .registry
             .retire_routes_after_success(&replacement, retired)?;
     }
-    let previous_provider_root_routes = retained_generation
+    let removed_provider_root_routes = retained_generation
         .as_ref()
         .map(|generation| {
-            generation
-                .manifest()
-                .provider_roots()
-                .iter()
-                .flat_map(|root| root.routes().iter().cloned())
-                .collect::<BTreeSet<_>>()
+            removed_configured_provider_root_routes(
+                generation.manifest().provider_roots(),
+                discovery.configured_provider_roots(),
+            )
         })
         .unwrap_or_default();
+    if let Some(retained) = retained_generation.as_ref() {
+        build
+            .registry
+            .retain_unavailable_provider_root_routes(retained.manifest().provider_roots())?;
+    }
     let current_provider_root_routes = build
         .registry
         .applied_provider_roots()
@@ -117,14 +120,87 @@ pub(super) fn build_merged_source_backed_registry_with_automatic_routes(
         .executable_route_identities()
         .into_iter()
         .collect::<BTreeSet<_>>();
-    let retired_provider_root_routes = previous_provider_root_routes
+    if let Some(retained) = retained_generation.as_ref() {
+        for predecessor in retained.manifest().provider_roots() {
+            let Some(desired) = discovery
+                .configured_provider_roots()
+                .iter()
+                .find(|desired| {
+                    desired.id == predecessor.definition().id
+                        && !provider_root_retention_compatible(predecessor.definition(), desired)
+                })
+            else {
+                continue;
+            };
+            let retired = predecessor
+                .routes()
+                .iter()
+                .filter(|route| predecessor.exact_source_tokens_for_route(route).is_none())
+                .filter(|route| !current_executable_routes.contains(*route))
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            // Retirement is owned by the final executable member in the
+            // registry's publication order. The publication executor gates
+            // this deferred retirement on the terminal success of every
+            // route in the replacement root before authorizing it.
+            let replacement_owner = build
+                .registry
+                .routes()
+                .filter(|metadata| {
+                    metadata.source.provider == desired.provider
+                        && metadata
+                            .source
+                            .route_provenance
+                            .configured_root()
+                            .is_some_and(|(root_id, _)| root_id == desired.id)
+                })
+                .filter_map(|metadata| metadata.route_identity.as_ref())
+                .filter(|route| current_executable_routes.contains(*route))
+                .last()
+                .cloned();
+            if let Some(route) = replacement_owner {
+                build
+                    .registry
+                    .retire_routes_after_success(&route, retired.iter().cloned())?;
+            }
+        }
+    }
+    if let Some(retained) = retained_generation.as_ref() {
+        for root in retained.manifest().provider_roots().iter().filter(|root| {
+            root.source_identity() == ProviderRootSourceIdentity::Released
+                && !discovery
+                    .configured_provider_roots()
+                    .iter()
+                    .any(|desired| provider_root_retention_compatible(root.definition(), desired))
+        }) {
+            let coexistence_lineage =
+                automatic_provider_root_coexistence_source_lineage(root.definition());
+            for ordinary in root
+                .routes()
+                .iter()
+                .filter(|route| current_executable_routes.contains(*route))
+            {
+                let coexistence = automatic_provider_root_coexistence_route_identity(
+                    ordinary,
+                    coexistence_lineage,
+                )?;
+                if retained.manifest().source_route(&coexistence).is_some() {
+                    build
+                        .registry
+                        .retire_routes_after_success(ordinary, [coexistence])?;
+                }
+            }
+        }
+    }
+    let withdrawn_provider_root_routes = removed_provider_root_routes
         .difference(&current_provider_root_routes)
         .filter(|route| !current_executable_routes.contains(*route))
         .cloned()
         .collect::<BTreeSet<_>>();
     build
         .registry
-        .set_provider_root_route_retirements(retired_provider_root_routes);
+        .set_root_withdrawals(withdrawn_provider_root_routes);
+    build.registry.set_root_retirements(BTreeSet::new());
     Ok(MergedSourceBackedRegistry {
         build,
         reactivated_automatic_routes,

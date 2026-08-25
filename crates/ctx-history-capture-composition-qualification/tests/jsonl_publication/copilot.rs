@@ -1,14 +1,22 @@
+//! Copilot native JSONL generation qualification.
+
 use std::{
-    fs::OpenOptions,
+    fs::{self, OpenOptions},
     io::{BufWriter, Write},
     path::Path,
 };
 
+use ctx_history_capture_composition::{
+    build_automatic_source_backed_registry_from_report_with_probes,
+    refresh_source_backed_generation, DiscoveryContext, DiscoveryPlatform, DiscoveryPlatformDirs,
+    DiscoveryReport, ProviderImportSupport, SourceBackedProviderRegistry,
+};
+use ctx_history_core::{CaptureProvider, CoreRecord, ScannedSourceCounts, TypedKey};
+use ctx_history_index::{VerifiedIndex, WriterOptions};
+use ctx_history_provider_native_jsonl::COPILOT_CLI_SOURCE_FORMAT;
 use ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 
-use super::*;
-use crate::DiscoveryPlatformDirs;
-use ctx_history_provider_native_jsonl::COPILOT_CLI_SOURCE_FORMAT;
+use crate::{fixture_provider_source_at, test_provider_probes, test_support_paths::tempdir};
 
 fn session_header(session_id: &str) -> String {
     serde_json::json!({
@@ -73,16 +81,19 @@ fn copilot_registry(root: &Path, temp: &Path) -> SourceBackedProviderRegistry {
         DiscoveryPlatform::Linux,
         DiscoveryPlatformDirs::default(),
     );
-    let build = build_automatic_source_backed_registry_from_parts(
+    let build = build_automatic_source_backed_registry_from_report_with_probes(
+        &test_provider_probes(),
         &context,
         &temp.join("ctx-data"),
-        vec![fixture_provider_source_at(
-            CaptureProvider::CopilotCli,
-            COPILOT_CLI_SOURCE_FORMAT,
-            ProviderImportSupport::Native,
-            root,
-        )],
-        Vec::new(),
+        DiscoveryReport {
+            sources: vec![fixture_provider_source_at(
+                CaptureProvider::CopilotCli,
+                COPILOT_CLI_SOURCE_FORMAT,
+                ProviderImportSupport::Native,
+                root,
+            )],
+            issues: Vec::new(),
+        },
     );
     assert_eq!(build.executable_route_count(), 1);
     assert!(

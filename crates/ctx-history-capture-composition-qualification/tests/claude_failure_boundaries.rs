@@ -64,6 +64,7 @@ fn registry(root: &Path) -> SourceBackedProviderRegistry {
             catalog_support: ProviderCatalogSupport::None,
             status: ProviderSourceStatus::Available,
             unsupported_reason: None,
+            route_provenance: Default::default(),
         },
         SourceBackedRouteSelection::Automatic,
     )

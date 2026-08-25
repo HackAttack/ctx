@@ -1,24 +1,24 @@
+mod support;
+
 use ctx_history_core::CaptureProvider;
+use ctx_history_source_discovery::*;
 
-use super::super::{
-    DiscoveryIssueKind, ProviderImportSupport, ProviderSourceKind, ProviderSourceStatus,
-};
-use super::support::{assert_source_status, tempdir, CwdGuard, EnvGuard, ENV_LOCK};
+use support::{assert_source_status, tempdir, CwdGuard, EnvGuard, ENV_LOCK, TEST_PROVIDER_PROBES};
 
-fn discover_provider_sources(home: &std::path::Path) -> Vec<super::super::ProviderSource> {
-    super::super::discover_provider_sources(&super::super::TEST_PROVIDER_PROBES, home)
+fn discover_provider_sources(home: &std::path::Path) -> Vec<ProviderSource> {
+    ctx_history_source_discovery::discover_provider_sources(&TEST_PROVIDER_PROBES, home)
 }
 
-fn discover_provider_sources_report(home: &std::path::Path) -> super::super::DiscoveryReport {
-    super::super::discover_provider_sources_report(&super::super::TEST_PROVIDER_PROBES, home)
+fn discover_provider_sources_report(home: &std::path::Path) -> DiscoveryReport {
+    ctx_history_source_discovery::discover_provider_sources_report(&TEST_PROVIDER_PROBES, home)
 }
 
 fn discover_provider_sources_for_provider(
     home: &std::path::Path,
     provider: CaptureProvider,
-) -> Vec<super::super::ProviderSource> {
-    super::super::discover_provider_sources_for_provider(
-        &super::super::TEST_PROVIDER_PROBES,
+) -> Vec<ProviderSource> {
+    ctx_history_source_discovery::discover_provider_sources_for_provider(
+        &TEST_PROVIDER_PROBES,
         home,
         provider,
     )
@@ -27,19 +27,16 @@ fn discover_provider_sources_for_provider(
 fn discover_provider_sources_for_provider_report(
     home: &std::path::Path,
     provider: CaptureProvider,
-) -> super::super::DiscoveryReport {
-    super::super::discover_provider_sources_for_provider_report(
-        &super::super::TEST_PROVIDER_PROBES,
+) -> DiscoveryReport {
+    ctx_history_source_discovery::discover_provider_sources_for_provider_report(
+        &TEST_PROVIDER_PROBES,
         home,
         provider,
     )
 }
 
-fn provider_source_for_path(
-    provider: CaptureProvider,
-    path: std::path::PathBuf,
-) -> super::super::ProviderSource {
-    super::super::provider_source_for_path(&super::super::TEST_PROVIDER_PROBES, provider, path)
+fn provider_source_for_path(provider: CaptureProvider, path: std::path::PathBuf) -> ProviderSource {
+    ctx_history_source_discovery::provider_source_for_path(&TEST_PROVIDER_PROBES, provider, path)
 }
 
 #[cfg(target_os = "windows")]
@@ -780,10 +777,7 @@ fn openhands_current_cli_exact_conversation_events_and_leaf_are_importable() {
         assert_eq!(source.status, ProviderSourceStatus::Available);
         assert_eq!(source.import_support, ProviderImportSupport::Native);
         assert_eq!(source.source_kind, ProviderSourceKind::NativeHistory);
-        assert_eq!(
-            source.source_format,
-            super::super::OPENHANDS_CURRENT_CLI_SOURCE_FORMAT
-        );
+        assert_eq!(source.source_format, OPENHANDS_CURRENT_CLI_SOURCE_FORMAT);
         assert_eq!(source.unsupported_reason, None);
     }
 }

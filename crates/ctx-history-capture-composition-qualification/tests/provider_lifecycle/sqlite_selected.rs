@@ -4,12 +4,12 @@ use ctx_history_core::{CaptureProvider, TypedKey};
 use ctx_history_index::{VerifiedIndex, WriterOptions};
 use rusqlite::Connection;
 
-use super::super::{
+use crate::{provider_sources::provider_source_for_path, test_support_paths};
+use ctx_history_capture_composition::{
     refresh_source_backed_generation, register_goose_source_backed_route,
     register_landed_source_backed_route_with_data_root, SourceBackedCoordinatorError,
     SourceBackedProviderRegistry, SourceBackedRouteErrorKind, SourceBackedRouteSelection,
 };
-use crate::{provider_sources::provider_source_for_path, test_support_paths};
 
 #[test]
 fn goose_v15_literal_parent_and_native_identities_publish_consistently() {
@@ -56,6 +56,7 @@ fn goose_v15_literal_parent_and_native_identities_publish_consistently() {
         &temp.path().join("data-root"),
         temp.path(),
         Vec::new(),
+        None,
     )
     .unwrap();
     let index = temp.path().join("index");

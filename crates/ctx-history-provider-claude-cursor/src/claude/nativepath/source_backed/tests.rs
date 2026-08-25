@@ -1,5 +1,6 @@
 use std::{collections::HashMap, path::PathBuf};
 
+use ctx_history_capture_model::{ProviderRootDefinition, ProviderRootSourceIdentity};
 use ctx_history_core::{
     ActivityJsonCapture, ActivityTextCapture, LiteralFactKind, ProjectionContractError, TypedKey,
 };
@@ -15,6 +16,16 @@ use super::{
     claude_annotation, parse_native_record, session_identity, session_typed_key, source_key,
     ClaudePhysicalLocator, ClaudeSessionKey,
 };
+
+fn canonical_identity_hex(identity: ctx_history_core::StableEntityId) -> String {
+    use std::fmt::Write as _;
+
+    let mut hex = String::with_capacity(ctx_history_core::StableEntityId::CANONICAL_LEN * 2);
+    for byte in identity.encode_canonical().unwrap() {
+        write!(&mut hex, "{byte:02x}").unwrap();
+    }
+    hex
+}
 
 #[test]
 fn unreadable_leaf_scope_accepts_only_stable_leaf_local_open_failures() {
@@ -124,6 +135,102 @@ fn automatic_source_identity_keeps_the_released_unqualified_lineage() {
     .unwrap();
 
     assert!(released.exact_descriptor_eq(&super::source_key(None, &key).unwrap()));
+}
+
+#[test]
+fn named_v1_source_session_and_event_keep_released_identity_bytes() {
+    let mut root = ProviderRootDefinition {
+        id: "personal".to_owned(),
+        provider: ctx_history_core::CaptureProvider::Claude,
+        path: PathBuf::from("/old/claude"),
+        group: None,
+        kind: None,
+    };
+    let root_lineage = ProviderRootSourceIdentity::NamedV1.lineage(&root).unwrap();
+    root.path = PathBuf::from("/new/claude");
+    assert_eq!(
+        Some(root_lineage),
+        ProviderRootSourceIdentity::NamedV1.lineage(&root)
+    );
+
+    let key = ClaudeSessionKey {
+        root_session_id: "claude-root".to_owned(),
+        workflow_run_id: Some("claude-workflow".to_owned()),
+        agent_id: Some("claude-agent".to_owned()),
+    };
+    let session_key = session_typed_key(&key).unwrap();
+    let released_source_key = TypedKey::composite(vec![
+        TypedKey::bytes(root_lineage.to_vec()).unwrap(),
+        session_key.clone(),
+    ])
+    .unwrap();
+    let released_source = ctx_history_core::SourceKey::derive_provider_native(
+        ctx_history_core::CaptureProvider::Claude.as_str(),
+        crate::CLAUDE_PROJECTS_SOURCE_FORMAT,
+        super::SOURCE_SCHEMA_VARIANT,
+        1,
+        super::SOURCE_ANCHOR_NAMESPACE,
+        released_source_key,
+    )
+    .unwrap();
+    let source = source_key(Some(root_lineage), &key).unwrap();
+    assert_eq!(
+        released_source.identity().encode_canonical().unwrap(),
+        source.identity().encode_canonical().unwrap()
+    );
+
+    let released_session = session_identity(&released_source, session_key.clone()).unwrap();
+    let session = session_identity(&source, session_key).unwrap();
+    assert_eq!(
+        released_session.encode_canonical().unwrap(),
+        session.encode_canonical().unwrap()
+    );
+
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "type": "user",
+        "uuid": "claude-event",
+        "message": {"role": "user", "content": "golden"}
+    }))
+    .unwrap();
+    let row = parse_native_record(&bytes, 0, &locator(&bytes))
+        .unwrap()
+        .rows
+        .remove(0);
+    let released_event = stable_native_event_identity(&row, &released_source, released_session)
+        .unwrap()
+        .unwrap();
+    let event = stable_native_event_identity(&row, &source, session)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        released_event.encode_canonical().unwrap(),
+        event.encode_canonical().unwrap()
+    );
+
+    assert_eq!(
+        (
+            source.identity().to_string(),
+            session.to_string(),
+            event.to_string(),
+        ),
+        (
+            "bca84967-56b2-8a5d-b967-a26b647726e9".to_owned(),
+            "6a372a35-7990-8cd6-8c3c-e6ad6314aaa3".to_owned(),
+            "ec128734-2e71-8466-a518-206e5f6d47a3".to_owned(),
+        )
+    );
+    assert_eq!(
+        (
+            canonical_identity_hex(source.identity()),
+            canonical_identity_hex(session),
+            canonical_identity_hex(event),
+        ),
+        (
+            "000101bca8496756b2ca5db967a26b647726e9ee9da311ce2457f6c58b9367b49e08fcbca8496756b2ca5db967a26b647726e9ee9da311ce2457f6c58b9367b49e08fc0000000000000000000000000000000000000000000000000000000000000000bca8496756b28a5db967a26b647726e9".to_owned(),
+            "0001026a372a357990acd60c3ce6ad6314aaa3c3087d560dd76332dbcd34e923371ebcbca8496756b2ca5db967a26b647726e9ee9da311ce2457f6c58b9367b49e08fc8377fefbe49ac985ec68bcef1e9aba226c3eb2339ac43f822adf0e5343040df96a372a3579908cd68c3ce6ad6314aaa3".to_owned(),
+            "000103ec1287342e71d4666518206e5f6d47a3dfc76f7b4577bb569bd0ae41d79f1366bca8496756b2ca5db967a26b647726e9ee9da311ce2457f6c58b9367b49e08fc8377fefbe49ac985ec68bcef1e9aba226c3eb2339ac43f822adf0e5343040df9ec1287342e718466a518206e5f6d47a3".to_owned(),
+        )
+    );
 }
 
 fn locator(bytes: &[u8]) -> ClaudePhysicalLocator {

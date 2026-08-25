@@ -41,7 +41,6 @@ pub use ctx_history_index_format::policy;
 pub use ctx_history_index_format::project_body_search;
 #[cfg(test)]
 pub(crate) use ctx_history_index_format::required_field;
-pub(crate) use ctx_history_index_format::source_token;
 pub(crate) use ctx_history_index_format::{
     accumulate_core_record, core_record_accumulator_leaf, core_record_leaf, implicit_source_routes,
     source_sort_key, INDEX_MEMORY_MIN_PER_THREAD,
@@ -63,12 +62,13 @@ pub(crate) use ctx_history_index_format::{
     fields_from_schema, lexical_schema, provider_source_config_digest, validate_schema, Fields,
 };
 pub use ctx_history_index_format::{
-    AppliedProviderRoot, CommittedPredecessorMigrationRecovery, ConsecutiveSourceMissingCount,
-    GenerationManifest, IndexError, ProviderRootDefinition, ProviderRootSourceIdentity, Result,
-    SourceCoreRecordAggregate, SourceMissingObservationPoint, SourceRouteIdentity,
-    SourceRouteMissingState, SourceRouteSnapshot, GENERATION_MANIFEST_VERSION,
+    source_token, AppliedProviderRoot, AppliedProviderRootSourceMembership,
+    CommittedPredecessorMigrationRecovery, ConsecutiveSourceMissingCount,
+    DetachedReleasedProviderRootAuthority, GenerationManifest, IndexError, ProviderRootDefinition,
+    ProviderRootSourceIdentity, Result, SourceCoreRecordAggregate, SourceMissingObservationPoint,
+    SourceRouteIdentity, SourceRouteMissingState, SourceRouteSnapshot, GENERATION_MANIFEST_VERSION,
     LEXICAL_ANALYZER_VERSION, LEXICAL_SCHEMA_VERSION, LEXICAL_SEGMENT_MERGE_FAN_IN,
-    MAX_PUBLICATION_METADATA_BYTES,
+    MAX_DETACHED_RELEASED_PROVIDER_ROOTS, MAX_PUBLICATION_METADATA_BYTES,
 };
 #[cfg(test)]
 pub(crate) use ctx_history_index_generation::sha256_hex;
@@ -392,6 +392,7 @@ pub struct GenerationWriter {
     changed_session_registry_memory_bytes: usize,
     source_route_plan: Option<SourceRoutePlan>,
     active_source_route_stage: Option<SourceRouteStageCheckpoint>,
+    active_source_route_cohort_stage: Option<SourceRouteStageCheckpoint>,
     reusable_base_rebuild_detail: Option<String>,
     #[cfg(test)]
     index_writer_constructions: std::sync::Arc<std::sync::atomic::AtomicUsize>,

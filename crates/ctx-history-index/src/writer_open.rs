@@ -238,6 +238,7 @@ impl GenerationWriter {
                 changed_session_registry_memory_bytes,
                 source_route_plan: None,
                 active_source_route_stage: None,
+                active_source_route_cohort_stage: None,
                 reusable_base_rebuild_detail: None,
                 #[cfg(test)]
                 index_writer_constructions: std::sync::Arc::new(
@@ -313,6 +314,15 @@ impl GenerationWriter {
         &self,
     ) -> Result<Option<ExactReplayInventoryWitness<'_>>> {
         if self.writer.is_some() || !self.deletions.is_empty() {
+            return Ok(None);
+        }
+        // Reuse would leave a migrated v8/v9 descriptor as durable authority.
+        // Send this one publication through the atomic candidate path instead.
+        if self
+            .base_publication
+            .as_ref()
+            .is_some_and(PinnedPublication::requires_current_manifest_anchor)
+        {
             return Ok(None);
         }
         let Some(base) = self.base_manifest() else {

@@ -68,6 +68,7 @@ fn register_source(
             catalog_support: ProviderCatalogSupport::None,
             status: ProviderSourceStatus::Available,
             unsupported_reason: None,
+            route_provenance: Default::default(),
         },
         SourceBackedRouteSelection::Automatic,
     )
@@ -451,6 +452,7 @@ fn claude_roots_with_the_same_relative_session_path_publish_independent_sources(
             provider: CaptureProvider::Claude,
             path: path.to_path_buf(),
             group: None,
+            kind: None,
         },
     )
     .collect::<Vec<_>>();
@@ -462,9 +464,9 @@ fn claude_roots_with_the_same_relative_session_path_publish_independent_sources(
     )
     .with_configured_provider_roots(definitions);
     let report = DiscoveryReport {
-        sources: [&personal, &work]
+        sources: [("personal", &personal), ("work", &work)]
             .into_iter()
-            .map(|root| ProviderSource {
+            .map(|(root_id, root)| ProviderSource {
                 provider: CaptureProvider::Claude,
                 path: root.to_path_buf(),
                 exists: true,
@@ -474,11 +476,20 @@ fn claude_roots_with_the_same_relative_session_path_publish_independent_sources(
                 catalog_support: ProviderCatalogSupport::None,
                 status: ProviderSourceStatus::Available,
                 unsupported_reason: None,
+                route_provenance:
+                    ctx_history_capture_model::ProviderSourceRouteProvenance::ConfiguredRoot {
+                        root_id: root_id.to_owned(),
+                        root_path: root.parent().unwrap().to_path_buf(),
+                        route_role: ctx_history_capture_model::ProviderRouteRole::from_static(
+                            "claude-projects",
+                        ),
+                        automatic_route_role: None,
+                    },
             })
             .collect(),
         issues: Vec::new(),
     };
-    let build = build_automatic_source_backed_registry_from_report_with_probes_and_root_identities(
+    let build = build_automatic_source_backed_registry_from_report_with_probes_and_retained_roots(
         &crate::test_provider_probes(),
         &context,
         &temp.path().join("data"),
@@ -559,12 +570,14 @@ fn unavailable_configured_claude_home_carries_only_itself_while_peer_refreshes()
             provider: CaptureProvider::Claude,
             path: personal_home.clone(),
             group: Some("personal".to_owned()),
+            kind: None,
         },
         ctx_history_capture_model::ProviderRootDefinition {
             id: "work".to_owned(),
             provider: CaptureProvider::Claude,
             path: work_home.clone(),
             group: Some("work".to_owned()),
+            kind: None,
         },
     ];
     let context = DiscoveryContext::new(
@@ -591,23 +604,33 @@ fn unavailable_configured_claude_home_carries_only_itself_while_peer_refreshes()
     );
     let displaced_work_home = temp.path().join("work-displaced");
     fs::rename(&work_home, &displaced_work_home).unwrap();
-    fs::write(&work_home, b"temporarily not a directory").unwrap();
     let current = build_discovered_provider_registry(&context, &data_root, CaptureProvider::Claude);
-    assert!(current.issues.iter().any(|issue| matches!(
-        issue,
-        SourceBackedAutomaticRegistryIssue::Discovery(issue)
-            if issue.path.as_deref() == Some(work.as_path())
-    )));
-    fs::remove_file(&work_home).unwrap();
+    assert!(
+        current.issues.iter().any(|issue| matches!(
+            issue,
+            SourceBackedAutomaticRegistryIssue::Unavailable {
+                source,
+                reason: SourceBackedAutomaticUnavailableReason::SourceStatus(
+                    ProviderSourceStatus::Missing
+                ),
+            } if source.path == work
+        )),
+        "{:?}",
+        current.issues
+    );
     fs::rename(&displaced_work_home, &work_home).unwrap();
     let receipt =
         refresh_source_backed_generation(&index, &current.registry, writer_options()).unwrap();
-    assert!(matches!(
-        receipt.failed_routes.as_slice(),
-        [failure]
-            if failure.class == SourceBackedSourceFailureClass::Unavailable
-                && failure.carried_forward
-    ));
+    assert!(
+        matches!(
+            receipt.failed_routes.as_slice(),
+            [failure]
+                if failure.class == SourceBackedSourceFailureClass::Unavailable
+                    && failure.carried_forward
+        ),
+        "{:?}",
+        receipt.failed_routes
+    );
     let personal_records = indexed_records(&index, CaptureProvider::Claude, "personal-session");
     assert_literal_bodies(
         &personal_records,
@@ -639,19 +662,20 @@ fn cold_unavailable_configured_claude_home_does_not_block_healthy_peer() {
             "personal cold marker",
         )],
     );
-    fs::write(&work_home, b"temporarily not a directory").unwrap();
     let definitions = vec![
         ctx_history_capture_model::ProviderRootDefinition {
             id: "personal".to_owned(),
             provider: CaptureProvider::Claude,
             path: personal_home.clone(),
             group: Some("personal".to_owned()),
+            kind: None,
         },
         ctx_history_capture_model::ProviderRootDefinition {
             id: "work".to_owned(),
             provider: CaptureProvider::Claude,
             path: work_home.clone(),
             group: Some("work".to_owned()),
+            kind: None,
         },
     ];
     let context = DiscoveryContext::new(
@@ -666,20 +690,32 @@ fn cold_unavailable_configured_claude_home_does_not_block_healthy_peer() {
         &temp.path().join("data"),
         CaptureProvider::Claude,
     );
-    assert!(build.issues.iter().any(|issue| matches!(
-        issue,
-        SourceBackedAutomaticRegistryIssue::Discovery(issue)
-            if issue.path.as_deref() == Some(work_home.join("projects").as_path())
-    )));
+    assert!(
+        build.issues.iter().any(|issue| matches!(
+            issue,
+            SourceBackedAutomaticRegistryIssue::Unavailable {
+                source,
+                reason: SourceBackedAutomaticUnavailableReason::SourceStatus(
+                    ProviderSourceStatus::Missing
+                ),
+            } if source.path == work_home.join("projects")
+        )),
+        "{:?}",
+        build.issues
+    );
     let index = temp.path().join("index");
     let receipt =
         refresh_source_backed_generation(&index, &build.registry, writer_options()).unwrap();
-    assert!(matches!(
-        receipt.failed_routes.as_slice(),
-        [failure]
-            if failure.class == SourceBackedSourceFailureClass::Unavailable
-                && !failure.carried_forward
-    ));
+    assert!(
+        matches!(
+            receipt.failed_routes.as_slice(),
+            [failure]
+                if failure.class == SourceBackedSourceFailureClass::Unavailable
+                    && !failure.carried_forward
+        ),
+        "{:?}",
+        receipt.failed_routes
+    );
     assert_eq!(
         receipt.successful_route_ids.len(),
         2,

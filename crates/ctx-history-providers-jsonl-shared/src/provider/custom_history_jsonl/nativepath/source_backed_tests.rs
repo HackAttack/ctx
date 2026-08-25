@@ -11,6 +11,39 @@ use serde_json::{json, Value};
 use super::source_backed::*;
 use crate::{test_support_paths::tempdir, CaptureError, ProviderSourceFailureKind};
 
+#[test]
+fn catalog_lineage_source_and_session_identities_are_root_scoped() {
+    let path = Path::new("custom.jsonl");
+    let released = CustomHistorySourceBackedInput::explicit(path, [9; 32])
+        .source_key()
+        .unwrap();
+    let compatibility =
+        CustomHistorySourceBackedInput::explicit_with_source_root_lineage(path, [9; 32], None)
+            .source_key()
+            .unwrap();
+    let first = CustomHistorySourceBackedInput::explicit_with_source_root_lineage(
+        path,
+        [9; 32],
+        Some([1; 32]),
+    )
+    .source_key()
+    .unwrap();
+    let second = CustomHistorySourceBackedInput::explicit_with_source_root_lineage(
+        path,
+        [9; 32],
+        Some([2; 32]),
+    )
+    .source_key()
+    .unwrap();
+
+    assert!(released.exact_descriptor_eq(&compatibility));
+    assert_ne!(first.identity(), second.identity());
+    assert_ne!(
+        custom_session_identity(&first, "provider", "source", "session").unwrap(),
+        custom_session_identity(&second, "provider", "source", "session").unwrap()
+    );
+}
+
 fn manifest(lineage: bool) -> Value {
     let mut record = json!({
         "record_type": "manifest",

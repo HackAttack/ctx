@@ -14,8 +14,9 @@ use ctx_history_core::{
     admit_optional_metadata_text, admit_optional_provider_call_id, admit_provider_declared_fact,
     derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
     ActivityResult, ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord,
-    EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, ProviderDeclaredFact, SourceKey,
-    StableEntityId, TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
+    EventIdentityInput, EventType, LiteralFactKind, NativeItemKey, ProviderDeclaredFact,
+    SourceAnchorScope, SourceKey, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
+    MAX_CORE_CONTENT_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -86,11 +87,23 @@ impl PiSourceBackedRoot {
 
 pub(crate) fn pi_source_backed_adapter<R: JsonlProviderRuntime>(
 ) -> Arc<dyn JsonlFamilyAdapter<Runtime = R>> {
-    Arc::new(PiJsonlAdapter::default())
+    pi_source_backed_adapter_with_source_root_lineage(None)
+}
+
+pub(crate) fn pi_source_backed_adapter_with_source_root_lineage<R: JsonlProviderRuntime>(
+    source_root_lineage: Option<[u8; 32]>,
+) -> Arc<dyn JsonlFamilyAdapter<Runtime = R>> {
+    Arc::new(PiJsonlAdapter {
+        bindings: Mutex::new(HashMap::new()),
+        source_anchor_scope: source_root_lineage
+            .map_or(SourceAnchorScope::Unqualified, SourceAnchorScope::Lineage),
+        runtime: PhantomData,
+    })
 }
 
 struct PiJsonlAdapter<R> {
     bindings: Mutex<HashMap<PathBuf, CachedBinding>>,
+    source_anchor_scope: SourceAnchorScope,
     runtime: PhantomData<fn() -> R>,
 }
 
@@ -98,6 +111,7 @@ impl<R> Default for PiJsonlAdapter<R> {
     fn default() -> Self {
         Self {
             bindings: Mutex::new(HashMap::new()),
+            source_anchor_scope: SourceAnchorScope::Unqualified,
             runtime: PhantomData,
         }
     }
@@ -249,7 +263,7 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for PiJsonlAdapter<R> {
                 binding,
                 identity_probe,
             } = discovered;
-            let source = source_key(&binding.native_session_id)?;
+            let source = source_key_scoped(&binding.native_session_id, self.source_anchor_scope)?;
             let source_digest = source.exact_descriptor_digest();
             if let Some(selected) = sources.get(&source_digest) {
                 if selected == &observation {
@@ -329,9 +343,10 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for PiJsonlAdapter<R> {
         let parent_session_id = binding
             .parent_session_id
             .as_deref()
-            .map(session_identity_for_native)
+            .map(|parent| session_identity_for_native(parent, self.source_anchor_scope))
             .transpose()?;
-        let root_session_id = session_identity_for_native(&binding.root_session_id)?;
+        let root_session_id =
+            session_identity_for_native(&binding.root_session_id, self.source_anchor_scope)?;
         Ok(Box::new(PiProjector::<R> {
             source: leaf.source().clone(),
             root_session_id,
@@ -734,14 +749,23 @@ fn event_timestamp(value: &Value) -> Option<DateTime<Utc>> {
         .map(|timestamp| timestamp.with_timezone(&Utc))
 }
 
+#[cfg(test)]
 fn source_key(native_session_id: &str) -> Result<SourceKey> {
-    SourceKey::derive_provider_native(
+    source_key_scoped(native_session_id, SourceAnchorScope::Unqualified)
+}
+
+fn source_key_scoped(
+    native_session_id: &str,
+    source_anchor_scope: SourceAnchorScope,
+) -> Result<SourceKey> {
+    SourceKey::derive_provider_native_scoped(
         CaptureProvider::Pi.as_str(),
         PI_SOURCE_FORMAT,
         SOURCE_SCHEMA_VARIANT,
         1,
         SOURCE_ANCHOR_NAMESPACE,
         TypedKey::utf8(native_session_id).map_err(contract)?,
+        source_anchor_scope,
     )
     .map_err(contract)
 }
@@ -756,8 +780,11 @@ fn session_identity(source: &SourceKey, native_session_id: &str) -> Result<Stabl
     .map_err(contract)
 }
 
-fn session_identity_for_native(native_session_id: &str) -> Result<StableEntityId> {
-    let source = source_key(native_session_id)?;
+fn session_identity_for_native(
+    native_session_id: &str,
+    source_anchor_scope: SourceAnchorScope,
+) -> Result<StableEntityId> {
+    let source = source_key_scoped(native_session_id, source_anchor_scope)?;
     session_identity(&source, native_session_id)
 }
 
@@ -800,6 +827,23 @@ fn contract(error: impl std::fmt::Display) -> CaptureError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_and_related_session_identities_are_root_scoped() {
+        let released = source_key("same-session").unwrap();
+        let compatibility =
+            source_key_scoped("same-session", SourceAnchorScope::Unqualified).unwrap();
+        let first = source_key_scoped("same-session", SourceAnchorScope::Lineage([1; 32])).unwrap();
+        let second =
+            source_key_scoped("same-session", SourceAnchorScope::Lineage([2; 32])).unwrap();
+
+        assert!(released.exact_descriptor_eq(&compatibility));
+        assert_ne!(first.identity(), second.identity());
+        assert_ne!(
+            session_identity_for_native("parent", SourceAnchorScope::Lineage([1; 32])).unwrap(),
+            session_identity_for_native("parent", SourceAnchorScope::Lineage([2; 32])).unwrap()
+        );
+    }
 
     #[test]
     fn omp_title_slot_is_ignored_only_at_the_first_physical_record() {

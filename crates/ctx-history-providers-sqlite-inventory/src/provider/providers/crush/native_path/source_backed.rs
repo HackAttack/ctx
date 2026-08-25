@@ -16,7 +16,8 @@ use ctx_history_core::{
     ActivityTextCapture, AgentScope, CaptureProvider, CertifiedSource, CoreActivity, CoreRecord,
     CoreRecordError, EventIdentityInput, NativeItemKey, NativeSessionKey, ProjectionContractError,
     ProviderNativeSessionRelationship, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
-    SourceInventoryObservation, SourceKey, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
+    SourceAnchorScope, SourceInventoryObservation, SourceKey, StableEntityId, TypedKey,
+    CORE_ACTIVITY_REVISION,
 };
 use rusqlite::{limits::Limit, Connection};
 use serde_json::json;
@@ -48,7 +49,8 @@ use super::super::{
 
 #[path = "source_backed_identity.rs"]
 mod identity;
-use identity::{crush_session_id, crush_source_key, session_lineage};
+pub use identity::crush_source_key;
+use identity::{crush_session_id, crush_source_key_scoped, session_lineage};
 
 #[cfg(test)]
 mod tests;
@@ -310,9 +312,18 @@ fn before_source_publication_revalidation() {
 #[cfg(not(test))]
 fn before_source_publication_revalidation() {}
 
+#[cfg(test)]
 pub(crate) fn bind_inventory(
     data_root: &Path,
     observation: CrushProjectInventoryObservationV0,
+) -> CrushSourceBackedResultV0<FrozenInventory> {
+    bind_inventory_scoped(data_root, observation, SourceAnchorScope::Unqualified)
+}
+
+pub(crate) fn bind_inventory_scoped(
+    data_root: &Path,
+    observation: CrushProjectInventoryObservationV0,
+    source_scope: SourceAnchorScope,
 ) -> CrushSourceBackedResultV0<FrozenInventory> {
     if observation.databases.len() > MAX_CRUSH_PROJECT_DATABASES {
         return Err(CrushSourceBackedErrorV0::InventoryTooLarge);
@@ -334,7 +345,7 @@ pub(crate) fn bind_inventory(
         let (source_root, _sqlite_authority, _database_name) =
             retain_crush_sqlite_authority(data_root, &canonical_path)?;
         let database_file = Arc::new(source_root.open_file(Path::new(&_database_name))?);
-        let source_key = crush_source_key(database.project_key)?;
+        let source_key = crush_source_key_scoped(database.project_key, source_scope)?;
         if !source_ids.insert(source_key.identity().digest()) {
             return Err(CrushSourceBackedErrorV0::DuplicateProjectKey);
         }

@@ -9,8 +9,8 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::{
     admit_provider_declared_fact, derive_event_id, derive_native_session_id, CaptureProvider,
     CoreActivity, CoreRecord, CoreRecordError, EventIdentityInput, LiteralFactKind, NativeItemKey,
-    PositionStability, ProjectionContractError, ProviderDeclaredFact, SourceKey, StableEntityId,
-    SubrecordSelector, TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
+    PositionStability, ProjectionContractError, ProviderDeclaredFact, SourceAnchorScope, SourceKey,
+    StableEntityId, SubrecordSelector, TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -87,6 +87,7 @@ pub struct DirectJsonlFamilyAdapter<R: NativeJsonlRuntime> {
     source_format: &'static str,
     schema_variant: &'static str,
     parser_revision: &'static str,
+    source_anchor_scope: SourceAnchorScope,
     runtime: std::marker::PhantomData<R>,
 }
 
@@ -110,8 +111,20 @@ impl<R: NativeJsonlRuntime> DirectJsonlFamilyAdapter<R> {
             source_format,
             schema_variant,
             parser_revision,
+            source_anchor_scope: SourceAnchorScope::Unqualified,
             runtime: std::marker::PhantomData,
         }
+    }
+
+    /// Qualifies provider-native source anchors for one durable provider root.
+    ///
+    /// `None` preserves the released unqualified source identity exactly.
+    pub const fn with_source_root_lineage(mut self, source_root_lineage: Option<[u8; 32]>) -> Self {
+        self.source_anchor_scope = match source_root_lineage {
+            Some(lineage) => SourceAnchorScope::Lineage(lineage),
+            None => SourceAnchorScope::Unqualified,
+        };
+        self
     }
 
     const fn effective_parser_revision(self) -> &'static str {
@@ -122,13 +135,14 @@ impl<R: NativeJsonlRuntime> DirectJsonlFamilyAdapter<R> {
     }
 
     fn source_key(self, native_session_id: &str) -> DirectJsonlAdapterResult<SourceKey> {
-        Ok(SourceKey::derive_provider_native(
+        Ok(SourceKey::derive_provider_native_scoped(
             self.provider.as_str(),
             self.source_format,
             self.schema_variant,
             DIRECT_JSONL_SOURCE_IDENTITY_VERSION,
             format!("{}.direct-jsonl-session", self.provider.as_str()),
             TypedKey::utf8(native_session_id)?,
+            self.source_anchor_scope,
         )?)
     }
 
@@ -194,8 +208,12 @@ impl<R: NativeJsonlRuntime> DirectJsonlFamilyAdapter<R> {
                 if observation != opening {
                     return Err(CaptureError::SourceChangedDuringCapture);
                 }
-                if super::super::dialect::native_jsonl_file_is_selected(self.provider, root, false)
-                {
+                if super::super::dialect::native_jsonl_file_is_selected(
+                    self.provider,
+                    root,
+                    root,
+                    false,
+                ) {
                     bind_opened_leaf(
                         self,
                         root,
@@ -372,7 +390,13 @@ impl<R: NativeJsonlRuntime> DirectJsonlDirectoryTraversal<'_, R> {
             }
             let child_path = absolute_path.join(&name);
             let child_relative_path = relative_path.join(&name);
-            let selected = selected_file(self.adapter.provider, directory, &child_path, &name)?;
+            let selected = selected_file(
+                self.adapter.provider,
+                self.source_root,
+                directory,
+                &child_path,
+                &name,
+            )?;
             let opened = match directory.open_child(&name) {
                 Ok(opened) => opened,
                 Err(error) if selected && self.adapter.provider == CaptureProvider::Tabnine => {
@@ -428,6 +452,7 @@ fn membership_open_error_is_ignorable(selected: bool, error: &CaptureError) -> b
 
 fn selected_file(
     provider: CaptureProvider,
+    source_root: &Path,
     directory: &ProviderSourceDirectory<CaptureError>,
     path: &Path,
     name: &OsStr,
@@ -446,6 +471,7 @@ fn selected_file(
         };
     Ok(super::super::dialect::native_jsonl_file_is_selected(
         provider,
+        source_root,
         path,
         full_transcript_is_regular,
     ))
@@ -937,6 +963,10 @@ fn capture_error(error: DirectJsonlAdapterError) -> CaptureError {
         other => CaptureError::InvalidPayload(other.to_string()),
     }
 }
+
+#[cfg(test)]
+#[path = "source_backed_source_scope_tests.rs"]
+mod source_scope_tests;
 
 #[cfg(test)]
 #[path = "source_backed_result_tests.rs"]

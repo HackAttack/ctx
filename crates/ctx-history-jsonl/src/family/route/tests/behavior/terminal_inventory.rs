@@ -1,5 +1,245 @@
 use super::*;
 
+fn seed_sibling_route(index_root: &Path, source: CertifiedSource) {
+    let route_source = source.observation().source().clone();
+    test_generations().lock().unwrap().insert(
+        index_root.to_path_buf(),
+        TestSnapshot {
+            sources: vec![source],
+            route_identity: Some(sibling_route_identity()),
+            route_sources: vec![route_source],
+            records: Vec::new(),
+        },
+    );
+}
+
+struct TestRouteCapture {
+    writer: TestLifecycle,
+    resident: Mutex<FamilyResident>,
+    owners: HashMap<[u8; 32], SourceOwner>,
+    applied_removals: Vec<SourceBackedCertifiedRemoval>,
+    logical_source_failures: SourceBackedLogicalSourceFailures,
+}
+
+fn capture_current_test_route(
+    adapter: &JsonlFamilyAdapterObject,
+    root: &Path,
+    index_root: &Path,
+) -> TestRouteCapture {
+    capture_current_test_route_with_owners(adapter, root, index_root, HashMap::new())
+}
+
+fn capture_current_test_route_with_sibling_owner(
+    adapter: &JsonlFamilyAdapterObject,
+    root: &Path,
+    index_root: &Path,
+    sibling_source: SourceKey,
+) -> TestRouteCapture {
+    let mut owners = HashMap::new();
+    owners.insert(
+        sibling_source.identity().digest(),
+        SourceOwner::new(1, sibling_source, true, None),
+    );
+    capture_current_test_route_with_owners(adapter, root, index_root, owners)
+}
+
+fn capture_current_test_route_with_owners(
+    adapter: &JsonlFamilyAdapterObject,
+    root: &Path,
+    index_root: &Path,
+    mut owners: HashMap<[u8; 32], SourceOwner>,
+) -> TestRouteCapture {
+    let resident = Mutex::new(FamilyResident::default());
+    let mut writer = match IndexCaptureLifecycle::open(index_root, ()).unwrap() {
+        CaptureLifecycleOpenOutcome::Ready(lifecycle) => lifecycle,
+        CaptureLifecycleOpenOutcome::RecoveryRequired { .. } => {
+            panic!("test lifecycle unexpectedly requires recovery")
+        }
+    };
+    let mut complete_inventories = Vec::new();
+    let mut applied_removals = Vec::new();
+    let mut logical_source_failures = SourceBackedLogicalSourceFailures::default();
+    let mut record_rejections = SourceBackedRecordRejections::default();
+    {
+        let mut sink = SourceBackedGenerationSink::new(
+            &mut writer,
+            &mut owners,
+            &mut complete_inventories,
+            &mut applied_removals,
+            0,
+            test_route_identity(),
+            None,
+            SourceBackedRouteResources::production(1),
+            &mut logical_source_failures,
+            &mut record_rejections,
+            None,
+            None,
+            None,
+        );
+        with_family_scanner_workers(1, || capture(adapter, root, &resident, &mut sink)).unwrap();
+    }
+    TestRouteCapture {
+        writer,
+        resident,
+        owners,
+        applied_removals,
+        logical_source_failures,
+    }
+}
+
+#[test]
+fn sibling_route_source_is_not_reused_or_claimed() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("sibling.jsonl"), TEST_RECORD).unwrap();
+    let (sibling_resident, _) = expected_state(&ParallelTestAdapter, &root);
+    seed_sibling_route(&index_root, expected_source(&sibling_resident));
+    fs::write(root.join("sibling.jsonl"), br#"{"message":"incomplete""#).unwrap();
+
+    let captured = capture_current_test_route(&ParallelTestAdapter, &root, &index_root);
+
+    assert_eq!(jsonl_family_admission_activity().bases, 0);
+    assert_eq!(jsonl_family_admission_activity().selected_leaves, 0);
+    assert_eq!(captured.writer.activity(), TestLifecycleActivity::default());
+    assert!(captured.owners.is_empty());
+    assert!(captured.applied_removals.is_empty());
+    assert!(captured.logical_source_failures.is_empty());
+    assert!(captured.resident.lock().unwrap().owned_sources.is_empty());
+}
+
+#[test]
+fn sibling_owned_pending_member_does_not_block_current_route_deletion() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&root).unwrap();
+    let current_path = root.join("current.jsonl");
+    fs::write(&current_path, TEST_RECORD).unwrap();
+    let current = capture_parallel_test_generation(&ParallelTestAdapter, &root, &index_root, 1)
+        .0
+        .manifest
+        .sources[0]
+        .clone();
+    fs::remove_file(current_path).unwrap();
+    let sibling_path = root.join("sibling.jsonl");
+    fs::write(&sibling_path, br#"{"message":"incomplete""#).unwrap();
+    let sibling_source = TestAdapter
+        .discover(&root)
+        .unwrap()
+        .accepted_leaves()
+        .next()
+        .unwrap()
+        .source()
+        .clone();
+
+    let captured = capture_current_test_route_with_sibling_owner(
+        &ParallelTestAdapter,
+        &root,
+        &index_root,
+        sibling_source,
+    );
+
+    assert_eq!(captured.writer.activity().deleted_sources, 1);
+    assert_eq!(captured.applied_removals.len(), 1);
+    assert!(captured.applied_removals[0]
+        .deletion
+        .source()
+        .exact_descriptor_eq(current.observation().source()));
+    assert!(captured.logical_source_failures.is_empty());
+}
+
+#[test]
+fn sibling_owned_quarantine_does_not_block_current_route_replacement_retirement() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&root).unwrap();
+    let current_path = root.join("current.jsonl");
+    fs::write(&current_path, TEST_RECORD).unwrap();
+    let current = capture_parallel_test_generation(&ParallelTestAdapter, &root, &index_root, 1)
+        .0
+        .manifest
+        .sources[0]
+        .clone();
+    fs::write(root.join("sibling.jsonl"), TEST_RECORD).unwrap();
+    let sibling_source = TestAdapter
+        .discover(&root)
+        .unwrap()
+        .accepted_leaves()
+        .find(|leaf| leaf.source_path().ends_with("sibling.jsonl"))
+        .unwrap()
+        .source()
+        .clone();
+
+    let captured = capture_current_test_route_with_sibling_owner(
+        &ReplacementWithQuarantineTestAdapter,
+        &root,
+        &index_root,
+        sibling_source,
+    );
+
+    assert_eq!(captured.writer.activity().begin_source_replacements, 1);
+    assert_eq!(captured.writer.activity().deleted_sources, 1);
+    assert_eq!(captured.applied_removals.len(), 1);
+    assert!(captured.applied_removals[0]
+        .deletion
+        .source()
+        .exact_descriptor_eq(current.observation().source()));
+    assert!(captured.logical_source_failures.is_empty());
+    assert_eq!(captured.writer.certified_sources.len(), 1);
+    assert!(!captured.writer.certified_sources[0]
+        .observation()
+        .source()
+        .exact_descriptor_eq(current.observation().source()));
+}
+
+#[test]
+fn sibling_route_source_is_not_retired_when_absent() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&root).unwrap();
+    let sibling_path = root.join("sibling.jsonl");
+    fs::write(&sibling_path, TEST_RECORD).unwrap();
+    let (sibling_resident, _) = expected_state(&ParallelTestAdapter, &root);
+    seed_sibling_route(&index_root, expected_source(&sibling_resident));
+    fs::remove_file(sibling_path).unwrap();
+
+    let captured = capture_current_test_route(&ParallelTestAdapter, &root, &index_root);
+
+    assert_eq!(jsonl_family_admission_activity().bases, 0);
+    assert_eq!(captured.writer.activity().deleted_sources, 0);
+    assert!(captured.owners.is_empty());
+    assert!(captured.applied_removals.is_empty());
+    assert!(captured.logical_source_failures.is_empty());
+}
+
+#[test]
+fn sibling_route_source_is_not_quarantined() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("sessions");
+    let index_root = temp.path().join("index");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("sibling.jsonl"), TEST_RECORD).unwrap();
+    let (sibling_resident, _) = expected_state(&ParallelTestAdapter, &root);
+    seed_sibling_route(&index_root, expected_source(&sibling_resident));
+
+    let captured = capture_current_test_route(&QuarantinedTestAdapter, &root, &index_root);
+
+    assert_eq!(captured.writer.activity(), TestLifecycleActivity::default());
+    assert!(captured.owners.is_empty());
+    assert!(captured.applied_removals.is_empty());
+    assert!(captured.logical_source_failures.is_empty());
+    assert!(captured
+        .resident
+        .lock()
+        .unwrap()
+        .quarantined_sources
+        .is_empty());
+}
+
 #[test]
 fn serial_and_parallel_jsonl_emission_preserve_resource_unavailable() {
     let temp = crate::test_support_paths::tempdir().unwrap();
@@ -377,7 +617,7 @@ fn active_source_family_contract_jsonl_frozen_multi_root_defers_new_leaves() {
 }
 
 #[test]
-fn route_base_scope_retains_prior_sources_outside_replacement_authorities() {
+fn exact_route_moved_root_replacement_retains_prior_base_without_old_root_absence() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let first_root = temp.path().join("first-root");
     let replacement_root = temp.path().join("replacement-root");
@@ -385,7 +625,8 @@ fn route_base_scope_retains_prior_sources_outside_replacement_authorities() {
     let index_root = temp.path().join("index");
     fs::create_dir_all(&first_root).unwrap();
     fs::create_dir_all(&replacement_root).unwrap();
-    fs::write(first_root.join("retired.jsonl"), TEST_RECORD).unwrap();
+    let old_path = first_root.join("retired.jsonl");
+    fs::write(&old_path, TEST_RECORD).unwrap();
     fs::write(replacement_root.join("active.jsonl"), TEST_RECORD).unwrap();
 
     let initial_adapter = FrozenMultiRootTestAdapter {
@@ -411,13 +652,29 @@ fn route_base_scope_retains_prior_sources_outside_replacement_authorities() {
         &selection_root,
         &index_root,
         1,
-        |_resident, sink| {
-            let inventory = replacement_adapter.discover(&selection_root).unwrap();
-            base_sources_for_root(&replacement_adapter, &inventory, &selection_root, sink)
-        }
+        |_resident, sink| { base_sources_for_route(&replacement_adapter, sink) }
     );
 
-    assert_eq!(bases.unwrap().len(), 1);
+    let bases = bases.unwrap();
+    assert_eq!(bases.len(), 1);
+    assert_eq!(bases[0], prior);
+
+    let (replacement_resident, replacement_inventory) =
+        expected_state(&replacement_adapter, &selection_root);
+    let replacement_opening = replacement_resident.opening_inventory.as_ref().unwrap();
+    assert!(
+        old_path.exists(),
+        "the old root remains present during replacement"
+    );
+    assert!(retirement_absence_dependency(
+        &replacement_adapter,
+        replacement_opening,
+        &replacement_inventory,
+        &replacement_resident.terminal_sources,
+        prior.observation().source(),
+        &old_path,
+    )
+    .is_none());
 }
 
 #[test]

@@ -455,6 +455,7 @@ fn fixture_provider_source(
         catalog_support: ctx_history_capture_model::ProviderCatalogSupport::None,
         status: crate::ProviderSourceStatus::Available,
         unsupported_reason: None,
+        route_provenance: Default::default(),
     }
 }
 

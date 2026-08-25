@@ -13,8 +13,8 @@ use chrono::{DateTime, Utc};
 use ctx_history_core::{
     ActivityInvocation, ActivityJsonCapture, ActivityResult, ActivityTextCapture, CaptureProvider,
     CoreActivity, CoreRecord, CoreRecordAnnotation, CoreRecordError, LiteralFactKind,
-    ProjectionContractError, ProviderDeclaredFact, SourceKey, StableEntityId, TypedKey,
-    CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
+    ProjectionContractError, ProviderDeclaredFact, SourceAnchorScope, SourceKey, StableEntityId,
+    TypedKey, CORE_ACTIVITY_REVISION, MAX_CORE_CONTENT_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -39,8 +39,10 @@ use ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 
 use crate::{GeminiError, GeminiResult, GeminiRuntime, GEMINI_CLI_SOURCE_FORMAT};
 #[cfg(any(test, feature = "test-support"))]
-use projection::gemini_legacy_v1_source_key;
-use projection::{gemini_event_id, gemini_session_id, gemini_source_key, project_event};
+use projection::gemini_legacy_v1_source_key_scoped;
+use projection::{gemini_event_id, gemini_session_id, gemini_source_key_scoped, project_event};
+#[cfg(test)]
+use projection::{gemini_legacy_v1_source_key, gemini_source_key};
 
 const GEMINI_SOURCE_ANCHOR_NAMESPACE: &str = "gemini.session";
 const GEMINI_SOURCE_IDENTITY_VERSION: u32 = 2;
@@ -131,11 +133,17 @@ enum GeminiSourceIdentityRevision {
 }
 
 impl GeminiSourceIdentityRevision {
-    fn source_key(self, session: &GeminiSession) -> GeminiSourceBackedResult<SourceKey> {
+    fn source_key(
+        self,
+        session: &GeminiSession,
+        source_anchor_scope: SourceAnchorScope,
+    ) -> GeminiSourceBackedResult<SourceKey> {
         match self {
             #[cfg(any(test, feature = "test-support"))]
-            Self::LegacyV1 => gemini_legacy_v1_source_key(&session.native_session_id),
-            Self::CurrentV2 => gemini_source_key(session),
+            Self::LegacyV1 => {
+                gemini_legacy_v1_source_key_scoped(&session.native_session_id, source_anchor_scope)
+            }
+            Self::CurrentV2 => gemini_source_key_scoped(session, source_anchor_scope),
         }
     }
 
@@ -151,12 +159,21 @@ impl GeminiSourceIdentityRevision {
 #[derive(Debug)]
 struct GeminiJsonlAdapter<R> {
     source_identity_revision: GeminiSourceIdentityRevision,
+    source_anchor_scope: SourceAnchorScope,
     _runtime: PhantomData<fn() -> R>,
 }
 
 pub fn gemini_jsonl_adapter<R: GeminiRuntime>() -> Arc<dyn JsonlFamilyAdapter<Runtime = R>> {
+    gemini_jsonl_adapter_with_source_root_lineage(None)
+}
+
+pub fn gemini_jsonl_adapter_with_source_root_lineage<R: GeminiRuntime>(
+    source_root_lineage: Option<[u8; 32]>,
+) -> Arc<dyn JsonlFamilyAdapter<Runtime = R>> {
     Arc::new(GeminiJsonlAdapter {
         source_identity_revision: GeminiSourceIdentityRevision::CurrentV2,
+        source_anchor_scope: source_root_lineage
+            .map_or(SourceAnchorScope::Unqualified, SourceAnchorScope::Lineage),
         _runtime: PhantomData,
     })
 }
@@ -166,6 +183,7 @@ pub fn gemini_legacy_v1_jsonl_adapter_for_test<R: GeminiRuntime>(
 ) -> Arc<dyn JsonlFamilyAdapter<Runtime = R>> {
     Arc::new(GeminiJsonlAdapter {
         source_identity_revision: GeminiSourceIdentityRevision::LegacyV1,
+        source_anchor_scope: SourceAnchorScope::Unqualified,
         _runtime: PhantomData,
     })
 }
@@ -222,7 +240,7 @@ impl<R: GeminiRuntime> JsonlFamilyAdapter for GeminiJsonlAdapter<R> {
             let session = read_gemini_session_header(&transcript).map_err(capture_scan_error)?;
             let source = self
                 .source_identity_revision
-                .source_key(&session)
+                .source_key(&session, self.source_anchor_scope)
                 .map_err(capture_error)?;
             recordings.push((transcript, session, source));
         }
@@ -332,7 +350,7 @@ impl<R: GeminiRuntime> JsonlFamilyAdapter for GeminiJsonlAdapter<R> {
         }
         let expected_source = self
             .source_identity_revision
-            .source_key(&binding.session)
+            .source_key(&binding.session, self.source_anchor_scope)
             .map_err(capture_error)?;
         if !expected_source.exact_descriptor_eq(leaf.source()) {
             return Err(GeminiError::SourceChangedDuringCapture);
@@ -919,6 +937,25 @@ mod recording_identity_tests {
         assert_ne!(
             gemini_source_key(&first).unwrap(),
             gemini_source_key(&resumed).unwrap()
+        );
+    }
+
+    #[test]
+    fn source_and_session_identities_are_root_scoped() {
+        let session = session(Some("2026-08-23T15:53:00Z"), Some("project-a"));
+        let released = gemini_source_key(&session).unwrap();
+        let compatibility =
+            gemini_source_key_scoped(&session, SourceAnchorScope::Unqualified).unwrap();
+        let first =
+            gemini_source_key_scoped(&session, SourceAnchorScope::Lineage([1; 32])).unwrap();
+        let second =
+            gemini_source_key_scoped(&session, SourceAnchorScope::Lineage([2; 32])).unwrap();
+
+        assert!(released.exact_descriptor_eq(&compatibility));
+        assert_ne!(first.identity(), second.identity());
+        assert_ne!(
+            gemini_session_id(&first, &session.native_session_id).unwrap(),
+            gemini_session_id(&second, &session.native_session_id).unwrap()
         );
     }
 

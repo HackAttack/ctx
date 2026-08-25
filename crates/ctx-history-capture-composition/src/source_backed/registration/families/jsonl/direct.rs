@@ -41,9 +41,12 @@ fn register_claude_source_backed_route(
     registry: &mut SourceBackedProviderRegistry,
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
+    source_root_lineage: Option<[u8; 32]>,
 ) -> SourceBackedCoordinatorResult<()> {
     let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
-        ctx_history_provider_claude_cursor::claude_jsonl_adapter::<CaptureProviderRuntime>(),
+        ctx_history_provider_claude_cursor::claude_jsonl_adapter_for_named_home::<
+            CaptureProviderRuntime,
+        >(source_root_lineage),
         source.path.clone(),
     );
     registry.register(executable_route(
@@ -60,6 +63,7 @@ pub(in crate::source_backed) fn register_configured_claude_source_backed_route(
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
     source_root_lineage: Option<[u8; 32]>,
+    route_role: &ProviderRouteRole,
 ) -> SourceBackedCoordinatorResult<()> {
     let driver = crate::provider::source_backed::family::jsonl::jsonl_family_driver(
         ctx_history_provider_claude_cursor::claude_jsonl_adapter_for_named_home::<
@@ -73,7 +77,7 @@ pub(in crate::source_backed) fn register_configured_claude_source_backed_route(
         SourceBackedSelectorAuthority::DiscoveredWinner,
         driver,
     )?;
-    route.apply_provider_root_route_identity(source_root_lineage)?;
+    route.apply_provider_root_route_identity(source_root_lineage, route_role)?;
     registry.register(route);
     Ok(())
 }
@@ -82,6 +86,7 @@ fn register_direct_jsonl_source_backed_route(
     registry: &mut SourceBackedProviderRegistry,
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
+    source_root_lineage: Option<[u8; 32]>,
 ) -> SourceBackedCoordinatorResult<()> {
     use crate::provider::source_backed::family::jsonl::NativeJsonlCaptureRuntime;
     use ctx_history_provider_native_jsonl::native_path::{
@@ -112,7 +117,10 @@ fn register_direct_jsonl_source_backed_route(
             ));
         }
     };
-    let driver = ctx_history_jsonl::jsonl_family_driver(Arc::new(adapter), source.path.clone());
+    let driver = ctx_history_jsonl::jsonl_family_driver(
+        Arc::new(adapter.with_source_root_lineage(source_root_lineage)),
+        source.path.clone(),
+    );
     registry.register(executable_route(
         source,
         selection,
@@ -128,10 +136,12 @@ pub fn register_gemini_source_backed_route(
     registry: &mut SourceBackedProviderRegistry,
     source: ProviderSource,
     selection: SourceBackedRouteSelection,
+    source_root_lineage: Option<[u8; 32]>,
 ) -> SourceBackedCoordinatorResult<()> {
-    let adapter = ctx_history_provider_gemini::nativepath::gemini_jsonl_adapter::<
-        crate::provider::source_backed::family::jsonl::GeminiCaptureJsonlRuntime,
-    >();
+    let adapter =
+        ctx_history_provider_gemini::nativepath::gemini_jsonl_adapter_with_source_root_lineage::<
+            crate::provider::source_backed::family::jsonl::GeminiCaptureJsonlRuntime,
+        >(source_root_lineage);
     let driver = crate::provider::source_backed::family::jsonl::gemini_jsonl_family_driver(
         adapter,
         source.path.clone(),

@@ -13,8 +13,8 @@ use ctx_history_capture_runtime::BaseEventLookup;
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
     ActivityResult, ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord,
-    CoreRecordAnnotation, EventIdentityInput, EventType, NativeItemKey, SourceKey, StableEntityId,
-    TypedKey, CORE_ACTIVITY_REVISION,
+    CoreRecordAnnotation, EventIdentityInput, EventType, NativeItemKey, SourceAnchorScope,
+    SourceKey, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -126,15 +126,31 @@ pub(crate) fn cursor_base_identity_probes() -> u64 {
     CURSOR_BASE_IDENTITY_PROBES.get()
 }
 
-#[derive(Debug, Default)]
-struct CursorJsonlAdapter<B>(std::marker::PhantomData<fn() -> B>);
+#[derive(Debug)]
+struct CursorJsonlAdapter<B> {
+    source_anchor_scope: SourceAnchorScope,
+    binding: std::marker::PhantomData<fn() -> B>,
+}
 
 pub(crate) fn cursor_jsonl_adapter<B>(
 ) -> Arc<dyn JsonlFamilyAdapter<Runtime = ProviderJsonlRuntime<B>>>
 where
     B: ProviderRuntimeBinding,
 {
-    Arc::new(CursorJsonlAdapter(std::marker::PhantomData))
+    cursor_jsonl_adapter_with_source_root_lineage(None)
+}
+
+pub(crate) fn cursor_jsonl_adapter_with_source_root_lineage<B>(
+    source_root_lineage: Option<[u8; 32]>,
+) -> Arc<dyn JsonlFamilyAdapter<Runtime = ProviderJsonlRuntime<B>>>
+where
+    B: ProviderRuntimeBinding,
+{
+    Arc::new(CursorJsonlAdapter {
+        source_anchor_scope: source_root_lineage
+            .map_or(SourceAnchorScope::Unqualified, SourceAnchorScope::Lineage),
+        binding: std::marker::PhantomData,
+    })
 }
 
 impl<B> JsonlFamilyAdapter for CursorJsonlAdapter<B>
@@ -234,7 +250,7 @@ where
             for proof in &route_proofs {
                 proof.revalidate_dependency()?;
             }
-            let source = source_key(&native_session_id)?;
+            let source = source_key_scoped(&native_session_id, self.source_anchor_scope)?;
             let selected = routes.remove(0);
             exact_dependencies.extend(route_proofs.into_iter().skip(1));
             let binding = CursorBinding {
@@ -270,7 +286,12 @@ where
         mode: JsonlFamilyProjectionMode,
     ) -> Result<Box<dyn JsonlFamilyProjector<Runtime = ProviderJsonlRuntime<B>>>> {
         let binding = decode_binding(leaf)?;
-        validate_binding(leaf, &binding, source_file.as_ref())?;
+        validate_binding(
+            leaf,
+            &binding,
+            source_file.as_ref(),
+            self.source_anchor_scope,
+        )?;
         let session_id = session_id(leaf.source(), &binding.native_session_id)?;
         Ok(Box::new(CursorProjector {
             source: leaf.source().clone(),
@@ -788,14 +809,23 @@ fn cursor_normalized_body(event: &CursorNativeEvent) -> Result<Option<String>> {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn source_key(native_session_id: &str) -> Result<SourceKey> {
-    SourceKey::derive_provider_native(
+    source_key_scoped(native_session_id, SourceAnchorScope::Unqualified)
+}
+
+pub(crate) fn source_key_scoped(
+    native_session_id: &str,
+    source_anchor_scope: SourceAnchorScope,
+) -> Result<SourceKey> {
+    SourceKey::derive_provider_native_scoped(
         CaptureProvider::Cursor.as_str(),
         CURSOR_AGENT_TRANSCRIPT_SOURCE_FORMAT,
         SOURCE_SCHEMA_VARIANT,
         1,
         SOURCE_ANCHOR_NAMESPACE,
         TypedKey::utf8(native_session_id).map_err(contract)?,
+        source_anchor_scope,
     )
     .map_err(contract)
 }

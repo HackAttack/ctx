@@ -9,7 +9,9 @@ the local retrieval product.
   configured ctx data root: Core/Tantivy generations, optional semantic data,
   config data, and optional persistent daemon lock/status/job state when
   automatic autostart runs. Manual setup starts no worker.
-- `ctx sources` writes nothing in local-only security mode.
+- `ctx sources` listing writes nothing in local-only security mode.
+  `ctx sources add [--replace]` and `ctx sources remove` write only the locked,
+  durably replaced `config.toml`; they never modify provider history.
 - `ctx import` writes only under the configured ctx data root: Core generations,
   optional semantic data, config data, and optional daemon lock/status/job
   state when a persistent daemon or finite Core worker runs.

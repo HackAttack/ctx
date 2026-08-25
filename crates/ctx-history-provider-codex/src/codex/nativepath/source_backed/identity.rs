@@ -165,20 +165,16 @@ pub(in crate::codex::nativepath) fn codex_source_key_in_root(
     source_root_lineage: Option<[u8; 32]>,
     native_session_id: &str,
 ) -> CodexSourceBackedResultV0<SourceKey> {
-    let anchor = match source_root_lineage {
-        Some(lineage) => TypedKey::composite(vec![
-            TypedKey::bytes(lineage.to_vec())?,
-            TypedKey::utf8(native_session_id)?,
-        ])?,
-        None => TypedKey::utf8(native_session_id)?,
-    };
-    Ok(SourceKey::derive_provider_native(
+    let scope =
+        source_root_lineage.map_or(SourceAnchorScope::Unqualified, SourceAnchorScope::Lineage);
+    Ok(SourceKey::derive_provider_native_scoped(
         CaptureProvider::Codex.as_str(),
         CODEX_SESSION_SOURCE_FORMAT,
         CODEX_SOURCE_SCHEMA_VARIANT,
         1,
         CODEX_SOURCE_ANCHOR_NAMESPACE,
-        anchor,
+        TypedKey::utf8(native_session_id)?,
+        scope,
     )?)
 }
 

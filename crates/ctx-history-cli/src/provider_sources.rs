@@ -6,9 +6,10 @@ use serde_json::{json, Value};
 use ctx_history_capture::{
     discover_provider_sources_for_provider_report,
     discover_provider_sources_for_provider_with_context, discover_provider_sources_report,
-    discover_provider_sources_with_context, provider_source_status_reason, DiscoveryContext,
-    DiscoveryIssue, DiscoveryIssueKind, DiscoveryReport, ProviderImportSupport,
-    ProviderRootDefinition, ProviderSource, ProviderSourceStatus,
+    discover_provider_sources_with_context, provider_paths_equivalent,
+    provider_source_status_reason, DiscoveryContext, DiscoveryIssue, DiscoveryIssueKind,
+    DiscoveryReport, ProviderImportSupport, ProviderRootDefinition, ProviderSource,
+    ProviderSourceStatus,
 };
 use ctx_history_core::CaptureProvider;
 pub use ctx_history_ingest_application::history_source_plugin_report;
@@ -282,25 +283,83 @@ pub fn enrich_sources_json_with_selection(
 }
 
 pub fn discovery_report_issues_json(report: &DiscoveryReport) -> (Vec<Value>, bool) {
+    discovery_report_issues_json_with_provider_roots(report, &[], true)
+}
+
+pub fn discovery_report_issues_json_with_provider_roots(
+    report: &DiscoveryReport,
+    provider_roots: &[ProviderRootDefinition],
+    automatic_provider_discovery: bool,
+) -> (Vec<Value>, bool) {
     let issues = report
         .issues
         .iter()
+        .filter(|issue| is_persisted_configured_root_missing(issue, provider_roots))
+        .chain(
+            report
+                .issues
+                .iter()
+                .filter(|issue| !is_persisted_configured_root_missing(issue, provider_roots)),
+        )
         .take(MAX_DISCOVERY_ISSUES)
-        .map(discovery_issue_json)
+        .map(|issue| discovery_issue_json(issue, provider_roots, automatic_provider_discovery))
         .collect();
     (issues, report.issues.len() > MAX_DISCOVERY_ISSUES)
 }
 
-fn discovery_issue_json(issue: &DiscoveryIssue) -> Value {
+fn is_persisted_configured_root_missing(
+    issue: &DiscoveryIssue,
+    provider_roots: &[ProviderRootDefinition],
+) -> bool {
+    issue.kind == DiscoveryIssueKind::ConfiguredRootMissing
+        && configured_root_for_issue(issue, provider_roots).is_some()
+}
+
+fn discovery_issue_json(
+    issue: &DiscoveryIssue,
+    provider_roots: &[ProviderRootDefinition],
+    automatic_provider_discovery: bool,
+) -> Value {
     let (message, message_truncated) =
         bounded_utf8(issue.reason, MAX_DISCOVERY_ISSUE_MESSAGE_BYTES);
-    json!({
+    let mut value = json!({
         "provider": issue.provider.as_str(),
         "path": issue.path,
         "code": discovery_issue_code(issue.kind),
         "message": message,
         "message_truncated": message_truncated,
-    })
+    });
+    if issue.kind == DiscoveryIssueKind::ConfiguredRootConflict {
+        let details =
+            configured_root_conflict_details(issue, provider_roots, automatic_provider_discovery);
+        value["conflict_kind"] = details
+            .kind
+            .map(ConfiguredRootConflictKind::as_str)
+            .map_or(Value::Null, Value::from);
+        value["configured_roots"] = Value::Array(
+            details
+                .roots
+                .iter()
+                .map(|root| {
+                    json!({
+                        "name": root.id,
+                        "path": root.path,
+                    })
+                })
+                .collect(),
+        );
+    }
+    if issue.kind == DiscoveryIssueKind::ConfiguredRootMissing {
+        value["configured_root"] = match configured_root_for_issue(issue, provider_roots) {
+            Some(root) => json!({
+                "name": root.id,
+                "path": root.path,
+                "group": root.group,
+            }),
+            None => Value::Null,
+        };
+    }
+    value
 }
 
 fn discovery_issue_code(kind: DiscoveryIssueKind) -> &'static str {
@@ -308,7 +367,84 @@ fn discovery_issue_code(kind: DiscoveryIssueKind) -> &'static str {
         DiscoveryIssueKind::NoDiskHistory => "no_disk_history",
         DiscoveryIssueKind::SelectorUnreconstructible => "selector_unreconstructible",
         DiscoveryIssueKind::InsufficientOfficialEvidence => "insufficient_official_evidence",
+        DiscoveryIssueKind::ConfiguredRootConflict => "configured_root_conflict",
+        DiscoveryIssueKind::ConfiguredRootMissing => "configured_root_missing",
     }
+}
+
+pub(crate) fn configured_root_for_issue<'a>(
+    issue: &DiscoveryIssue,
+    provider_roots: &'a [ProviderRootDefinition],
+) -> Option<&'a ProviderRootDefinition> {
+    let path = issue.path.as_deref()?;
+    provider_roots
+        .iter()
+        .find(|root| root.provider == issue.provider && root.path == path)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConfiguredRootConflictKind {
+    ConfiguredConfigured,
+    AutomaticConfigured,
+}
+
+impl ConfiguredRootConflictKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ConfiguredConfigured => "configured_configured",
+            Self::AutomaticConfigured => "automatic_configured",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConfiguredRootConflictDetails {
+    pub(crate) kind: Option<ConfiguredRootConflictKind>,
+    pub(crate) roots: Vec<ProviderRootDefinition>,
+}
+
+pub(crate) fn configured_root_conflict_details(
+    issue: &DiscoveryIssue,
+    provider_roots: &[ProviderRootDefinition],
+    automatic_provider_discovery: bool,
+) -> ConfiguredRootConflictDetails {
+    if issue.kind != DiscoveryIssueKind::ConfiguredRootConflict {
+        return ConfiguredRootConflictDetails {
+            kind: None,
+            roots: Vec::new(),
+        };
+    }
+
+    let provider_roots = provider_roots
+        .iter()
+        .filter(|root| root.provider == issue.provider)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut roots = issue.path.as_deref().map_or_else(Vec::new, |path| {
+        provider_roots
+            .iter()
+            .filter(|root| provider_paths_equivalent(&root.path, path))
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+    if roots.len() < 2 {
+        if let Some((left, right)) = provider_roots.iter().enumerate().find_map(|(index, left)| {
+            provider_roots[index + 1..]
+                .iter()
+                .find(|right| left.openhands_selected_histories_overlap(right))
+                .map(|right| ((*left).clone(), (*right).clone()))
+        }) {
+            roots = vec![left, right];
+        }
+    }
+    let kind = if roots.len() >= 2 {
+        Some(ConfiguredRootConflictKind::ConfiguredConfigured)
+    } else if automatic_provider_discovery && roots.len() == 1 {
+        Some(ConfiguredRootConflictKind::AutomaticConfigured)
+    } else {
+        None
+    };
+    ConfiguredRootConflictDetails { kind, roots }
 }
 
 fn bounded_utf8(value: &str, maximum_bytes: usize) -> (&str, bool) {
@@ -432,6 +568,14 @@ mod tests {
                     DiscoveryIssueKind::InsufficientOfficialEvidence,
                     "no official location",
                 ),
+                issue(
+                    DiscoveryIssueKind::ConfiguredRootConflict,
+                    "configured roots conflict",
+                ),
+                issue(
+                    DiscoveryIssueKind::ConfiguredRootMissing,
+                    "configured root missing",
+                ),
             ],
         };
 
@@ -441,6 +585,56 @@ mod tests {
         assert_eq!(issues[0]["code"], "no_disk_history");
         assert_eq!(issues[1]["code"], "selector_unreconstructible");
         assert_eq!(issues[2]["code"], "insufficient_official_evidence");
+        assert_eq!(issues[3]["code"], "configured_root_conflict");
+        assert_eq!(issues[3]["conflict_kind"], Value::Null);
+        assert_eq!(issues[3]["configured_roots"], json!([]));
+        assert_eq!(issues[4]["code"], "configured_root_missing");
+        assert!(issues[4]
+            .as_object()
+            .unwrap()
+            .contains_key("configured_root"));
+        assert_eq!(issues[4]["configured_root"], Value::Null);
+    }
+
+    #[test]
+    fn persisted_missing_roots_take_priority_without_widening_issue_bounds() {
+        let roots = (0..MAX_DISCOVERY_ISSUES)
+            .map(|index| ProviderRootDefinition {
+                id: format!("openclaw-{index:02}"),
+                provider: CaptureProvider::OpenClaw,
+                path: PathBuf::from(format!("/missing/openclaw-{index:02}")),
+                group: None,
+                kind: None,
+            })
+            .collect::<Vec<_>>();
+        let mut report = DiscoveryReport {
+            sources: Vec::new(),
+            issues: vec![issue(
+                DiscoveryIssueKind::SelectorUnreconstructible,
+                "automatic issue",
+            )],
+        };
+        report
+            .issues
+            .extend(roots.iter().map(|root| DiscoveryIssue {
+                provider: root.provider,
+                path: Some(root.path.clone()),
+                kind: DiscoveryIssueKind::ConfiguredRootMissing,
+                reason: "configured root missing",
+            }));
+
+        let (issues, truncated) =
+            discovery_report_issues_json_with_provider_roots(&report, &roots, true);
+
+        assert!(truncated);
+        assert_eq!(issues.len(), MAX_DISCOVERY_ISSUES);
+        for (index, issue) in issues.iter().enumerate() {
+            assert_eq!(issue["code"], "configured_root_missing");
+            assert_eq!(
+                issue.get("configured_root").unwrap()["name"],
+                format!("openclaw-{index:02}")
+            );
+        }
     }
 
     #[test]
@@ -488,6 +682,7 @@ mod tests {
             provider: CaptureProvider::Claude,
             path: claude_home.clone(),
             group: Some("work".to_owned()),
+            kind: None,
         }];
 
         for automatic_provider_discovery in [true, false] {

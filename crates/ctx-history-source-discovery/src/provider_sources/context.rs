@@ -280,6 +280,7 @@ impl DiscoveryContext {
         mut self,
         mut roots: Vec<ProviderRootDefinition>,
     ) -> Self {
+        roots.retain(ProviderRootDefinition::has_bounded_path);
         roots.sort_by(|left, right| left.id.cmp(&right.id));
         self.configured_provider_roots = roots;
         self
@@ -317,6 +318,30 @@ fn process_effective_uid() -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_roots_over_the_shared_path_bound_never_enter_the_context() {
+        let root = ProviderRootDefinition {
+            id: "oversized".to_owned(),
+            provider: ctx_history_core::CaptureProvider::Claude,
+            path: PathBuf::from(
+                "x".repeat(ctx_history_capture_model::MAX_PROVIDER_ROOT_ENCODED_PATH_BYTES + 1),
+            ),
+            group: None,
+            kind: None,
+        };
+        assert!(!root.has_bounded_path());
+
+        let context = DiscoveryContext::new(
+            "/home/test",
+            "/work/test",
+            DiscoveryPlatform::Linux,
+            DiscoveryPlatformDirs::default(),
+        )
+        .with_configured_provider_roots(vec![root]);
+
+        assert!(context.configured_provider_roots().is_empty());
+    }
 
     #[test]
     fn injected_environment_accepts_only_frozen_discovery_keys() {
