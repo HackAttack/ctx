@@ -126,7 +126,8 @@ pub fn execute_install(
     request: SkillInstallRequest,
     context: &super::PathContext,
 ) -> Result<SkillInstallReceipt> {
-    let selection = include_legacy_targets(request.selection, request.project, context)?;
+    let requested_agents = request.selection.agents.len();
+    let selection = include_installed_targets(request.selection, request.project, context)?;
     let targets = resolve_targets_for_agents(&selection.agents, request.project, context)?;
     let preserve_is_fatal = !matches!(
         selection.source,
@@ -134,11 +135,14 @@ pub fn execute_install(
     );
     let results = targets
         .iter()
-        .map(|target| {
+        .enumerate()
+        .map(|(index, target)| {
             install_target(
                 target,
                 request.force,
-                preserve_is_fatal,
+                // Targets appended only because a skill already exists there
+                // were never requested, so preserving one is not a failure.
+                preserve_is_fatal && index < requested_agents,
                 &request.product_version,
             )
         })
@@ -158,7 +162,7 @@ pub fn execute_status(
     request: SkillStatusRequest,
     context: &super::PathContext,
 ) -> Result<SkillStatusReceipt> {
-    let selection = include_legacy_targets(request.selection, request.project, context)?;
+    let selection = include_installed_targets(request.selection, request.project, context)?;
     let targets = resolve_targets_for_agents(&selection.agents, request.project, context)?;
     let results = targets
         .iter()
@@ -176,7 +180,9 @@ pub fn execute_status(
     })
 }
 
-fn include_legacy_targets(
+/// Appends every unselected agent that already has a skill on disk, so an
+/// install nobody selects this run is still reported and refreshed.
+fn include_installed_targets(
     mut selection: SkillAgentSelection,
     project: bool,
     context: &super::PathContext,
@@ -190,20 +196,42 @@ fn include_legacy_targets(
         if selected_skill_dirs.contains(&target.skill_dir) {
             continue;
         }
-        let legacy_file = legacy_skill_dir(&target)?.join("SKILL.md");
-        match fs::symlink_metadata(&legacy_file) {
-            Ok(_) => {
-                selection.agents.push(agent);
-                selected_skill_dirs.push(target.skill_dir);
-            }
+        if !has_installed_skill(&target)? {
+            continue;
+        }
+        selection.agents.push(agent);
+        selected_skill_dirs.push(target.skill_dir);
+    }
+    Ok(selection)
+}
+
+fn has_installed_skill(target: &SkillTarget) -> Result<bool> {
+    let legacy_dir = legacy_skill_dir(target)?;
+    for skill_dir in [&target.skill_dir, &legacy_dir] {
+        // A symlinked or otherwise unownable path is one the installer refuses
+        // to touch, so sweeping it in would only fail the whole command.
+        if !is_real_directory(skill_dir)? {
+            continue;
+        }
+        let skill_file = skill_dir.join("SKILL.md");
+        match fs::symlink_metadata(&skill_file) {
+            Ok(_) => return Ok(true),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => {
                 return Err(error)
-                    .with_context(|| format!("inspect legacy skill {}", legacy_file.display()))
+                    .with_context(|| format!("inspect skill {}", skill_file.display()))
             }
         }
     }
-    Ok(selection)
+    Ok(false)
+}
+
+fn is_real_directory(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("inspect {}", path.display())),
+    }
 }
 
 pub fn install_target(

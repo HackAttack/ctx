@@ -339,6 +339,115 @@ fn skill_install_detected_mimocode_uses_universal_skill_location() {
     assert!(!xdg.join("mimocode").join("skills").join("ctx").exists());
 }
 
+fn skill_result<'a>(output: &'a Value, agent: &str) -> &'a Value {
+    output["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|result| result["agent"] == agent)
+        .unwrap_or_else(|| panic!("no {agent} target in {output:#}"))
+}
+
+#[test]
+fn default_skill_status_and_install_cover_an_existing_native_cursor_copy() {
+    let temp = tempdir();
+    let skill_dir = temp.path().join(".cursor").join("skills").join("ctx");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(skill_dir.join("SKILL.md"), "old instructions\n").unwrap();
+    fs::write(
+        skill_dir.join(".ctx-skill.json"),
+        json!({
+            "schema_version": 1,
+            "installer": "ctx-cli",
+            "skill_name": "ctx",
+            "skill_hash": bundled_skill_hash("old instructions\n"),
+            "ctx_cli_version": "0.0.0",
+            "installed_at": "2026-01-01T00:00:00Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let status = json_output(
+        ctx(&temp)
+            .env("CODEX_HOME", temp.path().join("missing-codex"))
+            .args(["integrations", "status", "skills", "--format=json"]),
+    );
+    assert_eq!(skill_result(&status, "cursor")["status"], "stale");
+    assert_eq!(skill_result(&status, "cursor")["path"], json!(skill_dir));
+
+    let install = json_output(
+        ctx(&temp)
+            .env("CODEX_HOME", temp.path().join("missing-codex"))
+            .args(["integrations", "install", "skills", "--format=json"]),
+    );
+    assert_eq!(skill_result(&install, "cursor")["previous_status"], "stale");
+    assert_eq!(skill_result(&install, "cursor")["updated"], true);
+    assert_eq!(
+        fs::read_to_string(skill_dir.join("SKILL.md")).unwrap(),
+        CURRENT_BUNDLED_SKILL_BODY
+    );
+}
+
+#[test]
+fn default_skill_status_ignores_an_unselected_path_the_installer_cannot_own() {
+    let temp = tempdir();
+    let copilot_dir = temp.path().join(".copilot").join("skills");
+    fs::create_dir_all(&copilot_dir).unwrap();
+    fs::write(copilot_dir.join("ctx"), "not a skill directory\n").unwrap();
+    #[cfg(unix)]
+    {
+        let linked = temp.path().join("linked-skill");
+        fs::create_dir_all(&linked).unwrap();
+        fs::write(linked.join("SKILL.md"), CURRENT_BUNDLED_SKILL_BODY).unwrap();
+        let cursor_dir = temp.path().join(".cursor").join("skills");
+        fs::create_dir_all(&cursor_dir).unwrap();
+        std::os::unix::fs::symlink(&linked, cursor_dir.join("ctx")).unwrap();
+    }
+
+    let status = json_output(
+        ctx(&temp)
+            .env("CODEX_HOME", temp.path().join("missing-codex"))
+            .args(["integrations", "status", "skills", "--format=json"]),
+    );
+
+    let agents = status["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|result| result["agent"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(agents, vec!["universal"], "{status:#}");
+}
+
+#[test]
+fn explicit_skill_install_succeeds_alongside_an_unselected_modified_copy() {
+    let temp = tempdir();
+    let cursor_dir = temp.path().join(".cursor").join("skills").join("ctx");
+    fs::create_dir_all(&cursor_dir).unwrap();
+    fs::write(cursor_dir.join("SKILL.md"), "local custom instructions\n").unwrap();
+
+    let install = json_output(
+        ctx(&temp)
+            .env("CODEX_HOME", temp.path().join("missing-codex"))
+            .args([
+                "integrations",
+                "install",
+                "skills",
+                "--agent",
+                "universal",
+                "--format=json",
+            ]),
+    );
+    assert_eq!(skill_result(&install, "universal")["status"], "current");
+    assert_eq!(skill_result(&install, "cursor")["success"], false);
+    assert_eq!(skill_result(&install, "cursor")["status"], "modified");
+    assert_eq!(
+        fs::read_to_string(cursor_dir.join("SKILL.md")).unwrap(),
+        "local custom instructions\n"
+    );
+}
+
 #[test]
 fn skill_install_refreshes_stale_bundled_copy() {
     let temp = tempdir();
