@@ -473,7 +473,9 @@ fn prepare_uninstall_discovers_and_quiesces_a_finite_custom_root_worker() {
             if let Some(path) = entries
                 .filter_map(Result::ok)
                 .map(|entry| entry.path())
-                .next()
+                .find(|path| {
+                    path.extension().and_then(|extension| extension.to_str()) == Some("json")
+                })
             {
                 let value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
                 break (path, value);

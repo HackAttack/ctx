@@ -924,5 +924,5 @@ fn reject_duplicate_keys(input: &str) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "core_capability/tests.rs"]
+#[path = "core_capability/contract_tests.rs"]
 mod tests;

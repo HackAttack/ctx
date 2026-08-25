@@ -164,12 +164,12 @@ const CLAP_OUTPUT: TestOwner = TestOwner::behavioral(
     &["write_clap_output", "contains", "rendered"],
 );
 const COMPANION_ROUTE: TestOwner = TestOwner::behavioral(
-    "src/companion.rs::subcommand_help_and_help_alias_route_to_the_companion",
+    "src/companion/contract_tests.rs::subcommand_help_and_help_alias_route_to_the_companion",
     &["src/companion.rs"],
     &["paid_family_arguments", "assert_eq"],
 );
 const CORE_CAPABILITY_RESPONSE: TestOwner = TestOwner::behavioral(
-    "src/core_capability/tests.rs::capability_response_is_one_exact_flushed_json_frame",
+    "src/core_capability/contract_tests.rs::capability_response_is_one_exact_flushed_json_frame",
     &[
         "src/core_capability.rs",
         "src/core_capability/hosted_pair_install.rs",
@@ -177,7 +177,7 @@ const CORE_CAPABILITY_RESPONSE: TestOwner = TestOwner::behavioral(
     &["write_response_frame", "assert_eq"],
 );
 const HOSTED_PAIR_INSTALL_ERROR: TestOwner = TestOwner::behavioral(
-    "src/core_capability/tests.rs::only_the_exact_hidden_argv_is_intercepted",
+    "src/core_capability/contract_tests.rs::only_the_exact_hidden_argv_is_intercepted",
     &["src/core_capability.rs"],
     &["intercept", "HOSTED_PAIR_INSTALL_INVOCATION", "is_none"],
 );

@@ -304,14 +304,9 @@ ctx_cli_integration_test(
     tags = ["privacy", "security"],
 )
 
-ctx_cli_integration_test(
+test_suite(
     name = "hosted_uninstall_fence_tests",
-    src = "tests/hosted_uninstall_fence.rs",
-    binary = ":ctx_hosted_uninstall_test_host",
-    extra_crates = [
-        "fs2",
-        "sha2",
-    ],
+    tests = ["//crates/ctx-cli-contract-tests:hosted_uninstall_fence_tests"],
 )
 
 ctx_cli_integration_test(

@@ -588,5 +588,5 @@ fn cli_launch_error_document(error: &CompanionLaunchError) -> Value {
 }
 
 #[cfg(test)]
-#[path = "companion/tests.rs"]
+#[path = "companion/contract_tests.rs"]
 mod tests;

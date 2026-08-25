@@ -1,3 +1,4 @@
+// Contract tests for the fixed Core capability protocol.
 use super::hosted_pair_install::{
     acquire_hosted_install_lock, hosted_source_path, replace_hosted_file, stage_hosted_bytes,
     stage_hosted_file_if_changed, HostedInstallMarker, HostedPairPublication,

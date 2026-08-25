@@ -1,3 +1,4 @@
+// Contract tests for the Core-to-companion routing boundary.
 use super::*;
 
 const ANALYTICS_ENVIRONMENT_NAMES: &[&str] = &[

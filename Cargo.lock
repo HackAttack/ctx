@@ -840,6 +840,7 @@ dependencies = [
  "ctx-history-core",
  "ctx-history-index",
  "flate2",
+ "fs2",
  "libc",
  "predicates",
  "ring",
