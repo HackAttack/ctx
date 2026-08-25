@@ -17,6 +17,53 @@ pub enum ProviderRefreshTrigger {
     Daemon,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderRefreshConfiguredIndexingMode {
+    Automatic,
+    Manual,
+}
+
+impl ProviderRefreshConfiguredIndexingMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Manual => "manual",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderRefreshDaemonTriggerKind {
+    DaemonWatch,
+    StartupCatchUp,
+    PeriodicReconciliation,
+}
+
+impl ProviderRefreshDaemonTriggerKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DaemonWatch => "daemon_watch",
+            Self::StartupCatchUp => "startup_catch_up",
+            Self::PeriodicReconciliation => "periodic_reconciliation",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderRefreshReconciliationDemand {
+    Incremental,
+    Exhaustive,
+}
+
+impl ProviderRefreshReconciliationDemand {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Incremental => "incremental",
+            Self::Exhaustive => "exhaustive",
+        }
+    }
+}
+
 impl ProviderRefreshTrigger {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -358,12 +405,24 @@ pub struct ForegroundProviderRefreshV1 {
 /// Optional bucketed health facts from the daemon's durable terminal job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderRefreshTerminalHealthV1 {
+    pub configured_indexing_mode: Option<ProviderRefreshConfiguredIndexingMode>,
+    /// Further classifies the existing `Daemon` trigger without duplicating
+    /// setup, search, or import trigger authority.
+    pub daemon_trigger_kind: Option<ProviderRefreshDaemonTriggerKind>,
+    pub reconciliation_demand: Option<ProviderRefreshReconciliationDemand>,
+    /// Present only for failed terminal jobs. Successful publication is
+    /// already authoritative in the event's changed/no-op result.
+    pub retained_previous_generation: Option<bool>,
     pub queue_wait_duration: Option<DurationBucket>,
     pub discovery_duration: Option<DurationBucket>,
     pub scan_stage_duration: Option<DurationBucket>,
     pub commit_duration: Option<DurationBucket>,
     pub coalesced_request_count: Option<CountBucket>,
     pub successor_pending: bool,
+    pub processed_sessions: Option<CountBucket>,
+    pub processed_messages: Option<CountBucket>,
+    pub processed_tool_calls: Option<CountBucket>,
+    pub processed_bytes: Option<BytesBucket>,
 }
 
 #[derive(Debug)]
@@ -555,12 +614,20 @@ mod tests {
                 },
             )
             .with_terminal_health(ProviderRefreshTerminalHealthV1 {
+                configured_indexing_mode: Some(ProviderRefreshConfiguredIndexingMode::Automatic),
+                daemon_trigger_kind: None,
+                reconciliation_demand: Some(ProviderRefreshReconciliationDemand::Exhaustive),
+                retained_previous_generation: None,
                 queue_wait_duration: Some(duration_bucket(Duration::ZERO)),
                 discovery_duration: None,
                 scan_stage_duration: Some(duration_bucket(Duration::from_secs(2))),
                 commit_duration: Some(duration_bucket(Duration::from_secs(6))),
                 coalesced_request_count: Some(count_bucket(0)),
                 successor_pending: true,
+                processed_sessions: Some(count_bucket(7)),
+                processed_messages: Some(count_bucket(19)),
+                processed_tool_calls: Some(count_bucket(4)),
+                processed_bytes: Some(bytes_bucket(4096)),
             }),
         );
         let occurred_at = chrono::DateTime::parse_from_rfc3339("2026-07-22T12:34:00Z")
@@ -572,6 +639,14 @@ mod tests {
         assert_eq!(serialized["properties"]["trigger"], "setup");
         assert_eq!(serialized["properties"]["source_mode"], "discovered");
         assert_eq!(serialized["properties"]["work_kind"], "fresh");
+        assert_eq!(
+            serialized["properties"]["refresh_configured_indexing_mode"],
+            "automatic"
+        );
+        assert_eq!(
+            serialized["properties"]["refresh_reconciliation_demand"],
+            "exhaustive"
+        );
         assert_eq!(serialized["properties"]["sessions_bucket"], "6-20");
         assert_eq!(serialized["properties"]["bytes_bucket"], "lt_100kb");
         assert_eq!(
@@ -591,6 +666,22 @@ mod tests {
             "0"
         );
         assert_eq!(serialized["properties"]["refresh_successor_pending"], true);
+        assert_eq!(
+            serialized["properties"]["refresh_processed_sessions_bucket"],
+            "6-20"
+        );
+        assert_eq!(
+            serialized["properties"]["refresh_processed_messages_bucket"],
+            "6-20"
+        );
+        assert_eq!(
+            serialized["properties"]["refresh_processed_tool_calls_bucket"],
+            "2-5"
+        );
+        assert_eq!(
+            serialized["properties"]["refresh_processed_bytes_bucket"],
+            "lt_100kb"
+        );
         let properties = serialized["properties"].as_object().unwrap();
         for absent in [
             "source_files_bucket",
@@ -601,6 +692,8 @@ mod tests {
             "cpu_duration_bucket",
             "observed_process_peak_rss_bucket",
             "refresh_discovery_duration_bucket",
+            "refresh_daemon_trigger_kind",
+            "refresh_retained_previous_generation",
         ] {
             assert!(!properties.contains_key(absent));
         }
@@ -642,6 +735,35 @@ mod tests {
 
     #[test]
     fn provider_refresh_decision_enums_are_closed_contracts() {
+        assert_eq!(
+            [
+                ProviderRefreshConfiguredIndexingMode::Automatic,
+                ProviderRefreshConfiguredIndexingMode::Manual,
+            ]
+            .map(ProviderRefreshConfiguredIndexingMode::as_str),
+            ["automatic", "manual"]
+        );
+        assert_eq!(
+            [
+                ProviderRefreshDaemonTriggerKind::DaemonWatch,
+                ProviderRefreshDaemonTriggerKind::StartupCatchUp,
+                ProviderRefreshDaemonTriggerKind::PeriodicReconciliation,
+            ]
+            .map(ProviderRefreshDaemonTriggerKind::as_str),
+            [
+                "daemon_watch",
+                "startup_catch_up",
+                "periodic_reconciliation"
+            ]
+        );
+        assert_eq!(
+            [
+                ProviderRefreshReconciliationDemand::Incremental,
+                ProviderRefreshReconciliationDemand::Exhaustive,
+            ]
+            .map(ProviderRefreshReconciliationDemand::as_str),
+            ["incremental", "exhaustive"]
+        );
         assert_eq!(
             [
                 ProviderRefreshContentEvidence::None,

@@ -290,6 +290,32 @@ fn insert_provider_refresh_terminal_health_properties(
     properties: &mut Map<String, Value>,
     health: &ProviderRefreshTerminalHealthV1,
 ) {
+    insert_optional_str(
+        properties,
+        "refresh_configured_indexing_mode",
+        health
+            .configured_indexing_mode
+            .map(ProviderRefreshConfiguredIndexingMode::as_str),
+    );
+    insert_optional_str(
+        properties,
+        "refresh_daemon_trigger_kind",
+        health
+            .daemon_trigger_kind
+            .map(ProviderRefreshDaemonTriggerKind::as_str),
+    );
+    insert_optional_str(
+        properties,
+        "refresh_reconciliation_demand",
+        health
+            .reconciliation_demand
+            .map(ProviderRefreshReconciliationDemand::as_str),
+    );
+    insert_optional_bool(
+        properties,
+        "refresh_retained_previous_generation",
+        health.retained_previous_generation,
+    );
     insert_optional_duration(
         properties,
         "refresh_queue_wait_duration_bucket",
@@ -319,6 +345,26 @@ fn insert_provider_refresh_terminal_health_properties(
         properties,
         "refresh_successor_pending",
         health.successor_pending,
+    );
+    insert_optional_count(
+        properties,
+        "refresh_processed_sessions_bucket",
+        health.processed_sessions,
+    );
+    insert_optional_count(
+        properties,
+        "refresh_processed_messages_bucket",
+        health.processed_messages,
+    );
+    insert_optional_count(
+        properties,
+        "refresh_processed_tool_calls_bucket",
+        health.processed_tool_calls,
+    );
+    insert_optional_bytes(
+        properties,
+        "refresh_processed_bytes_bucket",
+        health.processed_bytes,
     );
 }
 

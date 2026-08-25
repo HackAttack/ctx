@@ -293,8 +293,12 @@ pub trait CoreGenerationPublishedPort: Sync {
 }
 
 pub trait DaemonObservationPort: Sync {
-    fn provider_refresh_event(&self, job: &Value, successor_pending: bool)
-        -> Option<PublicEventV1>;
+    fn provider_refresh_event(
+        &self,
+        data_root: &Path,
+        job: &Value,
+        successor_pending: bool,
+    ) -> Option<PublicEventV1>;
     fn deliver(&self, data_root: &Path, events: &[PublicEventV1]);
 }
 
