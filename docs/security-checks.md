@@ -53,11 +53,14 @@ the local retrieval product.
   checksum file, runtime archive, and runtime DLL. The public verifier accepts
   that exact handoff plus an independently supplied expected manifest digest;
   it does not sign, attest, or treat a matching handoff sidecar as authority.
-- Automatic upgrade defaults on for managed installs, but the persistent
-  daemon in automatic indexing mode is its only scheduler. Manual indexing and
-  finite Core workers perform no automatic check, download, or apply. Signed
-  policy and explicit opt-outs remain mandatory, and upgrade work must not
-  collect provider history or pollute command stdout/stderr.
+- Automatic upgrade defaults on for managed installs. Automatic indexing with
+  the full daemon profile uses the persistent daemon as a check driver; manual
+  and source-refresh-only modes use a detached worker launched after eligible
+  finite commands. Both use one
+  installation-scoped scheduler and lock. Finite Core workers perform no
+  automatic check, download, or apply. Signed policy and explicit opt-outs
+  remain mandatory, and upgrade work must not collect provider history or
+  pollute command stdout/stderr.
 
 - A ctx-owned persistent coordinator, when launched by `ctx daemon run` or
   automatic setup/import autostart, must write only under the configured ctx

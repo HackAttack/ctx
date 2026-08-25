@@ -115,10 +115,6 @@ impl DaemonConfigSnapshot {
 }
 
 impl ctx_upgrade_engine::AutomaticUpgradePolicySnapshot for DaemonConfigSnapshot {
-    fn daemon_enabled(&self) -> bool {
-        self.daemon.enabled
-    }
-
     fn automatic_upgrade_enabled(&self) -> bool {
         self.automatic_upgrade_enabled
     }
@@ -398,7 +394,7 @@ mod tests {
             upgrade_channel: "stable".to_owned(),
         };
 
-        assert!(snapshot.daemon_enabled());
+        assert!(snapshot.daemon.enabled);
         assert!(snapshot.semantic_enabled());
         assert!(snapshot.automatic_upgrade_enabled());
         assert_eq!(snapshot.interval(), Duration::from_secs(3_600));

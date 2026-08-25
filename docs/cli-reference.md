@@ -133,8 +133,11 @@ semantic enabled, daemon maintenance may acquire the local embedding model.
 Each daemon maintenance pass is bounded and local. Core storage checks use the
 configured data root, and JSON stdout remains structured.
 Output format does not change lifecycle authority. Use `--no-daemon` or search
-`--refresh off` for an invocation-level opt-out. The automatic persistent
-daemon, not command dispatch or a finite worker, owns signed upgrade checks.
+`--refresh off` for an invocation-level opt-out. The full automatic persistent
+daemon drives signed upgrade checks. Without that driver, including manual and
+source-refresh-only modes, eligible finite commands can launch a detached check
+after their output is delivered; finite indexing workers do not own upgrade
+checks.
 
 ## Agent Skill
 
@@ -840,13 +843,14 @@ executable `ctx` candidate found on `PATH`, with warnings when another binary
 shadows the managed install or multiple `ctx` binaries are present. Diagnostics
 identify candidates without executing a shadowing binary.
 
-Official installer-managed installs use daemon-owned automatic upgrade by
-default; signed release metadata must also explicitly allow it. Automatic
-indexing's persistent daemon is the only automatic scheduler, including cadence
-and backoff. Command dispatch, MCP, and finite Core workers never schedule
-upgrades. Manual indexing causes zero automatic checks, downloads, or
-application. Scheduler state is stored beside the managed executable and does
-not write to foreground stdout or stderr. Use
+Official installer-managed installs use automatic upgrade by default; signed
+release metadata must also explicitly allow it. Automatic indexing with the
+full daemon profile uses the persistent daemon as a check driver. Manual and
+source-refresh-only modes use a cheap post-command due hint and a detached
+worker for eligible finite commands. Both drivers share one executable-scoped
+cadence, backoff, and lock. MCP and finite Core workers do not schedule
+upgrades. Scheduler state is stored beside the managed executable, and detached
+work does not write to foreground stdout or stderr. Use
 `CTX_UPGRADE_AUTO=off` for a process-level opt-out,
 or `ctx upgrade disable` to write `upgrade.auto = "off"` in `config.toml`.
 

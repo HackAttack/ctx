@@ -535,9 +535,10 @@ profile. Autostart propagates the effective mode to its detached child. In
 source-refresh-only mode, the source refresh IPC endpoint, all-provider capture
 registry, atomic generation publication, status reporting, disable behavior,
 and persistent process lifecycle remain active. History refresh, semantic
-indexing and serving, canonical maintenance, and automatic upgrades do not run.
-Manual finite workers always enforce the Core-only exclusions independently of
-this persistent-daemon setting.
+indexing and serving, canonical maintenance, and daemon-driven automatic
+upgrades do not run. Eligible completed commands use the detached automatic
+upgrade driver instead. Manual finite workers always enforce the Core-only
+exclusions independently of this persistent-daemon setting.
 
 Local semantic search remains disabled by default and requires automatic
 indexing. Its config opt-in is:
@@ -550,11 +551,14 @@ semantic = true
 See [Retrieval backends](search.md#retrieval-backends) for the setup command and
 readiness behavior.
 
-The persistent daemon in automatic mode is the sole automatic-upgrade authority
-and uses `upgrade.auto = "apply"` by default for official installer-managed
-binaries with a valid install sidecar. In manual mode, no automatic upgrade
-network or filesystem work occurs. `ctx upgrade disable` writes an explicit
-`upgrade.auto = "off"` opt-out. Unmanaged installs do not self-upgrade.
+Automatic upgrade uses `upgrade.auto = "apply"` by default for official
+installer-managed binaries with a valid install sidecar. Automatic indexing
+with the full daemon profile uses the persistent daemon as its check driver.
+Manual and source-refresh-only modes use eligible completed commands to launch
+a detached worker only when a bounded scheduler hint may be due. Both share one
+installation cadence and lock. `ctx upgrade
+disable` writes an explicit `upgrade.auto = "off"` opt-out. Unmanaged installs
+do not self-upgrade.
 
 ## Index Lifecycle
 
@@ -702,11 +706,12 @@ their own configuration; ctx indexing those transcripts does not repeat that
 behavior.
 
 Official installer-managed binaries can contact the signed release metadata
-endpoint for an explicit `ctx upgrade` command. When automatic indexing and
-automatic upgrades are enabled, the persistent daemon alone performs cadenced
-automatic checks and application. Foreground commands, including
-machine-readable commands and MCP, and finite Core workers never schedule this
-work. Manual indexing, an unmanaged install, or a process-level
+endpoint for an explicit `ctx upgrade` command. With automatic upgrades
+enabled, automatic indexing with the full daemon profile uses the persistent
+daemon for cadenced checks; manual and source-refresh-only modes use a detached
+worker launched after eligible finite commands only when a cheap shared-cadence
+hint may be due. MCP and finite Core workers do not schedule this work. An
+unmanaged install or a process-level
 `CTX_UPGRADE_AUTO=off` opt-out performs no automatic upgrade network or
 filesystem work. Upgrade metadata checks do not send provider
 transcript text, search queries, result snippets, source paths, repository
