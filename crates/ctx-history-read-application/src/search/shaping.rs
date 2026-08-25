@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use ctx_history_core::StableEntityId;
-use ctx_history_index_query::{EventSearchCandidate, SearchFamilyKey};
+use ctx_history_index_query::{EventSearchCandidate, SearchFamilyBasis, SearchFamilyKey};
 
 use super::{SearchEventMetadata, SearchHit, SearchResultWindow};
 
@@ -13,6 +13,9 @@ pub(super) struct SessionChampion<'candidate> {
 pub(super) struct FamilyShapingOutcome {
     pub(super) result_window: SearchResultWindow,
     pub(super) distinct_families: usize,
+    pub(super) distinct_literal_root_families: usize,
+    pub(super) literal_root_candidate_count: usize,
+    pub(super) largest_literal_root_candidate_count: usize,
     pub(super) changed_final_top_n: bool,
 }
 
@@ -93,6 +96,7 @@ pub(super) fn shape_family_result_window(
     debug_assert_eq!(champions.len(), families.len());
     let mut family_positions = HashMap::<StableEntityId, usize>::new();
     let mut positions_by_family = Vec::<Vec<usize>>::new();
+    let mut family_has_literal_root = Vec::<bool>::new();
     for (position, family) in families.iter().copied().enumerate() {
         let family_position = match family_positions.get(&family.session_id).copied() {
             Some(family_position) => family_position,
@@ -100,10 +104,30 @@ pub(super) fn shape_family_result_window(
                 let family_position = positions_by_family.len();
                 family_positions.insert(family.session_id, family_position);
                 positions_by_family.push(Vec::new());
+                family_has_literal_root.push(false);
                 family_position
             }
         };
         positions_by_family[family_position].push(position);
+        if family.basis == SearchFamilyBasis::LiteralProviderRoot {
+            family_has_literal_root[family_position] = true;
+        }
+    }
+
+    let mut distinct_literal_root_families = 0_usize;
+    let mut literal_root_candidate_count = 0_usize;
+    let mut largest_literal_root_candidate_count = 0_usize;
+    for (family_position, positions) in positions_by_family.iter().enumerate() {
+        if !family_has_literal_root[family_position] {
+            continue;
+        }
+        distinct_literal_root_families = distinct_literal_root_families.saturating_add(1);
+        let candidate_count = positions.iter().fold(0_usize, |count, position| {
+            count.saturating_add(champions[*position].match_count)
+        });
+        literal_root_candidate_count = literal_root_candidate_count.saturating_add(candidate_count);
+        largest_literal_root_candidate_count =
+            largest_literal_root_candidate_count.max(candidate_count);
     }
 
     let mut shaped_positions = Vec::with_capacity(champions.len());
@@ -142,6 +166,9 @@ pub(super) fn shape_family_result_window(
             more_available,
         },
         distinct_families: positions_by_family.len(),
+        distinct_literal_root_families,
+        literal_root_candidate_count,
+        largest_literal_root_candidate_count,
         changed_final_top_n,
     }
 }

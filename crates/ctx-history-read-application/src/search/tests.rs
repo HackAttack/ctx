@@ -1,7 +1,8 @@
 use super::*;
 use ctx_history_core::{
     derive_event_id, derive_session_id, EventIdentityInput, NativeItemKey, NativeSessionKey,
-    SessionIdentityInput, SourceAnchor, SourceKey, StableEntityId, TypedKey,
+    ProviderNativeCopyProof, ProviderNativeEventCopy, SessionIdentityInput, SourceAnchor,
+    SourceKey, StableEntityId, TypedKey,
 };
 use ctx_history_index_query::{
     LexicalSearchCandidate, LexicalTermCoverage, LexicalWorkCounter, LexicalWorkCounters,
@@ -340,10 +341,12 @@ fn shape_same_source_with_roots(
     limit: usize,
     completeness: DiversificationCompleteness,
 ) -> (SearchResultWindow, SearchDiversificationDecision) {
-    shape_search_candidates_using(candidates, limit, false, completeness, |coordinates| {
-        same_source_grouping_claims(coordinates, roots)
-    })
-    .unwrap()
+    let (window, decision, _) =
+        shape_search_candidates_using(candidates, limit, false, completeness, |coordinates| {
+            same_source_grouping_claims(coordinates, roots)
+        })
+        .unwrap();
+    (window, decision)
 }
 
 #[test]
@@ -528,6 +531,53 @@ fn ordinary_results_keep_one_event_per_session_and_count_other_matches() {
 }
 
 #[test]
+fn concentration_uses_candidate_sessions_and_coalesced_literal_families() {
+    let mut candidates = [
+        candidate(100.0, 1, None, None, 1),
+        candidate(90.0, 1, None, None, 2),
+        candidate(80.0, 2, None, None, 1),
+        candidate(70.0, 3, None, None, 1),
+    ];
+    let ancestor_session_id = candidates[0].event.session_id;
+    let ancestor_event_id = candidates[0].event.event_id;
+    candidates[1].event.event_copy = Some(ProviderNativeEventCopy {
+        ancestor_session_id,
+        ancestor_event_id,
+        proof: ProviderNativeCopyProof::NativeCopiedFromField,
+    });
+
+    let (_, _, concentration) = shape_search_candidates_using(
+        &candidates,
+        3,
+        false,
+        DiversificationCompleteness::Lexical {
+            work_complete: true,
+            candidate_set_exhaustive: true,
+        },
+        |coordinates| {
+            same_source_grouping_claims(coordinates, &[(1, None), (2, Some(1)), (3, Some(9))])
+        },
+    )
+    .unwrap();
+
+    assert_eq!(concentration.distinct_sessions, 3);
+    assert_eq!(concentration.largest_session_candidate_count, 2);
+    assert_eq!(concentration.provider_copy_candidate_count, 1);
+    assert_eq!(
+        concentration.literal_roots,
+        SearchLiteralRootConcentration::Observed {
+            distinct_families: 2,
+            candidate_count: 4,
+            largest_family_candidate_count: 3,
+        }
+    );
+    assert_eq!(
+        concentration.copy_clusters,
+        SearchCopyClusterAvailability::NotConstructedV1
+    );
+}
+
+#[test]
 fn dense_event_results_remain_ungrouped_and_score_ordered() {
     let candidates = [
         candidate(100.0, 1, Some(1), Some(AgentScope::Primary), 1),
@@ -535,7 +585,7 @@ fn dense_event_results_remain_ungrouped_and_score_ordered() {
         candidate(80.0, 1, Some(1), Some(AgentScope::Primary), 3),
     ];
 
-    let (window, decision) = shape_search_candidates_using(
+    let (window, decision, concentration) = shape_search_candidates_using(
         &candidates,
         2,
         true,
@@ -553,6 +603,11 @@ fn dense_event_results_remain_ungrouped_and_score_ordered() {
         .hits
         .iter()
         .all(|hit| hit.more_matches_in_session == 0));
+    assert_eq!(concentration.distinct_sessions, 1);
+    assert_eq!(
+        concentration.literal_roots,
+        SearchLiteralRootConcentration::NotObservedDense
+    );
     assert!(window.more_available);
     assert_eq!(decision.status, SearchDiversificationStatus::NotApplicable);
     assert_eq!(decision.changed_final_top_n, None);
@@ -701,6 +756,10 @@ fn dense_lexical_search_uses_only_limit_plus_one_and_never_groups() {
         collection.diversification.status,
         SearchDiversificationStatus::NotApplicable
     );
+    assert_eq!(
+        collection.concentration.literal_roots,
+        SearchLiteralRootConcentration::NotObservedDense
+    );
 }
 
 #[test]
@@ -720,6 +779,14 @@ fn zero_limit_is_not_applicable_without_retrieval_or_grouping() {
             status: SearchDiversificationStatus::NotApplicable,
             top_n: 0,
             changed_final_top_n: None,
+        }
+    );
+    assert_eq!(
+        collection.concentration.literal_roots,
+        SearchLiteralRootConcentration::Observed {
+            distinct_families: 0,
+            candidate_count: 0,
+            largest_family_candidate_count: 0,
         }
     );
 }

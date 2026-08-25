@@ -3,15 +3,17 @@ use std::time::Duration;
 use ctx_agent_integrations::{
     mcp::{McpToolKind, RequestDescriptor},
     tool_backend::{
-        ToolSearchBackend, ToolSearchFailurePhase, ToolSearchRefreshStatus, ToolSearchStopReason,
-        ToolSearchTerminalFacts, ToolUsageFacts,
+        ToolSearchBackend, ToolSearchConcentrationFacts, ToolSearchCopyClusterAvailability,
+        ToolSearchDiversificationStatus, ToolSearchFailurePhase, ToolSearchLiteralRootFacts,
+        ToolSearchRefreshStatus, ToolSearchStopReason, ToolSearchTerminalFacts, ToolUsageFacts,
     },
 };
 use ctx_client_observability::{
     analytics::{
         McpErrorClassV1, McpResponseBoundV1, McpResultMetadataV1, McpStopReasonV1, Outcome,
-        PublicEventV1, RefreshStatus, SearchBackend, SearchFailurePhase, SearchHealthFacts,
-        SearchStopReason, SearchTerminalFacts,
+        PublicEventV1, RefreshStatus, SearchBackend, SearchConcentrationFacts,
+        SearchCopyClusterAvailability, SearchDiversificationStatus, SearchFailurePhase,
+        SearchHealthFacts, SearchLiteralRootFacts, SearchStopReason, SearchTerminalFacts,
     },
     mcp_observation::{
         McpDeliveredResponse, McpObservation, McpObservedTool, McpRequestObservation,
@@ -272,11 +274,49 @@ fn search_terminal_facts(facts: ToolSearchTerminalFacts) -> SearchTerminalFacts 
             encoded_core_bytes_decoded: facts.encoded_core_bytes_decoded,
             final_candidate_pool: facts.final_candidate_pool,
             candidate_pool_truncated: facts.candidate_pool_truncated,
+            concentration: facts.concentration.map(search_concentration_facts),
             stop_reason: facts.stop_reason.map(search_stop_reason),
             failure_phase: facts.failure_phase.map(search_failure_phase),
         },
         output_duration: facts.output_duration,
         output_served: facts.output_served,
+    }
+}
+
+fn search_concentration_facts(value: ToolSearchConcentrationFacts) -> SearchConcentrationFacts {
+    SearchConcentrationFacts {
+        candidate_sessions: value.candidate_sessions,
+        largest_session_candidate_count: value.largest_session_candidate_count,
+        literal_roots: match value.literal_roots {
+            ToolSearchLiteralRootFacts::Observed {
+                candidate_families,
+                candidate_count,
+                largest_family_candidate_count,
+            } => SearchLiteralRootFacts::Observed {
+                candidate_families,
+                candidate_count,
+                largest_family_candidate_count,
+            },
+            ToolSearchLiteralRootFacts::NotObservedDense => {
+                SearchLiteralRootFacts::NotObservedDense
+            }
+        },
+        provider_copy_candidate_count: value.provider_copy_candidate_count,
+        copy_cluster_availability: match value.copy_cluster_availability {
+            ToolSearchCopyClusterAvailability::NotConstructedV1 => {
+                SearchCopyClusterAvailability::NotConstructedV1
+            }
+        },
+        diversification_status: match value.diversification_status {
+            ToolSearchDiversificationStatus::Applied => SearchDiversificationStatus::Applied,
+            ToolSearchDiversificationStatus::NotApplicable => {
+                SearchDiversificationStatus::NotApplicable
+            }
+            ToolSearchDiversificationStatus::Indeterminate => {
+                SearchDiversificationStatus::Indeterminate
+            }
+        },
+        diversification_changed_final_top_n: value.diversification_changed_final_top_n,
     }
 }
 

@@ -71,6 +71,8 @@ pub(super) fn observe_search_collection(
     observation.work = collection.work;
     observation.final_candidate_pool = u64::try_from(collection.candidate_pool).ok();
     observation.candidate_pool_truncated = Some(collection.candidate_pool_truncated);
+    observation.concentration = Some(collection.concentration);
+    observation.diversification = Some(collection.diversification);
     observation.stop_reason = collection.stop_reason;
     observation.failure_phase = None;
 }

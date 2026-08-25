@@ -9,6 +9,34 @@ use super::{
     SearchExecutionResult, SearchRequest, SemanticAvailability,
 };
 
+/// Content-free concentration facts derived from the bounded candidate pool.
+///
+/// Literal-root facts are absent for dense event-result searches because that
+/// path intentionally performs no grouping-authority lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchConcentrationReceipt {
+    pub distinct_sessions: u32,
+    pub largest_session_candidate_count: u32,
+    pub provider_copy_candidate_count: u32,
+    pub literal_roots: SearchLiteralRootConcentration,
+    pub copy_clusters: SearchCopyClusterAvailability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchLiteralRootConcentration {
+    Observed {
+        distinct_families: u32,
+        candidate_count: u32,
+        largest_family_candidate_count: u32,
+    },
+    NotObservedDense,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchCopyClusterAvailability {
+    NotConstructedV1,
+}
+
 /// Exact low-level work used to diagnose retrieval amplification.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SearchWorkReceipt {
@@ -107,7 +135,7 @@ pub(crate) fn collect_search_hits_observed<P: HistorySemanticPort>(
     semantic_port: &P,
 ) -> std::result::Result<SearchCollection, ObservedSearchExecutionError> {
     let mut tracker = SearchWorkTracker::new();
-    collect_search_hits_with_receipt(
+    let collection = collect_search_hits_with_receipt(
         request,
         index,
         filters,
@@ -115,7 +143,10 @@ pub(crate) fn collect_search_hits_observed<P: HistorySemanticPort>(
         semantic_port,
         &mut tracker,
     )
-    .map_err(|error| ObservedSearchExecutionError::new(error, tracker.work, tracker.failure_phase))
+    .map_err(|error| {
+        ObservedSearchExecutionError::new(error, tracker.work, tracker.failure_phase)
+    })?;
+    Ok(collection)
 }
 
 pub(super) fn record_lexical_batch(

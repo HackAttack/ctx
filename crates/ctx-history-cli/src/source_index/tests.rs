@@ -682,6 +682,18 @@ fn search_schema_v1_snapshot_reads_snippets_and_citations_from_core() {
             top_n: 1,
             changed_final_top_n: Some(false),
         },
+        concentration: ctx_history_read_application::SearchConcentrationReceipt {
+            distinct_sessions: 1,
+            largest_session_candidate_count: 1,
+            provider_copy_candidate_count: 0,
+            literal_roots: ctx_history_read_application::SearchLiteralRootConcentration::Observed {
+                distinct_families: 0,
+                candidate_count: 0,
+                largest_family_candidate_count: 0,
+            },
+            copy_clusters:
+                ctx_history_read_application::SearchCopyClusterAvailability::NotConstructedV1,
+        },
         requested_backend: SearchBackendArg::Lexical,
         effective_backend: SearchBackendArg::Lexical,
         semantic_weight: 0.0,
@@ -817,6 +829,18 @@ fn search_json_rank_tracks_non_monotonic_shaped_result_order() {
             status: ctx_history_read_application::SearchDiversificationStatus::Applied,
             top_n: 2,
             changed_final_top_n: Some(true),
+        },
+        concentration: ctx_history_read_application::SearchConcentrationReceipt {
+            distinct_sessions: 2,
+            largest_session_candidate_count: 1,
+            provider_copy_candidate_count: 0,
+            literal_roots: ctx_history_read_application::SearchLiteralRootConcentration::Observed {
+                distinct_families: 0,
+                candidate_count: 0,
+                largest_family_candidate_count: 0,
+            },
+            copy_clusters:
+                ctx_history_read_application::SearchCopyClusterAvailability::NotConstructedV1,
         },
         requested_backend: SearchBackendArg::Lexical,
         effective_backend: SearchBackendArg::Lexical,

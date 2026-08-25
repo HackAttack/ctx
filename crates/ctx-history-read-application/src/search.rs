@@ -39,7 +39,10 @@ use active_session::{
 use active_session::{resolved_manual_session_exclusion_ids, validate_manual_session_exclusions};
 pub(crate) use execution_receipt::{collect_search_hits_observed, ObservedSearchExecutionError};
 use execution_receipt::{lexical_terminal_state, record_lexical_batch, SearchWorkTracker};
-pub use execution_receipt::{SearchFailurePhase, SearchStopReason, SearchWorkReceipt};
+pub use execution_receipt::{
+    SearchConcentrationReceipt, SearchCopyClusterAvailability, SearchFailurePhase,
+    SearchLiteralRootConcentration, SearchStopReason, SearchWorkReceipt,
+};
 use fusion::fuse_source_candidates;
 #[cfg(test)]
 use fusion::weighted_rrf_score;
@@ -176,6 +179,7 @@ pub struct SearchCollection {
     pub candidate_pool_truncated: bool,
     pub lexical_diagnostics: Option<SearchLexicalDiagnostics>,
     pub diversification: SearchDiversificationDecision,
+    pub concentration: SearchConcentrationReceipt,
     pub requested_backend: SearchBackend,
     pub effective_backend: SearchBackend,
     pub semantic_weight: f32,
@@ -354,6 +358,9 @@ where
     )
 }
 
+// Keeping the already-complete bounded result inline avoids a heap allocation
+// on ordinary lexical searches; this local enum is not retained across calls.
+#[allow(clippy::large_enum_variant)]
 enum PreparedSemanticSearch {
     Complete(SearchCollection),
     Query {
@@ -612,7 +619,7 @@ where
         };
     let candidate_pool = candidates.len();
     tracker.set_phase(SearchFailurePhase::ResultProjection);
-    let (result_window, diversification) = shape_search_candidates_using(
+    let (result_window, diversification, concentration) = shape_search_candidates_using(
         &candidates,
         request.limit,
         dense_search(request),
@@ -625,6 +632,7 @@ where
         candidate_pool_truncated,
         lexical_diagnostics,
         diversification,
+        concentration,
         requested_backend,
         effective_backend: requested_backend,
         semantic_weight: if requested_backend == SearchBackend::Semantic {
@@ -738,7 +746,7 @@ where
         .into_iter()
         .map(Into::into)
         .collect::<Vec<_>>();
-    let (mut result_window, diversification) =
+    let (mut result_window, diversification, concentration) =
         shape_search_candidates_using(&candidates, limit, dense, completeness, grouping_claims)?;
     if dense && batch.complete && !batch.candidate_set_exhaustive && candidate_pool == limit {
         // At the maximum retained horizon, completed heap truncation proves an
@@ -751,6 +759,7 @@ where
         candidate_pool_truncated,
         lexical_diagnostics: Some(lexical_diagnostics),
         diversification,
+        concentration,
         requested_backend: SearchBackend::Lexical,
         effective_backend: SearchBackend::Lexical,
         semantic_weight: 0.0,
@@ -763,6 +772,17 @@ where
 }
 
 fn empty_lexical_collection(limit: usize, work: SearchWorkReceipt) -> SearchCollection {
+    let concentration = SearchConcentrationReceipt {
+        distinct_sessions: 0,
+        largest_session_candidate_count: 0,
+        provider_copy_candidate_count: 0,
+        literal_roots: SearchLiteralRootConcentration::Observed {
+            distinct_families: 0,
+            candidate_count: 0,
+            largest_family_candidate_count: 0,
+        },
+        copy_clusters: SearchCopyClusterAvailability::NotConstructedV1,
+    };
     SearchCollection {
         result_window: SearchResultWindow {
             limit,
@@ -777,6 +797,7 @@ fn empty_lexical_collection(limit: usize, work: SearchWorkReceipt) -> SearchColl
             top_n: limit,
             changed_final_top_n: None,
         },
+        concentration,
         requested_backend: SearchBackend::Lexical,
         effective_backend: SearchBackend::Lexical,
         semantic_weight: 0.0,
@@ -812,19 +833,53 @@ fn shape_search_candidates_using<GroupingClaims>(
     dense: bool,
     completeness: DiversificationCompleteness,
     grouping_claims: GroupingClaims,
-) -> SearchExecutionResult<(SearchResultWindow, SearchDiversificationDecision)>
+) -> SearchExecutionResult<(
+    SearchResultWindow,
+    SearchDiversificationDecision,
+    SearchConcentrationReceipt,
+)>
 where
     GroupingClaims: FnOnce(
         &[(StableEntityId, StableEntityId)],
     ) -> ctx_history_index_query::Result<Vec<SessionGroupingClaims>>,
 {
     if dense || limit == 0 {
+        let champions = session_champions(candidates);
         return Ok((
             dense_result_window(candidates, limit),
             SearchDiversificationDecision {
                 status: SearchDiversificationStatus::NotApplicable,
                 top_n: limit,
                 changed_final_top_n: None,
+            },
+            SearchConcentrationReceipt {
+                distinct_sessions: u32::try_from(champions.len())
+                    .map_err(|_| anyhow!("search session concentration overflow"))?,
+                largest_session_candidate_count: u32::try_from(
+                    champions
+                        .iter()
+                        .map(|champion| champion.match_count)
+                        .max()
+                        .unwrap_or(0),
+                )
+                .map_err(|_| anyhow!("search session concentration overflow"))?,
+                provider_copy_candidate_count: u32::try_from(
+                    candidates
+                        .iter()
+                        .filter(|candidate| candidate.event.event_copy.is_some())
+                        .count(),
+                )
+                .map_err(|_| anyhow!("search copy concentration overflow"))?,
+                literal_roots: if dense {
+                    SearchLiteralRootConcentration::NotObservedDense
+                } else {
+                    SearchLiteralRootConcentration::Observed {
+                        distinct_families: 0,
+                        candidate_count: 0,
+                        largest_family_candidate_count: 0,
+                    }
+                },
+                copy_clusters: SearchCopyClusterAvailability::NotConstructedV1,
             },
         ));
     }
@@ -845,6 +900,9 @@ where
     let FamilyShapingOutcome {
         result_window,
         distinct_families,
+        distinct_literal_root_families,
+        literal_root_candidate_count,
+        largest_literal_root_candidate_count,
         changed_final_top_n,
     } = shape_family_result_window(&champions, &families, limit);
     let status = match completeness {
@@ -864,6 +922,34 @@ where
             top_n: limit,
             changed_final_top_n: (status == SearchDiversificationStatus::Applied)
                 .then_some(changed_final_top_n),
+        },
+        SearchConcentrationReceipt {
+            distinct_sessions: u32::try_from(champions.len())
+                .map_err(|_| anyhow!("search session concentration overflow"))?,
+            largest_session_candidate_count: u32::try_from(
+                champions
+                    .iter()
+                    .map(|champion| champion.match_count)
+                    .max()
+                    .unwrap_or(0),
+            )
+            .map_err(|_| anyhow!("search session concentration overflow"))?,
+            provider_copy_candidate_count: u32::try_from(
+                candidates
+                    .iter()
+                    .filter(|candidate| candidate.event.event_copy.is_some())
+                    .count(),
+            )
+            .map_err(|_| anyhow!("search copy concentration overflow"))?,
+            literal_roots: SearchLiteralRootConcentration::Observed {
+                distinct_families: u32::try_from(distinct_literal_root_families)
+                    .map_err(|_| anyhow!("search root concentration overflow"))?,
+                candidate_count: u32::try_from(literal_root_candidate_count)
+                    .map_err(|_| anyhow!("search root concentration overflow"))?,
+                largest_family_candidate_count: u32::try_from(largest_literal_root_candidate_count)
+                    .map_err(|_| anyhow!("search root concentration overflow"))?,
+            },
+            copy_clusters: SearchCopyClusterAvailability::NotConstructedV1,
         },
     ))
 }
