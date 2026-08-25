@@ -95,6 +95,28 @@ fn candidate_tail_score(candidates: &[EventSearchCandidate]) -> f32 {
         .unwrap()
 }
 
+#[test]
+fn lexical_terminal_state_preserves_stop_and_truncation_branches() {
+    assert_eq!(
+        lexical_terminal_state(true, false, false),
+        Some((SearchStopReason::Decisive, false))
+    );
+    assert_eq!(
+        lexical_terminal_state(false, true, false),
+        Some((SearchStopReason::Exhausted, false))
+    );
+    assert_eq!(
+        lexical_terminal_state(false, false, true),
+        Some((SearchStopReason::CandidateCap, true))
+    );
+    assert_eq!(lexical_terminal_state(false, false, false), None);
+    assert_eq!(
+        lexical_terminal_state(true, true, true),
+        Some((SearchStopReason::Decisive, false)),
+        "decisive retrieval remains authoritative over coincident exhaustion/cap"
+    );
+}
+
 fn ancestry(
     session_id: u128,
     parent_session_id: Option<u128>,

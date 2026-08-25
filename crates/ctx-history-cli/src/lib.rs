@@ -77,7 +77,7 @@ pub use source_index::{
     copied_lineage_summary, generation_query_authority_error_json, mcp_search_with_compact,
     mcp_show_event_application, mcp_show_session_application, normalize_mcp_search_request,
     run_locate, run_search, run_show, validate_explicit_semantic_scope, McpSearchError,
-    ShowApplicationError, SourceSearchRequest,
+    McpSearchExecutionFailure, ShowApplicationError, SourceSearchRequest,
 };
 pub use sources::{run_sources, SourcesDiscoveryObservation, SourcesExecutionObservation};
 
@@ -88,7 +88,9 @@ pub use history_source_plugins::{
     PreparedHistorySourcePluginRefresh,
 };
 pub use output::JsonOutputFormat;
-pub use ports::{OutputStream, SearchExecutionObservation, SearchRefreshStatus, TerminalPort};
+pub use ports::{
+    OutputStream, SearchExecutionObservation, SearchFailurePhase, SearchRefreshStatus, TerminalPort,
+};
 pub use progress::{
     format_bytes, format_count, presentation_snapshot, ProgressReporter, ProgressWriterError,
 };

@@ -21,6 +21,7 @@ use crate::{
 };
 
 mod active_session;
+mod execution_receipt;
 mod fusion;
 mod shaping;
 
@@ -34,6 +35,9 @@ use active_session::{
     resolved_session_tree_ids, resolved_unique_session_tree_root_id, SessionAncestry,
     MAX_ACTIVE_SESSION_ANCESTORS, MAX_ACTIVE_SESSION_TREE_SESSIONS,
 };
+pub(crate) use execution_receipt::{collect_search_hits_observed, ObservedSearchExecutionError};
+use execution_receipt::{lexical_terminal_state, record_candidate_batch, SearchWorkTracker};
+pub use execution_receipt::{SearchFailurePhase, SearchStopReason, SearchWorkReceipt};
 #[cfg(test)]
 use fusion::weighted_rrf_score;
 use fusion::{fuse_source_candidates, search_candidate_order};
@@ -495,6 +499,8 @@ pub struct SearchCollection {
     pub semantic_status: &'static str,
     pub semantic_fallback: Option<SemanticFallbackDiagnostics>,
     pub semantic_diagnostics: Option<Value>,
+    pub work: SearchWorkReceipt,
+    pub stop_reason: SearchStopReason,
 }
 
 #[derive(Debug)]
@@ -572,7 +578,19 @@ pub fn collect_search_hits<P: HistorySemanticPort>(
     semantic: SemanticAvailability,
     semantic_port: &P,
 ) -> SearchExecutionResult<SearchCollection> {
-    let prepared = prepare_semantic_search(request, index, filters, semantic)?;
+    collect_search_hits_observed(request, index, filters, semantic, semantic_port)
+        .map_err(|failure| *failure.error)
+}
+
+fn collect_search_hits_with_receipt<P: HistorySemanticPort>(
+    request: &SearchRequest,
+    index: &VerifiedIndex,
+    filters: &EventSearchFilters,
+    semantic: SemanticAvailability,
+    semantic_port: &P,
+    tracker: &mut SearchWorkTracker,
+) -> SearchExecutionResult<SearchCollection> {
+    let prepared = prepare_semantic_search(request, index, filters, semantic, tracker)?;
     let (requested_backend, normalized_query) = match prepared {
         PreparedSemanticSearch::Complete(collection) => return Ok(collection),
         PreparedSemanticSearch::Query {
@@ -591,6 +609,7 @@ pub fn collect_search_hits<P: HistorySemanticPort>(
             |query, filters, candidate_limit| {
                 semantic_query.candidates(query, filters, candidate_limit)
             },
+            tracker,
         ),
         Err(error) => collect_prepared_semantic_search(
             request,
@@ -599,6 +618,7 @@ pub fn collect_search_hits<P: HistorySemanticPort>(
             requested_backend,
             normalized_query,
             |_, _, _| Err(error.clone()),
+            tracker,
         ),
     }
 }
@@ -617,7 +637,8 @@ where
         usize,
     ) -> std::result::Result<HistorySemanticBatch, HistorySemanticError>,
 {
-    let prepared = prepare_semantic_search(request, index, filters, semantic)?;
+    let mut tracker = SearchWorkTracker::new();
+    let prepared = prepare_semantic_search(request, index, filters, semantic, &mut tracker)?;
     let (requested_backend, normalized_query) = match prepared {
         PreparedSemanticSearch::Complete(collection) => return Ok(collection),
         PreparedSemanticSearch::Query {
@@ -632,6 +653,7 @@ where
         requested_backend,
         normalized_query,
         semantic_search,
+        &mut tracker,
     )
 }
 
@@ -648,6 +670,7 @@ fn prepare_semantic_search(
     index: &VerifiedIndex,
     filters: &EventSearchFilters,
     semantic: SemanticAvailability,
+    tracker: &mut SearchWorkTracker,
 ) -> SearchExecutionResult<PreparedSemanticSearch> {
     let requested_backend = request.backend.unwrap_or(SearchBackend::Lexical);
     let semantic_weight = request.semantic_weight;
@@ -659,8 +682,14 @@ fn prepare_semantic_search(
     {
         let normalized_query = NormalizedSearchQuery::from_request(request);
         let queries = normalized_query.texts();
-        let mut collection =
-            collect_lexical_search_hits(index, &queries, request.limit, request.events, filters)?;
+        let mut collection = collect_lexical_search_hits(
+            index,
+            &queries,
+            request.limit,
+            request.events,
+            filters,
+            tracker,
+        )?;
         collection.requested_backend = requested_backend;
         collection.semantic_weight = 0.0;
         return Ok(PreparedSemanticSearch::Complete(collection));
@@ -676,6 +705,7 @@ fn prepare_semantic_search(
             requested_backend,
             not_ready,
             "unsupported",
+            tracker,
         )
         .map(PreparedSemanticSearch::Complete);
     }
@@ -698,6 +728,7 @@ fn prepare_semantic_search(
             requested_backend,
             not_ready,
             status,
+            tracker,
         )
         .map(PreparedSemanticSearch::Complete);
     }
@@ -715,6 +746,7 @@ fn lexical_fallback(
     requested_backend: SearchBackend,
     not_ready: HistorySemanticError,
     status: &'static str,
+    tracker: &mut SearchWorkTracker,
 ) -> SearchExecutionResult<SearchCollection> {
     lexical_fallback_with_diagnostics(
         request,
@@ -724,6 +756,7 @@ fn lexical_fallback(
         not_ready,
         status,
         Vec::new(),
+        tracker,
     )
 }
 
@@ -736,11 +769,18 @@ fn lexical_fallback_with_diagnostics(
     not_ready: HistorySemanticError,
     status: &'static str,
     semantic_query_diagnostics: Vec<Value>,
+    tracker: &mut SearchWorkTracker,
 ) -> SearchExecutionResult<SearchCollection> {
     let normalized_query = NormalizedSearchQuery::from_request(request);
     let queries = normalized_query.texts();
-    let mut collection =
-        collect_lexical_search_hits(index, &queries, request.limit, request.events, filters)?;
+    let mut collection = collect_lexical_search_hits(
+        index,
+        &queries,
+        request.limit,
+        request.events,
+        filters,
+        tracker,
+    )?;
     let fallback = semantic_fallback_diagnostics(&not_ready);
     collection.requested_backend = requested_backend;
     collection.effective_backend = SearchBackend::Lexical;
@@ -770,6 +810,7 @@ fn collect_prepared_semantic_search<SemanticSearch>(
     requested_backend: SearchBackend,
     normalized_query: NormalizedSearchQuery,
     mut semantic_search: SemanticSearch,
+    tracker: &mut SearchWorkTracker,
 ) -> SearchExecutionResult<SearchCollection>
 where
     SemanticSearch: FnMut(
@@ -778,10 +819,12 @@ where
         usize,
     ) -> std::result::Result<HistorySemanticBatch, HistorySemanticError>,
 {
+    tracker.set_phase(SearchFailurePhase::SemanticRetrieval);
     let queries = normalized_query.texts();
     let mut semantic_by_event = BTreeMap::<Uuid, EventSearchCandidate>::new();
     let mut semantic_query_diagnostics = Vec::with_capacity(queries.len());
     for query in &queries {
+        tracker.record_retrieval_round()?;
         let HistorySemanticBatch {
             candidates,
             diagnostics,
@@ -796,6 +839,7 @@ where
                     error,
                     "unavailable",
                     semantic_query_diagnostics,
+                    tracker,
                 )
             }
             Err(error) => return Err(error.into()),
@@ -833,10 +877,14 @@ where
     let candidates = if requested_backend == SearchBackend::Semantic {
         semantic_candidates
     } else {
-        let lexical_candidates = index.search_event_candidates_any_with_filters(
-            &queries,
-            filters,
-            SOURCE_FUSION_CANDIDATES,
+        tracker.set_phase(SearchFailurePhase::IndexQueryDecode);
+        let lexical_candidates = record_candidate_batch(
+            tracker,
+            index.search_event_candidates_any_with_filters_diagnosed(
+                &queries,
+                filters,
+                SOURCE_FUSION_CANDIDATES,
+            ),
         )?;
         fuse_source_candidates(
             lexical_candidates,
@@ -845,12 +893,13 @@ where
         )
     };
     let candidate_pool = candidates.len();
+    let candidate_pool_truncated = candidate_pool >= SOURCE_FUSION_CANDIDATES;
     let result_window =
         shape_search_result_window(candidates.iter(), request.limit, request.events);
     Ok(SearchCollection {
         result_window,
         candidate_pool,
-        candidate_pool_truncated: candidate_pool >= SOURCE_FUSION_CANDIDATES,
+        candidate_pool_truncated,
         requested_backend,
         effective_backend: requested_backend,
         semantic_weight: if requested_backend == SearchBackend::Semantic {
@@ -861,6 +910,8 @@ where
         semantic_status: "ready",
         semantic_fallback: None,
         semantic_diagnostics: Some(semantic_diagnostics),
+        work: tracker.work,
+        stop_reason: SearchStopReason::FixedPool,
     })
 }
 
@@ -877,6 +928,7 @@ fn collect_lexical_search_hits(
     limit: usize,
     event_results: bool,
     filters: &EventSearchFilters,
+    tracker: &mut SearchWorkTracker,
 ) -> Result<SearchCollection> {
     let document_count = usize::try_from(index.document_count()).unwrap_or(usize::MAX);
     let maximum = document_count
@@ -887,11 +939,17 @@ fn collect_lexical_search_hits(
         .max(MIN_CANDIDATE_BATCH)
         .min(maximum.max(1));
     loop {
-        let candidates = if queries.is_empty() {
-            index.list_event_candidates_with_filters(filters, candidate_limit)?
+        tracker.set_phase(SearchFailurePhase::IndexQueryDecode);
+        let result = if queries.is_empty() {
+            index.list_event_candidates_with_filters_diagnosed(filters, candidate_limit)
         } else {
-            index.search_event_candidates_any_with_filters(queries, filters, candidate_limit)?
+            index.search_event_candidates_any_with_filters_diagnosed(
+                queries,
+                filters,
+                candidate_limit,
+            )
         };
+        let candidates = record_candidate_batch(tracker, result)?;
         let source_candidate_pool = candidates.len();
         let exhausted =
             source_candidate_pool < candidate_limit || candidate_limit >= document_count;
@@ -905,30 +963,21 @@ fn collect_lexical_search_hits(
                 || source_tail_score.is_some_and(|tail_score| {
                     root_first_candidate_pool_is_decisive(&candidates, limit, tail_score)
                 }));
-        if decisive_window || exhausted {
+        if let Some((stop_reason, candidate_pool_truncated)) =
+            lexical_terminal_state(decisive_window, exhausted, candidate_limit >= maximum)
+        {
             return Ok(SearchCollection {
                 result_window,
                 candidate_pool: candidates.len(),
-                candidate_pool_truncated: false,
+                candidate_pool_truncated,
                 requested_backend: SearchBackend::Lexical,
                 effective_backend: SearchBackend::Lexical,
                 semantic_weight: 0.0,
                 semantic_status: "skipped",
                 semantic_fallback: None,
                 semantic_diagnostics: None,
-            });
-        }
-        if candidate_limit >= maximum {
-            return Ok(SearchCollection {
-                result_window,
-                candidate_pool: candidates.len(),
-                candidate_pool_truncated: true,
-                requested_backend: SearchBackend::Lexical,
-                effective_backend: SearchBackend::Lexical,
-                semantic_weight: 0.0,
-                semantic_status: "skipped",
-                semantic_fallback: None,
-                semantic_diagnostics: None,
+                work: tracker.work,
+                stop_reason,
             });
         }
         candidate_limit = candidate_limit

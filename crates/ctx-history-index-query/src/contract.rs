@@ -755,6 +755,36 @@ pub struct EventSearchCandidate {
     pub score: f32,
 }
 
+/// Exact, content-free work performed by one low-level candidate query.
+///
+/// Collector hits count every address returned across successful coverage
+/// tiers, including addresses repeated by a lower tier. Decoded bytes are the
+/// logical encoded Core-record bytes consumed while materializing candidates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EventCandidateQueryReceipt {
+    pub query_executions: u64,
+    pub collector_hits: u64,
+    pub records_decoded: u64,
+    pub encoded_core_bytes_decoded: u64,
+}
+
+/// Candidate rows paired with the exact low-level work that produced them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ObservedEventSearchCandidates {
+    pub candidates: Vec<EventSearchCandidate>,
+    pub receipt: EventCandidateQueryReceipt,
+}
+
+/// A candidate-query failure retaining exact work completed before the error.
+#[derive(Debug)]
+pub struct EventCandidateQueryFailure {
+    pub error: IndexError,
+    pub receipt: EventCandidateQueryReceipt,
+}
+
+pub type DiagnosedEventCandidateQueryResult =
+    std::result::Result<ObservedEventSearchCandidates, Box<EventCandidateQueryFailure>>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
     pub session_id: StableEntityId,

@@ -570,7 +570,7 @@
           "FILE:@@//crates/ctx-semantic-index/Cargo.toml 43fb0eb458acc23981d2032b619feb1e5536a87818a53c44f51dcaf37b1c5902",
           "FILE:@@//crates/ctx-upgrade-engine/Cargo.toml de4848112e1d56ce056bb40cf2dbb5c4a98f639bc3a5617b2870628801b7e552",
           "FILE:@@//crates/ctx-managed-pair-engine/Cargo.toml 31dfee3d767d7d2f6bc6caf89a9d67794b8baf0bd81887ff0fc115709a65ea3f",
-          "FILE:@@//crates/ctx-history-read-application/Cargo.toml c314caa4021a5c2e0226e318f2489036256e4a1a3f83493269d8897571d77757",
+          "FILE:@@//crates/ctx-history-read-application/Cargo.toml 602db755461ade6b2373bd36cbed90f81c245731608102d8c06fc218902e9229",
           "FILE:@@//crates/ctx-terminal/Cargo.toml 15f8740c8756c4e30e65864e4e4148e47c6e7fbb2ffb4ad3c036d7e131a57458",
           "FILE:@@//crates/ctx-history-ingest-application/Cargo.toml 0fdad960edeb31222f10d474799875b20a90e5a789989c8eebe745a8f129917a",
           "FILE:@@//crates/ctx-cli-contract-tests/Cargo.toml 71d1e9b64f51ba7ad272fc63b240ac3e3af5ab295eae01b13d6c69df5f08e33d",

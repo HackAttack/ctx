@@ -309,26 +309,58 @@ fn query_authority_show_locate_and_mcp_show_reject_empty_before_not_found() {
     assert_query_authority_error(&mcp_error, "source_unavailable");
 }
 
-#[test]
-fn search_reports_query_observation_before_output_failure() {
-    struct FailingWriter;
+struct FailingWriter(&'static str);
 
-    impl Write for FailingWriter {
-        fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-            Err(io::Error::other("injected search output failure"))
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
+impl Write for FailingWriter {
+    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+        Err(io::Error::other(self.0))
     }
 
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn lexical_search_args() -> SearchArgs {
+    SearchArgs {
+        query: Some(TEST_QUERY.to_owned()),
+        term: Vec::new(),
+        limit: 10,
+        provider: Some(crate::ProviderArg(HistoryProvider::Native(
+            CaptureProvider::Codex,
+        ))),
+        history_source: None,
+        provider_key: None,
+        source_id: None,
+        source_format: None,
+        source_roots: Vec::new(),
+        source_groups: Vec::new(),
+        workspace: None,
+        since: None,
+        primary_only: false,
+        content_scope: None,
+        event_type: None,
+        file: None,
+        session: None,
+        exclude_sessions: Vec::new(),
+        events: false,
+        backend: Some(crate::SearchBackendArg::Lexical),
+        semantic_weight: 0.35,
+        refresh: RefreshArg::Off,
+        include_current_session: true,
+        format: JsonOutputFormat::Text,
+        verbose: false,
+    }
+}
+
+#[test]
+fn search_reports_terminal_observation_after_output_failure() {
     let temp = tempdir().unwrap();
     write_test_generation(temp.path());
     let context = RenderContext::for_test(TestContext::pipe(StreamKind::Stdout));
     let stderr_context = RenderContext::for_test(TestContext::pipe(StreamKind::Stderr));
     let mut ui = Ui::with_writers(
-        FailingWriter,
+        FailingWriter("injected search output failure"),
         context,
         SharedWriter::default(),
         stderr_context,
@@ -336,35 +368,7 @@ fn search_reports_query_observation_before_output_failure() {
     let mut local_usage = CliUsage::excluded();
     let mut observed = None;
     let error = run_search(
-        SearchArgs {
-            query: Some(TEST_QUERY.to_owned()),
-            term: Vec::new(),
-            limit: 10,
-            provider: Some(crate::ProviderArg(HistoryProvider::Native(
-                CaptureProvider::Codex,
-            ))),
-            history_source: None,
-            provider_key: None,
-            source_id: None,
-            source_format: None,
-            source_roots: Vec::new(),
-            source_groups: Vec::new(),
-            workspace: None,
-            since: None,
-            primary_only: false,
-            content_scope: None,
-            event_type: None,
-            file: None,
-            session: None,
-            exclude_sessions: Vec::new(),
-            events: false,
-            backend: Some(crate::SearchBackendArg::Lexical),
-            semantic_weight: 0.35,
-            refresh: RefreshArg::Off,
-            include_current_session: true,
-            format: JsonOutputFormat::Text,
-            verbose: false,
-        },
+        lexical_search_args(),
         temp.path().to_path_buf(),
         history_snapshot(false, false),
         &mut local_usage,
@@ -374,13 +378,42 @@ fn search_reports_query_observation_before_output_failure() {
     .unwrap_err();
 
     assert!(error.to_string().contains("injected search output failure"));
-    let observation = observed.expect("query observation must precede fallible output");
+    let observation = observed.expect("search attempt must emit one terminal observation");
     assert_eq!(
         observation.backend_effective,
-        ctx_history_read_application::SearchBackend::Lexical
+        Some(ctx_history_read_application::SearchBackend::Lexical)
     );
-    assert!(observation.result_count > 0);
-    assert_eq!(observation.render_duration, None);
+    assert!(observation.result_count.is_some_and(|count| count > 0));
+    assert!(observation.render_duration.is_some());
+    assert_eq!(
+        observation.failure_phase,
+        Some(crate::SearchFailurePhase::Output)
+    );
+}
+
+#[test]
+fn search_not_ready_diagnostic_write_failure_reports_output_phase() {
+    let mut ui = Ui::with_writers(
+        SharedWriter::default(),
+        RenderContext::for_test(TestContext::pipe(StreamKind::Stdout)),
+        FailingWriter("injected not-ready diagnostic failure"),
+        RenderContext::for_test(TestContext::pipe(StreamKind::Stderr)),
+    );
+    let mut observation = crate::SearchExecutionObservation::default();
+
+    let error =
+        search::render_not_ready_at_search_boundary(&mut ui, Some(&mut observation)).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected not-ready diagnostic failure"),
+        "{error:#}"
+    );
+    assert_eq!(
+        observation.failure_phase,
+        Some(crate::SearchFailurePhase::Output)
+    );
 }
 
 #[test]
@@ -649,6 +682,8 @@ fn search_schema_v1_snapshot_reads_snippets_and_citations_from_core() {
         semantic_status: "skipped",
         semantic_fallback: None,
         semantic_diagnostics: None,
+        work: ctx_history_read_application::SearchWorkReceipt::default(),
+        stop_reason: ctx_history_read_application::SearchStopReason::FixedPool,
     };
     let follow_up_root = std::path::Path::new("/tmp/ctx root/owner's history");
     let value = search_json(
@@ -765,6 +800,8 @@ fn search_json_rank_tracks_non_monotonic_shaped_result_order() {
         semantic_status: "skipped",
         semantic_fallback: None,
         semantic_diagnostics: None,
+        work: ctx_history_read_application::SearchWorkReceipt::default(),
+        stop_reason: ctx_history_read_application::SearchStopReason::FixedPool,
     };
     let mut presentations = [
         fixture_search_presentation(&collection.result_window.hits[0].event, first_core, false),

@@ -25,22 +25,23 @@ use crate::{
     copied_lineage_read_model, decode_session_event_cursor, encode_session_event_cursor,
     event_query_event_read_model, event_query_receipt, event_query_wire_request,
     event_window_with_lineage_read_model, execute_list_events_stream, execute_locate,
-    execute_search, execute_show_event, execute_show_session_page, execute_show_session_stream,
-    normalize_search_request, normalize_uuid_prefix, paginated_session_transcript_read_model,
-    plan_search, render_event_read_model, render_search_json, retain_structured_session_page,
-    search_filters, ActiveSessionExclusion, CompactPresentationProjection, EventContentProjection,
-    EventWindowBudget, GenerationRead, GenerationReadPort, GenerationReadRequest,
-    GenerationReadTarget, HistorySemanticBatch, HistorySemanticError, HistorySemanticPort,
-    HistorySemanticQuery, ListEventsPageRequest, ListEventsRequest, ListEventsStreamCallback,
-    ListEventsStreamCompletion, ListEventsStreamControl, ListEventsStreamPage,
-    LocateApplicationRequest, LocateRequest, LocateResult, PinnedHistoryQuery, RetainedPeerRead,
-    SearchApplicationError, SearchApplicationReadModelInput, SearchApplicationRequest,
-    SearchBackend, SearchJsonInput, SearchPolicy, SearchRenderMetrics, SearchRequest,
-    SearchResultCommands, SemanticAvailability, SemanticReason, SessionEventMode,
-    ShowEventApplicationRequest, ShowEventRequest, ShowSessionApplicationRequest,
-    ShowSessionPageRequest, ShowSessionStreamCallback, ShowSessionStreamControl,
-    ShowSessionStreamPage, ShowSessionStreamRequest, ShowSessionStreamStart,
-    StructuredOutputFormat, StructuredTranscriptMode, UuidPrefixError,
+    execute_search, execute_search_observed, execute_show_event, execute_show_session_page,
+    execute_show_session_stream, normalize_search_request, normalize_uuid_prefix,
+    paginated_session_transcript_read_model, plan_search, render_event_read_model,
+    render_search_json, retain_structured_session_page, search_filters, ActiveSessionExclusion,
+    CompactPresentationProjection, EventContentProjection, EventWindowBudget, GenerationRead,
+    GenerationReadPort, GenerationReadRequest, GenerationReadTarget, HistorySemanticBatch,
+    HistorySemanticError, HistorySemanticPort, HistorySemanticQuery, ListEventsPageRequest,
+    ListEventsRequest, ListEventsStreamCallback, ListEventsStreamCompletion,
+    ListEventsStreamControl, ListEventsStreamPage, LocateApplicationRequest, LocateRequest,
+    LocateResult, PinnedHistoryQuery, RetainedPeerRead, SearchApplicationError,
+    SearchApplicationReadModelInput, SearchApplicationRequest, SearchBackend, SearchFailurePhase,
+    SearchJsonInput, SearchPolicy, SearchRenderMetrics, SearchRequest, SearchResultCommands,
+    SemanticAvailability, SemanticReason, SessionEventMode, ShowEventApplicationRequest,
+    ShowEventRequest, ShowSessionApplicationRequest, ShowSessionPageRequest,
+    ShowSessionStreamCallback, ShowSessionStreamControl, ShowSessionStreamPage,
+    ShowSessionStreamRequest, ShowSessionStreamStart, StructuredOutputFormat,
+    StructuredTranscriptMode, UuidPrefixError,
 };
 
 struct UnusedSemanticPort;
@@ -372,6 +373,46 @@ fn search_application_pins_once_opens_semantics_once_and_requests_peer_lazily() 
         Some(RetainedPeerRead::IfAvailable)
     );
     assert_eq!(compact.query().collection.result_window.hits.len(), 3);
+}
+
+#[test]
+fn decode_failure_reaches_the_application_terminal_error_with_partial_work() {
+    let temp = tempdir().unwrap();
+    let (index, _) = publish(temp.path());
+    let plan = plan_search(
+        lexical_request(),
+        SearchPolicy::lexical_only(SemanticReason::PolicyDisabled),
+    )
+    .unwrap();
+    let mut generation = RecordingGenerationPort::new(index);
+    ctx_history_index_query::fail_lexical_candidate_materialization_after(1);
+
+    let failure = match execute_search_observed(
+        SearchApplicationRequest {
+            plan,
+            generation_target: GenerationReadTarget::Active,
+            compact_projection: false,
+            active_session: None,
+        },
+        &mut generation,
+        &UnusedSemanticPort,
+    ) {
+        Ok(_) => panic!("injected decode failure must reach the application terminal error"),
+        Err(failure) => failure,
+    };
+
+    assert_eq!(
+        failure.failure_phase(),
+        SearchFailurePhase::IndexQueryDecode
+    );
+    let work = failure.work();
+    assert_eq!(work.retrieval_rounds, Some(1));
+    assert_eq!(work.query_executions, Some(1));
+    assert_eq!(work.candidate_rows, Some(3));
+    assert_eq!(work.records_decoded, Some(1));
+    assert!(work
+        .encoded_core_bytes_decoded
+        .is_some_and(|bytes| bytes > 0));
 }
 
 #[test]

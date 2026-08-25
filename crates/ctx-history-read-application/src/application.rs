@@ -8,15 +8,16 @@ use serde_json::Value;
 
 use crate::generation::PinnedGenerationRead;
 use crate::presentation::presentations_for_search_hits;
+use crate::search::{collect_search_hits_observed, ObservedSearchExecutionError};
 use crate::{
-    collect_search_hits, copied_lineage_read_model, normalize_search_request,
-    reference_needs_retained_peer, render_search_json, resolve_search_backend,
-    search_filters_with_refs, validate_search_request, ActiveSessionExclusion,
-    CompactPresentationProjection, CompactRefResolver, GenerationReadError, GenerationReadPort,
-    GenerationReadReceipt, GenerationReadRequest, GenerationReadTarget, HistorySemanticPort,
-    NormalizedSearchQuery, RetainedPeerRead, SearchCollection, SearchExecutionError,
-    SearchExecutionResult, SearchJsonInput, SearchPolicy, SearchPresentation, SearchRenderMetrics,
-    SearchRequest, SearchResultCommands,
+    copied_lineage_read_model, normalize_search_request, reference_needs_retained_peer,
+    render_search_json, resolve_search_backend, search_filters_with_refs, validate_search_request,
+    ActiveSessionExclusion, CompactPresentationProjection, CompactRefResolver, GenerationReadError,
+    GenerationReadPort, GenerationReadReceipt, GenerationReadRequest, GenerationReadTarget,
+    HistorySemanticPort, NormalizedSearchQuery, RetainedPeerRead, SearchCollection,
+    SearchExecutionError, SearchExecutionResult, SearchFailurePhase, SearchJsonInput, SearchPolicy,
+    SearchPresentation, SearchRenderMetrics, SearchRequest, SearchResultCommands,
+    SearchWorkReceipt,
 };
 
 /// Query implementation contract for one caller-supplied, already-verified
@@ -47,11 +48,18 @@ impl<'index> PinnedHistoryQuery<'index> {
         plan: PlannedSearch,
         active_session: Option<&ActiveSessionExclusion>,
         semantic_port: &P,
-    ) -> SearchExecutionResult<SearchQueryResult> {
+    ) -> std::result::Result<SearchQueryResult, ObservedSearchExecutionError> {
         let PlannedSearch { request, policy } = plan;
         let filters =
-            search_filters_with_refs(&request, self.index, &self.references, active_session)?;
-        let collection = collect_search_hits(
+            search_filters_with_refs(&request, self.index, &self.references, active_session)
+                .map_err(|error| {
+                    ObservedSearchExecutionError::new(
+                        error.into(),
+                        SearchWorkReceipt::default(),
+                        SearchFailurePhase::QueryPreparation,
+                    )
+                })?;
+        let collection = collect_search_hits_observed(
             &request,
             self.index,
             &filters,
@@ -62,7 +70,14 @@ impl<'index> PinnedHistoryQuery<'index> {
             self.index,
             &collection.result_window.hits,
             &NormalizedSearchQuery::from_request(&request),
-        )?;
+        )
+        .map_err(|error| {
+            ObservedSearchExecutionError::new(
+                error.into(),
+                collection.work,
+                SearchFailurePhase::ResultProjection,
+            )
+        })?;
         let copied_lineages = collection
             .result_window
             .hits
@@ -71,7 +86,14 @@ impl<'index> PinnedHistoryQuery<'index> {
                 self.index
                     .copied_event_lineage(hit.event.event_id, SEARCH_COPIED_EVENT_LINEAGE_POLICY)
             })
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| {
+                ObservedSearchExecutionError::new(
+                    error.into(),
+                    collection.work,
+                    SearchFailurePhase::ResultProjection,
+                )
+            })?;
         Ok(SearchQueryResult {
             request,
             filters,
@@ -152,6 +174,32 @@ pub enum SearchApplicationError<GenerationError> {
     Query(SearchExecutionError),
 }
 
+#[derive(Debug)]
+pub struct ObservedSearchApplicationError<GenerationError> {
+    error: Box<SearchApplicationError<GenerationError>>,
+    work: SearchWorkReceipt,
+    failure_phase: SearchFailurePhase,
+    query_duration: Option<Duration>,
+}
+
+impl<GenerationError> ObservedSearchApplicationError<GenerationError> {
+    pub const fn work(&self) -> SearchWorkReceipt {
+        self.work
+    }
+
+    pub const fn failure_phase(&self) -> SearchFailurePhase {
+        self.failure_phase
+    }
+
+    pub const fn query_duration(&self) -> Option<Duration> {
+        self.query_duration
+    }
+
+    pub fn into_error(self) -> SearchApplicationError<GenerationError> {
+        *self.error
+    }
+}
+
 pub struct SearchApplicationResult {
     generation: PinnedGenerationRead,
     query: SearchQueryResult,
@@ -225,6 +273,19 @@ where
     Generation: GenerationReadPort,
     Semantic: HistorySemanticPort,
 {
+    execute_search_observed(request, generation_port, semantic_port)
+        .map_err(ObservedSearchApplicationError::into_error)
+}
+
+pub fn execute_search_observed<Generation, Semantic>(
+    request: SearchApplicationRequest,
+    generation_port: &mut Generation,
+    semantic_port: &Semantic,
+) -> std::result::Result<SearchApplicationResult, ObservedSearchApplicationError<Generation::Error>>
+where
+    Generation: GenerationReadPort,
+    Semantic: HistorySemanticPort,
+{
     let retained_peer = request.retained_peer_read();
     let SearchApplicationRequest {
         plan,
@@ -239,11 +300,21 @@ where
             retained_peer,
         },
     )
-    .map_err(SearchApplicationError::Generation)?;
+    .map_err(|error| ObservedSearchApplicationError {
+        error: Box::new(SearchApplicationError::Generation(error)),
+        work: SearchWorkReceipt::default(),
+        failure_phase: SearchFailurePhase::GenerationOpen,
+        query_duration: None,
+    })?;
     let query_started = Instant::now();
     let query = PinnedHistoryQuery::new(generation.index(), generation.retained_peer())
         .search(plan, active_session.as_ref(), semantic_port)
-        .map_err(SearchApplicationError::Query)?;
+        .map_err(|failure| ObservedSearchApplicationError {
+            error: Box::new(SearchApplicationError::Query(*failure.error)),
+            work: failure.work,
+            failure_phase: failure.failure_phase,
+            query_duration: Some(query_started.elapsed()),
+        })?;
     let query_duration = query_started.elapsed();
     let copied_lineage_read_models = query
         .copied_lineages
@@ -251,7 +322,12 @@ where
         .map(copied_lineage_read_model)
         .collect::<Result<Vec<_>>>()
         .map_err(SearchExecutionError::from)
-        .map_err(SearchApplicationError::Query)?;
+        .map_err(|error| ObservedSearchApplicationError {
+            error: Box::new(SearchApplicationError::Query(error)),
+            work: query.collection.work,
+            failure_phase: SearchFailurePhase::ResultProjection,
+            query_duration: Some(query_duration),
+        })?;
     Ok(SearchApplicationResult {
         generation,
         query,

@@ -602,6 +602,15 @@ fn insert_search_properties(properties: &mut Map<String, Value>, value: &SearchT
     insert_optional_count(properties, "citation_count_bucket", value.citation_count);
     insert_optional_bool(properties, "zero_result", value.zero_result);
     insert_optional_duration(properties, "render_duration_bucket", value.render_duration);
+    insert_optional_duration(
+        properties,
+        "search_output_duration_bucket",
+        value.output_duration.map(duration_bucket),
+    );
+    insert_optional_bool(properties, "search_output_served", value.output_served);
+    if let Some(health) = value.health {
+        health.insert_properties(properties);
+    }
 }
 
 fn insert_integration_properties(

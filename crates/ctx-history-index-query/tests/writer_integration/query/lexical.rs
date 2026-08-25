@@ -112,12 +112,15 @@ fn coverage_tiers_materialize_each_ranked_candidate_once_without_changing_order(
     );
     let one_term = document(&source, 3, &"decodealpha ".repeat(96));
     let expected = vec![full.event_id, two_terms.event_id, one_term.event_id];
+    let expected_encoded_core_bytes = [&full, &two_terms, &one_term]
+        .into_iter()
+        .map(|record| u64::try_from(record.encode_stored().unwrap().len()).unwrap())
+        .sum::<u64>();
     let index = publish_records(&temp, &source, vec![one_term, two_terms, full]);
 
     ctx_history_index_query::reset_stored_event_record_materializations();
-    let candidates = index
-        .search_event_candidates("decodealpha decodebeta decodegamma", 3)
-        .unwrap();
+    let observed = observed_candidates(&index, "decodealpha decodebeta decodegamma", 3).unwrap();
+    let candidates = observed.candidates;
 
     assert_eq!(
         candidates
@@ -131,6 +134,104 @@ fn coverage_tiers_materialize_each_ranked_candidate_once_without_changing_order(
         candidates.len(),
         "overlapping lower-coverage tiers must not decode selected Core records again"
     );
+    assert_eq!(observed.receipt.query_executions, 3);
+    assert_eq!(observed.receipt.collector_hits, 6);
+    assert_eq!(observed.receipt.records_decoded, 3);
+    assert_eq!(
+        observed.receipt.encoded_core_bytes_decoded,
+        expected_encoded_core_bytes
+    );
+}
+
+#[test]
+fn empty_and_no_match_queries_distinguish_unattempted_from_exact_zero_work() {
+    let (_temp, index) = lexical_query_limit_fixture();
+
+    let empty = observed_candidates(&index, "", 10).unwrap();
+    let no_match = observed_candidates(&index, "uniquenonexistentreceiptneedle", 10).unwrap();
+
+    assert_eq!(
+        empty.receipt,
+        ctx_history_index_query::EventCandidateQueryReceipt::default()
+    );
+    assert_eq!(no_match.receipt.query_executions, 1);
+    assert_eq!(no_match.receipt.collector_hits, 0);
+    assert_eq!(no_match.receipt.records_decoded, 0);
+    assert_eq!(no_match.receipt.encoded_core_bytes_decoded, 0);
+}
+
+#[test]
+fn candidate_query_receipt_needs_no_drop() {
+    assert!(!std::mem::needs_drop::<
+        ctx_history_index_query::EventCandidateQueryReceipt,
+    >());
+}
+
+#[test]
+fn candidate_decode_failure_preserves_completed_low_level_work() {
+    let temp = tempdir().unwrap();
+    let source = source("partial-failure-receipt.jsonl");
+    let first = document(&source, 1, "partialfailurereceiptneedle first");
+    let second = document(&source, 2, "partialfailurereceiptneedle second");
+    let encoded_sizes = [&first, &second]
+        .into_iter()
+        .map(|record| {
+            (
+                record.event_id,
+                u64::try_from(record.encode_stored().unwrap().len()).unwrap(),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let index = publish_records(&temp, &source, vec![first, second]);
+    let successful = observed_candidates(&index, "partialfailurereceiptneedle", 2).unwrap();
+    let first_decoded_bytes = encoded_sizes[&successful.candidates[0].event.event_id];
+
+    ctx_history_index_query::fail_lexical_candidate_materialization_after(1);
+    let failure = observed_candidates(&index, "partialfailurereceiptneedle", 2).unwrap_err();
+
+    assert!(matches!(
+        failure.error,
+        IndexError::InvalidStoredDocumentField("test_lexical_candidate_materialization_failure")
+    ));
+    assert_eq!(failure.receipt.query_executions, 1);
+    assert_eq!(failure.receipt.collector_hits, 2);
+    assert_eq!(failure.receipt.records_decoded, 1);
+    assert_eq!(
+        failure.receipt.encoded_core_bytes_decoded,
+        first_decoded_bytes
+    );
+}
+
+#[test]
+fn candidate_decode_failure_injection_is_cleared_after_each_query() {
+    let temp = tempdir().unwrap();
+    let source = source("failure-injection-reset.jsonl");
+    let index = publish_records(
+        &temp,
+        &source,
+        vec![
+            document(&source, 1, "failureinjectionresetneedle first"),
+            document(&source, 2, "failureinjectionresetneedle second"),
+        ],
+    );
+
+    ctx_history_index_query::fail_lexical_candidate_materialization_after(2);
+    observed_candidates(&index, "failureinjectionresetneedle", 1).unwrap();
+
+    observed_candidates(&index, "failureinjectionresetneedle", 2)
+        .expect("unused failure injection state must not leak into the next query");
+}
+
+fn observed_candidates(
+    index: &VerifiedIndex,
+    query: &str,
+    limit: usize,
+) -> ctx_history_index_query::DiagnosedEventCandidateQueryResult {
+    index.search_event_candidates_any_with_filters_diagnosed(
+        &[query],
+        &EventSearchFilters::default(),
+        limit,
+    )
 }
 
 fn lexical_query_limit_fixture() -> (TempDir, VerifiedIndex) {

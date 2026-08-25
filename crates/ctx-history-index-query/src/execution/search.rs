@@ -1,4 +1,40 @@
 use super::*;
+use crate::records::stored_event_record_with_size;
+
+impl EventCandidateQueryReceipt {
+    fn record_query_execution(&mut self) -> Result<()> {
+        self.query_executions = self
+            .query_executions
+            .checked_add(1)
+            .ok_or(IndexError::CountOverflow)?;
+        Ok(())
+    }
+
+    fn record_collector_hits(&mut self, hits: usize) -> Result<()> {
+        let hits = u64::try_from(hits).map_err(|_| IndexError::CountOverflow)?;
+        self.collector_hits = self
+            .collector_hits
+            .checked_add(hits)
+            .ok_or(IndexError::CountOverflow)?;
+        Ok(())
+    }
+
+    fn record_decoded(&mut self, encoded_core_bytes: usize) -> Result<()> {
+        let encoded_core_bytes =
+            u64::try_from(encoded_core_bytes).map_err(|_| IndexError::CountOverflow)?;
+        let records_decoded = self
+            .records_decoded
+            .checked_add(1)
+            .ok_or(IndexError::CountOverflow)?;
+        let encoded_core_bytes_decoded = self
+            .encoded_core_bytes_decoded
+            .checked_add(encoded_core_bytes)
+            .ok_or(IndexError::CountOverflow)?;
+        self.records_decoded = records_decoded;
+        self.encoded_core_bytes_decoded = encoded_core_bytes_decoded;
+        Ok(())
+    }
+}
 
 impl VerifiedIndex {
     /// Searches full policy-selected event text using ordinary analyzed text.
@@ -11,11 +47,13 @@ impl VerifiedIndex {
         natural_text: &str,
         limit: usize,
     ) -> Result<Vec<EventSearchCandidate>> {
-        self.search_event_candidates_with_filters(
-            natural_text,
+        self.search_event_candidates_any_with_filters_diagnosed(
+            &[natural_text],
             &EventSearchFilters::default(),
             limit,
         )
+        .map(|observed| observed.candidates)
+        .map_err(|failure| failure.error)
     }
 
     /// Searches policy-selected event text with conjunctive metadata filters.
@@ -29,7 +67,9 @@ impl VerifiedIndex {
         filters: &EventSearchFilters,
         limit: usize,
     ) -> Result<Vec<EventSearchCandidate>> {
-        self.search_event_candidates_any_with_filters(&[natural_text], filters, limit)
+        self.search_event_candidates_any_with_filters_diagnosed(&[natural_text], filters, limit)
+            .map(|observed| observed.candidates)
+            .map_err(|failure| failure.error)
     }
 
     /// Searches OR-composed natural-text alternatives with shared filters.
@@ -43,73 +83,109 @@ impl VerifiedIndex {
         filters: &EventSearchFilters,
         limit: usize,
     ) -> Result<Vec<EventSearchCandidate>> {
-        validate_lexical_result_limit(limit)?;
-        LEXICAL_QUERY_LIMITS.validate_texts(natural_texts.iter().copied())?;
-        filters.validate_content_scope()?;
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let fields = fields_from_schema(self.searcher.schema())?;
-        let ranking_terms = self.body_query_terms(natural_texts, fields)?;
-        if ranking_terms.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut candidates = Vec::with_capacity(limit);
-        let mut seen = BTreeSet::new();
-        if ranking_terms.len() == 1 {
-            #[cfg(any(test, feature = "test-support"))]
-            record_lexical_query_construction();
-            let body_query =
-                class_weighted_body_query(&ranking_terms, 1, filters.content_scope, fields);
-            let lexical_limit = limit
-                .checked_add(seen.len())
-                .ok_or(IndexError::CountOverflow)?;
-            for candidate in
-                self.collect_event_candidate_addresses(body_query, filters, lexical_limit, fields)?
-            {
-                if seen.insert(candidate.event_id) {
-                    candidates.push(candidate);
-                    if candidates.len() == limit {
-                        break;
-                    }
-                }
-            }
-            return self.materialize_event_candidates(candidates, fields);
-        }
+        self.search_event_candidates_any_with_filters_diagnosed(natural_texts, filters, limit)
+            .map(|observed| observed.candidates)
+            .map_err(|failure| failure.error)
+    }
 
-        // Rank by exact query-term coverage without constructing one
-        // `HashMap<DocId, coverage>` entry for every matching document. That
-        // approach made memory and CPU proportional to the corpus frequency of
-        // common terms even when the caller requested only a handful of
-        // results. Tantivy's minimum-should-match query gives us the same
-        // ordering as bounded tiers: all terms first, then N-1, down to one.
-        for minimum_required in (1..=ranking_terms.len()).rev() {
-            #[cfg(any(test, feature = "test-support"))]
-            record_lexical_query_construction();
-            let body_query = class_weighted_body_query(
-                &ranking_terms,
-                minimum_required,
-                filters.content_scope,
-                fields,
-            );
-            // Lower-coverage tiers also contain every prior higher-coverage
-            // hit. Bounded over-collection by exactly the number already seen
-            // guarantees enough unique lookahead without a total-count scan.
-            let tier_limit = limit
-                .checked_add(seen.len())
-                .ok_or(IndexError::CountOverflow)?;
-            for candidate in
-                self.collect_event_candidate_addresses(body_query, filters, tier_limit, fields)?
-            {
-                if seen.insert(candidate.event_id) {
-                    candidates.push(candidate);
-                    if candidates.len() == limit {
-                        return self.materialize_event_candidates(candidates, fields);
+    pub fn search_event_candidates_any_with_filters_diagnosed(
+        &self,
+        natural_texts: &[&str],
+        filters: &EventSearchFilters,
+        limit: usize,
+    ) -> DiagnosedEventCandidateQueryResult {
+        #[cfg(any(test, feature = "test-support"))]
+        let _failure_injection_reset = lexical_candidate_materialization_failure_reset();
+        let mut receipt = EventCandidateQueryReceipt::default();
+        let failure = |error, receipt| Box::new(EventCandidateQueryFailure { error, receipt });
+        validate_lexical_result_limit(limit).map_err(|error| failure(error, receipt))?;
+        LEXICAL_QUERY_LIMITS
+            .validate_texts(natural_texts.iter().copied())
+            .map_err(|error| failure(error, receipt))?;
+        filters
+            .validate_content_scope()
+            .map_err(|error| failure(error, receipt))?;
+        if limit == 0 {
+            return Ok(ObservedEventSearchCandidates::default());
+        }
+        let fields =
+            fields_from_schema(self.searcher.schema()).map_err(|error| failure(error, receipt))?;
+        let ranking_terms = self
+            .body_query_terms(natural_texts, fields)
+            .map_err(|error| failure(error, receipt))?;
+        if ranking_terms.is_empty() {
+            return Ok(ObservedEventSearchCandidates::default());
+        }
+        let result = (|| {
+            let mut candidates = Vec::with_capacity(limit);
+            let mut seen = BTreeSet::new();
+            if ranking_terms.len() == 1 {
+                #[cfg(any(test, feature = "test-support"))]
+                record_lexical_query_construction();
+                let body_query =
+                    class_weighted_body_query(&ranking_terms, 1, filters.content_scope, fields);
+                let lexical_limit = limit
+                    .checked_add(seen.len())
+                    .ok_or(IndexError::CountOverflow)?;
+                for candidate in self.collect_event_candidate_addresses(
+                    body_query,
+                    filters,
+                    lexical_limit,
+                    fields,
+                    &mut receipt,
+                )? {
+                    if seen.insert(candidate.event_id) {
+                        candidates.push(candidate);
+                        if candidates.len() == limit {
+                            break;
+                        }
+                    }
+                }
+                return self.materialize_event_candidates(candidates, fields, &mut receipt);
+            }
+
+            // Minimum-should-match coverage tiers keep work bounded by the
+            // caller's candidate request rather than corpus term frequency.
+            for minimum_required in (1..=ranking_terms.len()).rev() {
+                #[cfg(any(test, feature = "test-support"))]
+                record_lexical_query_construction();
+                let body_query = class_weighted_body_query(
+                    &ranking_terms,
+                    minimum_required,
+                    filters.content_scope,
+                    fields,
+                );
+                let tier_limit = limit
+                    .checked_add(seen.len())
+                    .ok_or(IndexError::CountOverflow)?;
+                for candidate in self.collect_event_candidate_addresses(
+                    body_query,
+                    filters,
+                    tier_limit,
+                    fields,
+                    &mut receipt,
+                )? {
+                    if seen.insert(candidate.event_id) {
+                        candidates.push(candidate);
+                        if candidates.len() == limit {
+                            return self.materialize_event_candidates(
+                                candidates,
+                                fields,
+                                &mut receipt,
+                            );
+                        }
                     }
                 }
             }
+            self.materialize_event_candidates(candidates, fields, &mut receipt)
+        })();
+        match result {
+            Ok(candidates) => Ok(ObservedEventSearchCandidates {
+                candidates,
+                receipt,
+            }),
+            Err(error) => Err(failure(error, receipt)),
         }
-        self.materialize_event_candidates(candidates, fields)
     }
 
     /// Lists filtered metadata records without requiring a lexical term.
@@ -118,15 +194,47 @@ impl VerifiedIndex {
         filters: &EventSearchFilters,
         limit: usize,
     ) -> Result<Vec<EventSearchCandidate>> {
-        validate_lexical_result_limit(limit)?;
-        filters.validate_content_scope()?;
+        self.list_event_candidates_with_filters_diagnosed(filters, limit)
+            .map(|observed| observed.candidates)
+            .map_err(|failure| failure.error)
+    }
+
+    pub fn list_event_candidates_with_filters_diagnosed(
+        &self,
+        filters: &EventSearchFilters,
+        limit: usize,
+    ) -> DiagnosedEventCandidateQueryResult {
+        #[cfg(any(test, feature = "test-support"))]
+        let _failure_injection_reset = lexical_candidate_materialization_failure_reset();
+        let mut receipt = EventCandidateQueryReceipt::default();
+        let failure = |error, receipt| Box::new(EventCandidateQueryFailure { error, receipt });
+        validate_lexical_result_limit(limit).map_err(|error| failure(error, receipt))?;
+        filters
+            .validate_content_scope()
+            .map_err(|error| failure(error, receipt))?;
         if limit == 0 {
-            return Ok(Vec::new());
+            return Ok(ObservedEventSearchCandidates::default());
         }
-        let fields = fields_from_schema(self.searcher.schema())?;
-        let candidates =
-            self.collect_event_candidate_addresses(Box::new(AllQuery), filters, limit, fields)?;
-        self.materialize_event_candidates(candidates, fields)
+        let fields =
+            fields_from_schema(self.searcher.schema()).map_err(|error| failure(error, receipt))?;
+        let result = self
+            .collect_event_candidate_addresses(
+                Box::new(AllQuery),
+                filters,
+                limit,
+                fields,
+                &mut receipt,
+            )
+            .and_then(|candidates| {
+                self.materialize_event_candidates(candidates, fields, &mut receipt)
+            });
+        match result {
+            Ok(candidates) => Ok(ObservedEventSearchCandidates {
+                candidates,
+                receipt,
+            }),
+            Err(error) => Err(failure(error, receipt)),
+        }
     }
 
     /// Selects semantic-eligible event IDs with the exact metadata predicate
@@ -177,6 +285,7 @@ impl VerifiedIndex {
         filters: &EventSearchFilters,
         limit: usize,
         fields: Fields,
+        receipt: &mut EventCandidateQueryReceipt,
     ) -> Result<Vec<LexicalAddressCandidate>> {
         validate_event_sort_fast_fields(&self.searcher)?;
         let source_identity_query = self.source_identity_query(filters, fields)?;
@@ -202,9 +311,11 @@ impl VerifiedIndex {
             }
         });
         type ScoredDocAddress = ((Score, Reverse<(u64, u64)>), DocAddress);
+        receipt.record_query_execution()?;
         #[cfg(any(test, feature = "test-support"))]
         record_lexical_query_execution();
         let hits: Vec<ScoredDocAddress> = self.searcher.search(query.as_ref(), &collector)?;
+        receipt.record_collector_hits(hits.len())?;
         let mut candidates = Vec::with_capacity(hits.len());
         for ((score, Reverse((event_id_high, event_id_low))), address) in hits {
             candidates.push(LexicalAddressCandidate {
@@ -222,10 +333,19 @@ impl VerifiedIndex {
         &self,
         candidates: Vec<LexicalAddressCandidate>,
         fields: Fields,
+        receipt: &mut EventCandidateQueryReceipt,
     ) -> Result<Vec<EventSearchCandidate>> {
         let mut materialized = Vec::with_capacity(candidates.len());
         for candidate in candidates {
-            let event = self.event_record(candidate.address, fields)?;
+            #[cfg(any(test, feature = "test-support"))]
+            if lexical_candidate_materialization_should_fail() {
+                return Err(IndexError::InvalidStoredDocumentField(
+                    "test_lexical_candidate_materialization_failure",
+                ));
+            }
+            let (event, encoded_core_bytes) =
+                stored_event_record_with_size(&self.searcher, candidate.address, fields)?;
+            receipt.record_decoded(encoded_core_bytes)?;
             if event.event_id.as_uuid() != candidate.event_id {
                 return Err(IndexError::InvalidStoredDocumentField("event_id"));
             }

@@ -18,8 +18,9 @@ use super::{
     CursorFailureKind, OpaqueMcpProxyError, QueryEventsRequest, ShowEventRequest,
     ShowSessionRequest, StructuredToolError, ToolBackend, ToolBackendError, ToolEventContent,
     ToolEventRangeDirection, ToolEventRangeScope, ToolExecutionError, ToolOperation, ToolOutcome,
-    ToolSearchBackend, ToolSearchContentScope, ToolSearchRequest, ToolSearchUsageFacts,
-    ToolTranscriptMode,
+    ToolSearchBackend, ToolSearchContentScope, ToolSearchFailurePhase, ToolSearchRefreshStatus,
+    ToolSearchRequest, ToolSearchStopReason, ToolSearchTerminalFacts, ToolSearchUsageFacts,
+    ToolTranscriptMode, ToolUsageFacts,
 };
 use crate::{
     commands::list::events::{
@@ -130,7 +131,7 @@ impl LocalToolBackend {
         })
     }
 
-    fn search(&self, request: ToolSearchRequest) -> Result<SearchReadOutcome, ToolBackendError> {
+    fn search(&self, request: ToolSearchRequest) -> Result<SearchReadOutcome, ToolExecutionError> {
         let request = adapt_tool_search_request(request);
         crate::commands::source_index::validate_explicit_semantic_scope(&request)
             .map_err(classify_mcp_search_error)?;
@@ -144,11 +145,11 @@ impl LocalToolBackend {
                 let mut request = request;
                 crate::commands::source_index::normalize_mcp_search_request(&mut request)
                     .map_err(classify_mcp_search_error)?;
-                return Err(classify_application_error(error));
+                return Err(classify_application_error(error).into());
             }
         };
-        let (structured, observation, compact) =
-            crate::commands::source_index::mcp_search_with_compact(
+        let (structured, observation, compact, execution) =
+            match crate::commands::source_index::mcp_search_with_compact(
                 request,
                 &self.data_root,
                 ctx_history_cli::HistoryCliConfig {
@@ -158,8 +159,19 @@ impl LocalToolBackend {
                     automatic_provider_discovery: config.automatic_source_discovery_enabled(),
                     provider_roots: config.provider_root_definitions(),
                 },
-            )
-            .map_err(classify_mcp_search_error)?;
+            ) {
+                Ok(result) => result,
+                Err(failure) => {
+                    let (error, observation) = failure.into_parts();
+                    return Err(ToolExecutionError {
+                        error: Box::new(classify_mcp_search_error(error)),
+                        usage: Box::new(ToolUsageFacts {
+                            search: None,
+                            search_execution: Some(search_terminal_facts(observation)),
+                        }),
+                    });
+                }
+            };
         let search = observation
             .complete_byte_totals()
             .map(|(delivered, matched)| ToolSearchUsageFacts::complete(delivered, matched))
@@ -168,6 +180,7 @@ impl LocalToolBackend {
             structured,
             compact,
             usage: search,
+            execution: search_terminal_facts(execution),
         })
     }
 
@@ -287,6 +300,99 @@ impl LocalToolBackend {
     }
 }
 
+fn search_terminal_facts(
+    observation: ctx_history_cli::SearchExecutionObservation,
+) -> ToolSearchTerminalFacts {
+    ToolSearchTerminalFacts {
+        refresh_duration: observation.refresh_duration,
+        refresh_status: observation.refresh_status.map(search_refresh_status),
+        refresh_source_count: observation.refresh_source_count,
+        query_duration: observation.query_duration,
+        backend_requested: observation.backend_requested.map(search_backend),
+        backend_effective: observation.backend_effective.map(search_backend),
+        retrieval_rounds: observation.work.retrieval_rounds,
+        query_executions: observation.work.query_executions,
+        candidate_rows: observation.work.candidate_rows,
+        records_decoded: observation.work.records_decoded,
+        encoded_core_bytes_decoded: observation.work.encoded_core_bytes_decoded,
+        final_candidate_pool: observation.final_candidate_pool,
+        candidate_pool_truncated: observation.candidate_pool_truncated,
+        stop_reason: observation.stop_reason.map(search_stop_reason),
+        failure_phase: observation.failure_phase.map(search_failure_phase),
+        output_duration: None,
+        output_served: None,
+    }
+}
+
+const fn search_refresh_status(
+    status: ctx_history_cli::SearchRefreshStatus,
+) -> ToolSearchRefreshStatus {
+    match status {
+        ctx_history_cli::SearchRefreshStatus::ExistingGeneration => {
+            ToolSearchRefreshStatus::ExistingGeneration
+        }
+        ctx_history_cli::SearchRefreshStatus::DaemonBackground => {
+            ToolSearchRefreshStatus::DaemonBackground
+        }
+        ctx_history_cli::SearchRefreshStatus::DaemonUnavailable => {
+            ToolSearchRefreshStatus::DaemonUnavailable
+        }
+        ctx_history_cli::SearchRefreshStatus::Completed => ToolSearchRefreshStatus::Completed,
+        ctx_history_cli::SearchRefreshStatus::Failed => ToolSearchRefreshStatus::Failed,
+    }
+}
+
+const fn search_backend(backend: ctx_history_read_application::SearchBackend) -> ToolSearchBackend {
+    match backend {
+        ctx_history_read_application::SearchBackend::Lexical => ToolSearchBackend::Lexical,
+        ctx_history_read_application::SearchBackend::Semantic => ToolSearchBackend::Semantic,
+        ctx_history_read_application::SearchBackend::Hybrid => ToolSearchBackend::Hybrid,
+    }
+}
+
+const fn search_stop_reason(
+    reason: ctx_history_read_application::SearchStopReason,
+) -> ToolSearchStopReason {
+    match reason {
+        ctx_history_read_application::SearchStopReason::Decisive => ToolSearchStopReason::Decisive,
+        ctx_history_read_application::SearchStopReason::Exhausted => {
+            ToolSearchStopReason::Exhausted
+        }
+        ctx_history_read_application::SearchStopReason::CandidateCap => {
+            ToolSearchStopReason::CandidateCap
+        }
+        ctx_history_read_application::SearchStopReason::FixedPool => {
+            ToolSearchStopReason::FixedPool
+        }
+    }
+}
+
+const fn search_failure_phase(
+    phase: ctx_history_cli::SearchFailurePhase,
+) -> ToolSearchFailurePhase {
+    match phase {
+        ctx_history_cli::SearchFailurePhase::Preparation => ToolSearchFailurePhase::Preparation,
+        ctx_history_cli::SearchFailurePhase::Refresh => ToolSearchFailurePhase::Refresh,
+        ctx_history_cli::SearchFailurePhase::GenerationOpen => {
+            ToolSearchFailurePhase::GenerationOpen
+        }
+        ctx_history_cli::SearchFailurePhase::QueryPreparation => {
+            ToolSearchFailurePhase::QueryPreparation
+        }
+        ctx_history_cli::SearchFailurePhase::SemanticRetrieval => {
+            ToolSearchFailurePhase::SemanticRetrieval
+        }
+        ctx_history_cli::SearchFailurePhase::IndexQueryDecode => {
+            ToolSearchFailurePhase::IndexQueryDecode
+        }
+        ctx_history_cli::SearchFailurePhase::ResultProjection => {
+            ToolSearchFailurePhase::ResultProjection
+        }
+        ctx_history_cli::SearchFailurePhase::Render => ToolSearchFailurePhase::Render,
+        ctx_history_cli::SearchFailurePhase::Output => ToolSearchFailurePhase::Output,
+    }
+}
+
 impl HistoryReadPort for LocalToolBackend {
     fn status(&self) -> Result<Value, ToolBackendError> {
         LocalToolBackend::status(self)
@@ -315,7 +421,7 @@ impl SearchReadinessPort for LocalToolBackend {
     fn search_ready(
         &self,
         request: ToolSearchRequest,
-    ) -> Result<SearchReadOutcome, ToolBackendError> {
+    ) -> Result<SearchReadOutcome, ToolExecutionError> {
         self.search(request)
     }
 }
@@ -502,6 +608,35 @@ mod tests {
     }
 
     #[test]
+    fn mcp_terminal_adapter_retains_partial_failure_work() {
+        let facts = search_terminal_facts(ctx_history_cli::SearchExecutionObservation {
+            backend_requested: Some(ctx_history_read_application::SearchBackend::Hybrid),
+            work: ctx_history_read_application::SearchWorkReceipt {
+                retrieval_rounds: Some(2),
+                query_executions: Some(3),
+                candidate_rows: Some(8),
+                records_decoded: Some(1),
+                encoded_core_bytes_decoded: Some(144),
+            },
+            failure_phase: Some(ctx_history_cli::SearchFailurePhase::IndexQueryDecode),
+            ..ctx_history_cli::SearchExecutionObservation::default()
+        });
+
+        assert_eq!(facts.backend_requested, Some(ToolSearchBackend::Hybrid));
+        assert_eq!(facts.backend_effective, None);
+        assert_eq!(facts.retrieval_rounds, Some(2));
+        assert_eq!(facts.query_executions, Some(3));
+        assert_eq!(facts.candidate_rows, Some(8));
+        assert_eq!(facts.records_decoded, Some(1));
+        assert_eq!(facts.encoded_core_bytes_decoded, Some(144));
+        assert_eq!(
+            facts.failure_phase,
+            Some(ToolSearchFailurePhase::IndexQueryDecode)
+        );
+        assert_eq!(facts.output_served, None);
+    }
+
+    #[test]
     fn cli_and_mcp_search_adapters_produce_the_same_typed_query_request() {
         let cli = crate::Cli::try_parse_from([
             "ctx",
@@ -587,7 +722,10 @@ mod tests {
         let (result, config_loads) =
             crate::config::count_app_config_loads(|| backend.search(lexical_search_request()));
 
-        assert!(matches!(result, Err(ToolBackendError::SourceUnavailable)));
+        assert!(matches!(
+            result,
+            Err(error) if matches!(*error.error, ToolBackendError::SourceUnavailable)
+        ));
         assert_eq!(config_loads, 1);
     }
 

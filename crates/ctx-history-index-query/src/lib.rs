@@ -104,6 +104,7 @@ thread_local! {
     static SESSION_EVENT_ORDER_VISITED_SEQUENCES: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static LEXICAL_QUERY_CONSTRUCTIONS: Cell<usize> = const { Cell::new(0) };
     static LEXICAL_QUERY_EXECUTIONS: Cell<usize> = const { Cell::new(0) };
+    static LEXICAL_CANDIDATE_MATERIALIZATION_FAILURE_AFTER: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -216,6 +217,43 @@ pub fn lexical_query_constructions() -> usize {
 #[cfg(any(test, feature = "test-support"))]
 pub fn lexical_query_executions() -> usize {
     LEXICAL_QUERY_EXECUTIONS.get()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn fail_lexical_candidate_materialization_after(records: usize) {
+    LEXICAL_CANDIDATE_MATERIALIZATION_FAILURE_AFTER.set(Some(records));
+}
+
+#[cfg(any(test, feature = "test-support"))]
+struct LexicalCandidateMaterializationFailureReset;
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for LexicalCandidateMaterializationFailureReset {
+    fn drop(&mut self) {
+        LEXICAL_CANDIDATE_MATERIALIZATION_FAILURE_AFTER.set(None);
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn lexical_candidate_materialization_failure_reset() -> LexicalCandidateMaterializationFailureReset
+{
+    LexicalCandidateMaterializationFailureReset
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn lexical_candidate_materialization_should_fail() -> bool {
+    LEXICAL_CANDIDATE_MATERIALIZATION_FAILURE_AFTER.with(|remaining| match remaining.get() {
+        Some(0) => {
+            remaining.set(None);
+            true
+        }
+        Some(count) => {
+            remaining.set(Some(count - 1));
+            false
+        }
+        None => false,
+    })
 }
 
 #[cfg(any(test, feature = "test-support"))]

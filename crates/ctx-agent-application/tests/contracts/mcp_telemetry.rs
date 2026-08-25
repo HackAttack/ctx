@@ -161,6 +161,13 @@ fn mcp_telemetry_is_content_free_coalesced_and_stdout_pure() {
     );
     assert!(!operations.contains(&"ping"));
     assert!(!operations.contains(&"tools_list"));
+    let search = events
+        .iter()
+        .find(|event| event["operation"] == "search")
+        .unwrap();
+    assert_eq!(search["properties"]["search_output_served"], true);
+    assert_eq!(search["properties"]["search_failure_phase"], "refresh");
+    assert_eq!(search["properties"]["search_refresh_status"], "failed");
 
     let allowed_operation_properties = [
         "acceleration_candidate",
@@ -173,10 +180,27 @@ fn mcp_telemetry_is_content_free_coalesced_and_stdout_pure() {
         "events_truncated",
         "host_memory_bucket",
         "method",
+        "query_duration_bucket",
+        "refresh_duration_bucket",
         "response_bound",
         "result_count_bucket",
         "result_truncated",
         "rows_truncated",
+        "search_backend_effective",
+        "search_backend_requested",
+        "search_candidate_core_bytes_decoded_bucket",
+        "search_candidate_pool_truncated",
+        "search_candidate_records_decoded_bucket",
+        "search_candidate_rows_total_bucket",
+        "search_failure_phase",
+        "search_final_candidate_pool_bucket",
+        "search_output_duration_bucket",
+        "search_output_served",
+        "search_query_execution_count_bucket",
+        "search_refresh_status",
+        "search_refresh_source_count_bucket",
+        "search_retrieval_round_count_bucket",
+        "search_stop_reason",
         "tool",
         "values_truncated",
         "zero_result",
