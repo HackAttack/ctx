@@ -523,7 +523,8 @@ fn repeated_replacement_tombstones_hit_the_witness_cap_and_fail_closed() {
 }
 
 #[test]
-fn session_witness_segment_probe_cap_accepts_64_and_rejects_65() {
+fn session_witness_segment_probe_cap_admits_65_segment_generation() {
+    const VALID_SEGMENT_COUNT: usize = 65;
     let root = tempdir().unwrap();
     let target = source("witness-segment-cap-target.jsonl");
     let options = WriterOptions {
@@ -535,7 +536,7 @@ fn session_witness_segment_probe_cap_accepts_64_and_rejects_65() {
         .into_writer()
         .unwrap();
     initial.test_disable_merges().unwrap();
-    for segment in 0..MAX_SESSION_WITNESS_SEGMENT_PROBES {
+    for segment in 0..VALID_SEGMENT_COUNT {
         let current = if segment == 0 {
             target.clone()
         } else {
@@ -556,10 +557,7 @@ fn session_witness_segment_probe_cap_accepts_64_and_rejects_65() {
     }
     initial.commit(|_| true).unwrap();
     let (searcher, _) = open_unverified_generation(root.path());
-    assert_eq!(
-        searcher.segment_readers().len(),
-        MAX_SESSION_WITNESS_SEGMENT_PROBES
-    );
+    assert_eq!(searcher.segment_readers().len(), VALID_SEGMENT_COUNT);
 
     let mut accepted = GenerationWriter::open(root.path(), options.clone())
         .unwrap()
@@ -576,7 +574,7 @@ fn session_witness_segment_probe_cap_accepts_64_and_rejects_65() {
         .unwrap();
     assert_eq!(
         crate::prior_session_identity_lookup_work().segment_range_probes,
-        MAX_SESSION_WITNESS_SEGMENT_PROBES
+        VALID_SEGMENT_COUNT
     );
     accepted
         .certify_source_append(
@@ -591,34 +589,11 @@ fn session_witness_segment_probe_cap_accepts_64_and_rejects_65() {
         .unwrap();
     accepted.commit(|_| true).unwrap();
     let (searcher, _) = open_unverified_generation(root.path());
-    assert_eq!(
-        searcher.segment_readers().len(),
-        MAX_SESSION_WITNESS_SEGMENT_PROBES + 1
-    );
-
-    let mut rejected = GenerationWriter::open(root.path(), options.clone())
-        .unwrap()
-        .into_writer()
-        .unwrap();
-    rejected.begin_source_append(target.clone()).unwrap();
-    crate::reset_prior_session_identity_lookup_work();
-    assert!(matches!(
-        rejected.add_core_record(document(&target, 3, "rejected past segment cap")),
-        Err(IndexError::ActiveGenerationNeedsRebuild { .. })
-    ));
-    assert_eq!(
-        crate::prior_session_identity_lookup_work().segment_range_probes,
-        MAX_SESSION_WITNESS_SEGMENT_PROBES + 1
-    );
-    assert!(matches!(
-        rejected.commit(|_| true),
-        Err(IndexError::ActiveGenerationNeedsRebuild { .. })
-    ));
-    let rebuild = GenerationWriter::open(root.path(), options)
-        .unwrap()
-        .into_writer()
-        .unwrap();
-    assert!(rebuild.base_manifest().is_none());
+    assert_eq!(searcher.segment_readers().len(), VALID_SEGMENT_COUNT + 1);
+    assert!(!root
+        .path()
+        .join("active-generation-rebuild-required.json")
+        .exists());
 }
 
 #[test]

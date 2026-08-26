@@ -326,6 +326,14 @@ fn classify_active_integrity_failure(
     }
 }
 
+fn prior_session_identity_lookup_failure_is_passthrough(error: &IndexError) -> bool {
+    matches!(
+        error,
+        IndexError::CompactIdentityCollision { .. }
+            | IndexError::SessionAuthorityWorkLimitExceeded { .. }
+    )
+}
+
 #[cfg(test)]
 type GenerationPathHook = Box<dyn FnOnce(&Path) + Send>;
 
@@ -675,7 +683,7 @@ impl GenerationWriter {
                         match lookup {
                             Ok(prior) => prior,
                             Err(error)
-                                if matches!(error, IndexError::CompactIdentityCollision { .. }) =>
+                                if prior_session_identity_lookup_failure_is_passthrough(&error) =>
                             {
                                 return Err(error);
                             }
