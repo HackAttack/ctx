@@ -482,6 +482,94 @@ fn oversized_directories_exhaust_before_order_can_change_the_result() {
 }
 
 #[test]
+fn codex_flat_session_probe_admits_more_than_ten_thousand_direct_entries() {
+    let entries = (0..13_001).map(|_| DirectMatchEntry::Match);
+
+    assert_eq!(
+        bounded_direct_match_probe(
+            entries,
+            PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
+            PROVIDER_JSONL_INVENTORY_MAX_ELIGIBLE_PATHS
+        ),
+        BoundedProbe::Found
+    );
+}
+
+#[test]
+fn codex_flat_session_probe_checks_its_complete_bounded_stream() {
+    let over_entry_bound =
+        (0..=PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES).map(|_| DirectMatchEntry::Other);
+    assert_eq!(
+        bounded_direct_match_probe(
+            over_entry_bound,
+            PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
+            PROVIDER_JSONL_INVENTORY_MAX_ELIGIBLE_PATHS
+        ),
+        BoundedProbe::BudgetExhausted
+    );
+    let over_match_bound =
+        (0..=PROVIDER_JSONL_INVENTORY_MAX_ELIGIBLE_PATHS).map(|_| DirectMatchEntry::Match);
+    assert_eq!(
+        bounded_direct_match_probe(
+            over_match_bound,
+            PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
+            PROVIDER_JSONL_INVENTORY_MAX_ELIGIBLE_PATHS
+        ),
+        BoundedProbe::BudgetExhausted
+    );
+    assert_eq!(
+        bounded_direct_match_probe(
+            [DirectMatchEntry::Match, DirectMatchEntry::IoError].into_iter(),
+            2,
+            2
+        ),
+        BoundedProbe::IoError
+    );
+}
+
+#[test]
+fn codex_filesystem_probe_admits_a_flat_tree_above_the_generic_budget() {
+    const DIRECT_ENTRIES: usize = 10_001;
+    const SEEDS: usize = 16;
+
+    let temp = tempdir();
+    let root = temp.path().join("archived_sessions");
+    let seeds = temp.path().join("seeds");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(&seeds).unwrap();
+    let seed_paths = (0..SEEDS)
+        .map(|index| {
+            let path = seeds.join(format!("seed-{index:02}.jsonl"));
+            fs::write(&path, b"{}\n").unwrap();
+            path
+        })
+        .collect::<Vec<_>>();
+    for index in 0..DIRECT_ENTRIES {
+        fs::hard_link(
+            &seed_paths[index % SEEDS],
+            root.join(format!("rollout-{index:05}.jsonl")),
+        )
+        .unwrap();
+    }
+
+    assert_eq!(has_codex_session_file(&root), BoundedProbe::Found);
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_flat_session_probe_does_not_admit_a_symlinked_jsonl() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempdir();
+    let outside = tempdir();
+    let target = outside.path().join("session.jsonl");
+    fs::write(&target, b"{}\n").unwrap();
+    symlink(&target, temp.path().join("session.jsonl")).unwrap();
+
+    assert_eq!(has_codex_session_file(temp.path()), BoundedProbe::NotFound);
+}
+
+#[test]
 fn auggie_probe_matches_the_adapter_flat_directory_selections() {
     let direct = tempdir();
     fs::write(direct.path().join("direct.json"), b"{}\n").unwrap();

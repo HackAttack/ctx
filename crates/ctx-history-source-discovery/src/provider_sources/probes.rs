@@ -18,6 +18,7 @@ use ctx_history_source_io::{
     open_provider_source_path, provider_metadata_is_link_like, provider_safe_path_segment,
     read_provider_jsonl_line_or_skip_oversized, OpenedProviderSourcePath, ProviderJsonlLineRead,
     ProviderSourceDirectory, ProviderSourceRoot, SourceIoError,
+    PROVIDER_JSONL_INVENTORY_MAX_ELIGIBLE_PATHS, PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
 };
 
 #[cfg(test)]
@@ -55,12 +56,7 @@ pub(super) fn default_location_import_probe(
         CaptureProvider::Codex if location.source_format == "codex_history_jsonl" => {
             path_is_file_probe(path)
         }
-        CaptureProvider::Codex => has_file_under_matching(path, 10_000, |candidate| {
-            candidate
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
-        }),
+        CaptureProvider::Codex => has_codex_session_file(path),
         CaptureProvider::GrokBuild => has_jsonl_file_under_matching(path, 10_000, |candidate| {
             candidate.file_name().and_then(|name| name.to_str()) == Some("updates.jsonl")
         }),
@@ -740,6 +736,94 @@ fn path_is_dir_probe(path: &Path) -> BoundedProbe {
         PathProbe::IoError => BoundedProbe::IoError,
         _ => BoundedProbe::NotFound,
     }
+}
+
+fn has_codex_session_file(root: &Path) -> BoundedProbe {
+    // Codex archives are legitimately flat and can exceed the generic recursive
+    // probe's sorting budget. Scan that one directory as a constant-memory
+    // stream under the downstream inventory's exact bounds, consuming the
+    // complete bounded stream so filesystem enumeration order cannot decide the
+    // result. Nested layouts retain the existing sorted recursive probe.
+    match has_direct_codex_session_file(root) {
+        BoundedProbe::NotFound => has_file_under_matching(root, 10_000, is_codex_session_file),
+        outcome => outcome,
+    }
+}
+
+fn has_direct_codex_session_file(root: &Path) -> BoundedProbe {
+    match path_metadata_probe(root) {
+        PathProbe::File => return BoundedProbe::from_bool(is_codex_session_file(root)),
+        PathProbe::Dir => {}
+        PathProbe::Missing | PathProbe::Other => return BoundedProbe::NotFound,
+        PathProbe::IoError => return BoundedProbe::IoError,
+    }
+
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return BoundedProbe::IoError,
+    };
+    bounded_direct_match_probe(
+        entries.map(|entry| {
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(_) => return DirectMatchEntry::IoError,
+            };
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(_) => return DirectMatchEntry::Other,
+            };
+            if !provider_metadata_is_link_like(&metadata)
+                && metadata.file_type().is_file()
+                && is_codex_session_file(&path)
+            {
+                DirectMatchEntry::Match
+            } else {
+                DirectMatchEntry::Other
+            }
+        }),
+        PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
+        PROVIDER_JSONL_INVENTORY_MAX_ELIGIBLE_PATHS,
+    )
+}
+
+enum DirectMatchEntry {
+    Match,
+    Other,
+    IoError,
+}
+
+fn bounded_direct_match_probe(
+    entries: impl Iterator<Item = DirectMatchEntry>,
+    max_entries: usize,
+    max_matches: usize,
+) -> BoundedProbe {
+    let mut visited = 0usize;
+    let mut matches = 0usize;
+    let mut found = false;
+    for entry in entries {
+        if visited >= max_entries {
+            return BoundedProbe::BudgetExhausted;
+        }
+        visited = visited.saturating_add(1);
+        match entry {
+            DirectMatchEntry::Match => {
+                if matches >= max_matches {
+                    return BoundedProbe::BudgetExhausted;
+                }
+                matches = matches.saturating_add(1);
+                found = true;
+            }
+            DirectMatchEntry::Other => {}
+            DirectMatchEntry::IoError => return BoundedProbe::IoError,
+        }
+    }
+    BoundedProbe::from_bool(found)
+}
+
+fn is_codex_session_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
 }
 
 fn has_jsonl_file_under_matching(

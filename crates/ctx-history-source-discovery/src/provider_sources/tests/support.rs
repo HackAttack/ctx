@@ -1,8 +1,4 @@
-use std::{env, ffi::OsString, path::Path, sync::Mutex};
-
-use ctx_history_core::CaptureProvider;
-
-use super::super::ProviderSourceStatus;
+use std::{env, ffi::OsString, sync::Mutex};
 
 pub(super) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -32,16 +28,4 @@ impl Drop for EnvGuard {
             env::remove_var(self.name);
         }
     }
-}
-
-pub(super) fn assert_source_status(
-    home: &Path,
-    provider: CaptureProvider,
-    expected: ProviderSourceStatus,
-) {
-    let source = super::super::discover_provider_sources(&super::super::TEST_PROVIDER_PROBES, home)
-        .into_iter()
-        .find(|source| source.provider == provider)
-        .unwrap();
-    assert_eq!(source.status, expected, "{provider:?}");
 }
