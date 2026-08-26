@@ -1184,10 +1184,7 @@ fn foreground_provider_refreshes_batch_once_per_source_backed_import() {
         assert_eq!(refresh["failure_scope"], "none");
         assert_eq!(refresh["failure_type"], "none");
         assert_eq!(refresh["work_remaining"], false);
-        for bucket in [
-            "records_bucket",
-            "logical_bytes_bucket",
-        ] {
+        for bucket in ["records_bucket", "logical_bytes_bucket"] {
             assert!(refresh[bucket].as_str().is_some(), "missing {bucket}");
         }
         for forbidden in [
@@ -1224,11 +1221,7 @@ fn foreground_provider_refreshes_batch_once_per_source_backed_import() {
         assert_eq!(global["failure_scope"], "none");
         assert_eq!(global["failure_type"], "none");
         assert_eq!(global["work_remaining"], false);
-        for provider_only in [
-            "provider",
-            "records_bucket",
-            "logical_bytes_bucket",
-        ] {
+        for provider_only in ["provider", "records_bucket", "logical_bytes_bucket"] {
             assert!(
                 !global.contains_key(provider_only),
                 "global publication receipt exposed provider detail {provider_only}: {global:#?}"
