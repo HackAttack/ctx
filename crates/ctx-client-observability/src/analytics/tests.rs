@@ -191,21 +191,13 @@ fn durable_family_serialization_matches_public_goldens() {
                 ForegroundProviderRefreshV1 {
                     provider: Some(CaptureProvider::Codex),
                     trigger: ProviderRefreshTrigger::Search,
-                    source_mode: Some(ProviderRefreshSourceMode::Discovered),
                     change: ProviderRefreshChange::Changed,
-                    content_evidence: ProviderRefreshContentEvidence::Accepted,
-                    work_kind: Some(ProviderRefreshWorkKind::Append),
                     refresh_result: ProviderRefreshResult::Complete,
                     core_result: ProviderCoreResult::Complete,
                     failure_scope: ProviderRefreshFailureScope::None,
                     failure_type: ProviderRefreshFailureType::None,
                     work_remaining: false,
-                    retired_records: Some(count_bucket(0)),
-                    counts: Some(ProviderRefreshCountsV1::new(1, 12, 3, 8, 0, 0, 0, 0, 2048)),
-                    performance: Some(ProviderRefreshPerformanceV1::new(
-                        Duration::from_millis(800),
-                        Some(512 * 1024 * 1024),
-                    )),
+                    counts: Some(ProviderRefreshCountsV1::new(8, 2048)),
                 },
             )),
             include_str!(

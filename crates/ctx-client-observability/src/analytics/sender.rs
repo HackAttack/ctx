@@ -145,9 +145,6 @@ pub(super) fn serialize_event(
             if let Some(health) = event.terminal_health {
                 insert_provider_refresh_terminal_health_properties(&mut properties, &health);
             }
-            if let Some(stock) = event.corpus_stock {
-                insert_provider_refresh_corpus_stock_properties(&mut properties, &stock);
-            }
             (
                 "provider_refresh_completed",
                 event.surface,
@@ -234,22 +231,7 @@ fn insert_provider_refresh_properties(
         insert_str(properties, "provider", provider.as_str());
     }
     insert_str(properties, "trigger", refresh.trigger.as_str());
-    insert_optional_str(
-        properties,
-        "source_mode",
-        refresh.source_mode.map(ProviderRefreshSourceMode::as_str),
-    );
     insert_str(properties, "change", refresh.change.as_str());
-    insert_str(
-        properties,
-        "content_evidence",
-        refresh.content_evidence.as_str(),
-    );
-    insert_optional_str(
-        properties,
-        "work_kind",
-        refresh.work_kind.map(ProviderRefreshWorkKind::as_str),
-    );
     insert_str(
         properties,
         "refresh_result",
@@ -259,33 +241,9 @@ fn insert_provider_refresh_properties(
     insert_str(properties, "failure_scope", refresh.failure_scope.as_str());
     insert_str(properties, "failure_type", refresh.failure_type.as_str());
     insert_bool(properties, "work_remaining", refresh.work_remaining);
-    insert_optional_count(
-        properties,
-        "retired_records_bucket",
-        refresh.retired_records,
-    );
     if let Some(counts) = refresh.counts {
-        insert_optional_count(properties, "sources_bucket", counts.sources);
-        insert_optional_count(properties, "source_files_bucket", counts.source_files);
-        insert_optional_count(properties, "sessions_bucket", counts.sessions);
-        insert_optional_count(properties, "events_bucket", counts.events);
-        insert_optional_count(properties, "edges_bucket", counts.edges);
-        insert_optional_count(properties, "skips_bucket", counts.skips);
-        insert_optional_count(properties, "rejections_bucket", counts.rejections);
-        insert_optional_count(properties, "failures_bucket", counts.failures);
-        insert_optional_bytes(properties, "bytes_bucket", counts.bytes);
-    }
-    if let Some(performance) = refresh.performance {
-        insert_optional_duration(
-            properties,
-            "cpu_duration_bucket",
-            Some(performance.cpu_duration),
-        );
-        insert_optional_bytes(
-            properties,
-            "observed_process_peak_rss_bucket",
-            performance.observed_process_peak_rss,
-        );
+        insert_optional_count(properties, "records_bucket", counts.records);
+        insert_optional_bytes(properties, "logical_bytes_bucket", counts.logical_bytes);
     }
 }
 
@@ -293,112 +251,16 @@ fn insert_provider_refresh_terminal_health_properties(
     properties: &mut Map<String, Value>,
     health: &ProviderRefreshTerminalHealthV1,
 ) {
-    insert_optional_str(
-        properties,
-        "refresh_configured_indexing_mode",
-        health
-            .configured_indexing_mode
-            .map(ProviderRefreshConfiguredIndexingMode::as_str),
-    );
-    insert_optional_str(
-        properties,
-        "refresh_daemon_trigger_kind",
-        health
-            .daemon_trigger_kind
-            .map(ProviderRefreshDaemonTriggerKind::as_str),
-    );
-    insert_optional_str(
-        properties,
-        "refresh_reconciliation_demand",
-        health
-            .reconciliation_demand
-            .map(ProviderRefreshReconciliationDemand::as_str),
-    );
     insert_optional_bool(
         properties,
         "refresh_retained_previous_generation",
         health.retained_previous_generation,
-    );
-    insert_optional_duration(
-        properties,
-        "refresh_queue_wait_duration_bucket",
-        health.queue_wait_duration,
-    );
-    insert_optional_duration(
-        properties,
-        "refresh_discovery_duration_bucket",
-        health.discovery_duration,
-    );
-    insert_optional_duration(
-        properties,
-        "refresh_scan_stage_duration_bucket",
-        health.scan_stage_duration,
-    );
-    insert_optional_duration(
-        properties,
-        "refresh_commit_duration_bucket",
-        health.commit_duration,
-    );
-    insert_optional_count(
-        properties,
-        "refresh_coalesced_request_count_bucket",
-        health.coalesced_request_count,
     );
     insert_bool(
         properties,
         "refresh_successor_pending",
         health.successor_pending,
     );
-    insert_optional_count(
-        properties,
-        "refresh_processed_sessions_bucket",
-        health.processed_sessions,
-    );
-    insert_optional_count(
-        properties,
-        "refresh_processed_messages_bucket",
-        health.processed_messages,
-    );
-    insert_optional_count(
-        properties,
-        "refresh_processed_tool_calls_bucket",
-        health.processed_tool_calls,
-    );
-    insert_optional_bytes(
-        properties,
-        "refresh_processed_bytes_bucket",
-        health.processed_bytes,
-    );
-}
-
-fn insert_provider_refresh_corpus_stock_properties(
-    properties: &mut Map<String, Value>,
-    stock: &ProviderRefreshCorpusStockV1,
-) {
-    for (key, value) in [
-        (
-            "corpus_stock_indexed_documents_bucket",
-            stock.indexed_documents.as_str(),
-        ),
-        (
-            "corpus_stock_retained_records_bucket",
-            stock.retained_records.as_str(),
-        ),
-        (
-            "corpus_stock_rejected_records_bucket",
-            stock.rejected_records.as_str(),
-        ),
-        (
-            "corpus_stock_certified_source_bytes_bucket",
-            stock.certified_source_bytes.as_str(),
-        ),
-        (
-            "corpus_transition_removed_sources_bucket",
-            stock.removed_source_count.as_str(),
-        ),
-    ] {
-        insert_str(properties, key, value);
-    }
 }
 
 fn insert_client_operation_properties(

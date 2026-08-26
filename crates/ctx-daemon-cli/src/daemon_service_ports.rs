@@ -248,15 +248,10 @@ pub(crate) struct CliDaemonObservationPort;
 impl DaemonObservationPort for CliDaemonObservationPort {
     fn provider_refresh_event(
         &self,
-        data_root: &Path,
         job: &serde_json::Value,
         successor_pending: bool,
     ) -> Option<PublicEventV1> {
-        provider_refresh::provider_refresh_event(
-            job,
-            successor_pending,
-            crate::config::persisted_daemon_enabled(data_root).ok(),
-        )
+        provider_refresh::provider_refresh_event(job, successor_pending)
     }
 
     fn deliver(&self, data_root: &Path, events: &[PublicEventV1]) {

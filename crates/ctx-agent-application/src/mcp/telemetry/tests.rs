@@ -7,14 +7,9 @@ use serde_json::json;
 
 use super::*;
 use ctx_agent_integrations::tool_backend::{
-    ToolSearchBackend, ToolSearchConcentrationFacts, ToolSearchCopyClusterAvailability,
-    ToolSearchDiversificationStatus, ToolSearchLiteralRootFacts, ToolSearchStopReason,
-    ToolSearchTerminalFacts,
+    ToolSearchBackend, ToolSearchStopReason, ToolSearchTerminalFacts,
 };
-use ctx_client_observability::analytics::{
-    SearchBackend, SearchCopyClusterAvailability, SearchDiversificationStatus,
-    SearchLiteralRootFacts, SearchStopReason,
-};
+use ctx_client_observability::analytics::{SearchBackend, SearchStopReason};
 
 #[test]
 fn search_execution_survives_a_response_without_structured_content() {
@@ -26,15 +21,6 @@ fn search_execution_survives_a_response_without_structured_content() {
             backend_effective: Some(ToolSearchBackend::Lexical),
             query_executions: Some(2),
             candidate_rows: Some(7),
-            concentration: Some(ToolSearchConcentrationFacts {
-                candidate_sessions: 2,
-                largest_session_candidate_count: 5,
-                literal_roots: ToolSearchLiteralRootFacts::NotObservedDense,
-                provider_copy_candidate_count: 1,
-                copy_cluster_availability: ToolSearchCopyClusterAvailability::NotConstructedV1,
-                diversification_status: ToolSearchDiversificationStatus::NotApplicable,
-                diversification_changed_final_top_n: None,
-            }),
             stop_reason: Some(ToolSearchStopReason::Exhausted),
             ..ToolSearchTerminalFacts::default()
         }),
@@ -50,20 +36,6 @@ fn search_execution_survives_a_response_without_structured_content() {
     assert_eq!(search.health.query_executions, Some(2));
     assert_eq!(search.health.candidate_rows, Some(7));
     assert_eq!(search.health.stop_reason, Some(SearchStopReason::Exhausted));
-    let concentration = search.health.concentration.unwrap();
-    assert_eq!(concentration.candidate_sessions, 2);
-    assert_eq!(
-        concentration.literal_roots,
-        SearchLiteralRootFacts::NotObservedDense
-    );
-    assert_eq!(
-        concentration.copy_cluster_availability,
-        SearchCopyClusterAvailability::NotConstructedV1
-    );
-    assert_eq!(
-        concentration.diversification_status,
-        SearchDiversificationStatus::NotApplicable
-    );
 }
 
 #[test]

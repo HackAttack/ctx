@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use ctx_history_ingest_application::{IngestReport, ProviderRefreshModeFact};
+use ctx_history_ingest_application::IngestReport;
 
 use crate::analytics::{
     bytes_bucket, count_bucket, ImportFailureScope as AnalyticsImportFailureScope,
     ImportFailureType as AnalyticsImportFailureType, ImportOutcome as AnalyticsImportOutcome,
-    ImportTelemetry, ProviderRefreshSourceMode, ProviderRefreshTrigger,
+    ImportTelemetry, ProviderRefreshTrigger,
 };
 use crate::ui::Ui;
 use crate::ImportArgs;
@@ -185,15 +185,6 @@ fn record_application_facts(
         provider_refreshes.record_success_with_facts(
             facts.provider,
             refresh_trigger,
-            match facts.mode {
-                ProviderRefreshModeFact::ExplicitPath => ProviderRefreshSourceMode::ExplicitPath,
-                ProviderRefreshModeFact::ExplicitFormat => {
-                    ProviderRefreshSourceMode::ExplicitFormat
-                }
-                ProviderRefreshModeFact::HistorySourcePlugin => {
-                    ProviderRefreshSourceMode::HistorySourcePlugin
-                }
-            },
             &facts.summary,
             &facts.stats,
             ProviderRefreshRuntimeFacts::observed_success(facts.duration, &facts.summary),
@@ -216,8 +207,8 @@ mod tests {
     use ctx_history_refresh::{RefreshOutcomeClass, RefreshOutcomeCode, RefreshTerminalOutcome};
 
     use crate::analytics::{
-        Outcome, ProviderCoreResult, ProviderRefreshContentEvidence, ProviderRefreshFailureScope,
-        ProviderRefreshFailureType, ProviderRefreshResult, PublicEventV1, Surface,
+        Outcome, ProviderCoreResult, ProviderRefreshFailureScope, ProviderRefreshFailureType,
+        ProviderRefreshResult, PublicEventV1, Surface,
     };
 
     use super::*;
@@ -269,7 +260,6 @@ mod tests {
 
         assert_eq!(refresh.trigger, ProviderRefreshTrigger::Import);
         assert_eq!(refresh.provider, None);
-        assert_eq!(refresh.source_mode, None);
         assert_eq!(refresh.refresh_result, ProviderRefreshResult::Failure);
         assert_eq!(refresh.core_result, ProviderCoreResult::Failure);
         assert_eq!(refresh.failure_scope, ProviderRefreshFailureScope::Source);
@@ -279,10 +269,6 @@ mod tests {
         );
         assert!(!refresh.work_remaining);
         assert_eq!(refresh.counts, None);
-        assert_eq!(
-            refresh.content_evidence,
-            ProviderRefreshContentEvidence::Unknown
-        );
         assert!(!format!("{events:?}").contains("content-bearing raw terminal detail"));
     }
 
@@ -301,7 +287,6 @@ mod tests {
 
         assert_eq!(refresh.trigger, ProviderRefreshTrigger::Import);
         assert_eq!(refresh.provider, None);
-        assert_eq!(refresh.source_mode, None);
         assert_eq!(refresh.refresh_result, ProviderRefreshResult::Failure);
         assert_eq!(refresh.core_result, ProviderCoreResult::Failure);
         assert_eq!(refresh.failure_scope, ProviderRefreshFailureScope::Source);

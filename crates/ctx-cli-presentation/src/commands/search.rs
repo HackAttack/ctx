@@ -5,9 +5,7 @@ use clap::{Args, ValueEnum};
 
 use crate::analytics::{
     count_bucket, duration_bucket, text_length_bucket, RefreshMode, RefreshStatus, SearchBackend,
-    SearchConcentrationFacts, SearchCopyClusterAvailability, SearchDiversificationStatus,
-    SearchFailurePhase, SearchHealthFacts, SearchLiteralRootFacts, SearchStopReason,
-    SearchTelemetry,
+    SearchFailurePhase, SearchHealthFacts, SearchStopReason, SearchTelemetry,
 };
 use crate::local_usage::CliUsage;
 use crate::ui::Ui;
@@ -297,54 +295,9 @@ fn search_health_facts(
         encoded_core_bytes_decoded: observation.work.encoded_core_bytes_decoded,
         final_candidate_pool: observation.final_candidate_pool,
         candidate_pool_truncated: observation.candidate_pool_truncated,
-        concentration: search_concentration_facts(observation),
         stop_reason: observation.stop_reason.map(observed_stop_reason),
         failure_phase: observation.failure_phase.map(observed_failure_phase),
     }
-}
-
-fn search_concentration_facts(
-    observation: &ctx_history_cli::SearchExecutionObservation,
-) -> Option<SearchConcentrationFacts> {
-    let concentration = observation.concentration?;
-    let diversification = observation.diversification?;
-    let literal_roots = match concentration.literal_roots {
-        ctx_history_read_application::SearchLiteralRootConcentration::Observed {
-            distinct_families,
-            candidate_count,
-            largest_family_candidate_count,
-        } => SearchLiteralRootFacts::Observed {
-            candidate_families: distinct_families,
-            candidate_count,
-            largest_family_candidate_count,
-        },
-        ctx_history_read_application::SearchLiteralRootConcentration::NotObservedDense => {
-            SearchLiteralRootFacts::NotObservedDense
-        }
-    };
-    Some(SearchConcentrationFacts {
-        candidate_sessions: concentration.distinct_sessions,
-        largest_session_candidate_count: concentration.largest_session_candidate_count,
-        literal_roots,
-        provider_copy_candidate_count: concentration.provider_copy_candidate_count,
-        copy_cluster_availability: match concentration.copy_clusters {
-            ctx_history_read_application::SearchCopyClusterAvailability::NotConstructedV1 => {
-                SearchCopyClusterAvailability::NotConstructedV1
-            }
-        },
-        diversification_status: match diversification.status {
-            ctx_history_read_application::SearchDiversificationStatus::Applied => {
-                SearchDiversificationStatus::Applied
-            }
-            ctx_history_read_application::SearchDiversificationStatus::NotApplicable => {
-                SearchDiversificationStatus::NotApplicable
-            }
-            ctx_history_read_application::SearchDiversificationStatus::Indeterminate => {
-                SearchDiversificationStatus::Indeterminate
-            }
-        },
-        diversification_changed_final_top_n: diversification.changed_final_top_n,
-    })
 }
 
 const fn search_refresh_status(value: ctx_history_cli::SearchRefreshStatus) -> RefreshStatus {

@@ -20,7 +20,6 @@ pub struct SearchExecutionObservation {
     pub work: ctx_history_read_application::SearchWorkReceipt,
     pub final_candidate_pool: Option<u64>,
     pub candidate_pool_truncated: Option<bool>,
-    pub concentration: Option<ctx_history_read_application::SearchConcentrationReceipt>,
     pub diversification: Option<ctx_history_read_application::SearchDiversificationDecision>,
     pub stop_reason: Option<ctx_history_read_application::SearchStopReason>,
     pub failure_phase: Option<SearchFailurePhase>,

@@ -10,26 +10,13 @@
   "properties": {
     "provider": "codex",
     "trigger": "search",
-    "source_mode": "discovered",
     "change": "changed",
-    "content_evidence": "accepted",
-    "work_kind": "append",
     "refresh_result": "complete",
     "core_result": "complete",
     "failure_scope": "none",
     "failure_type": "none",
     "work_remaining": false,
-    "retired_records_bucket": "0",
-    "sources_bucket": "1",
-    "source_files_bucket": "6-20",
-    "sessions_bucket": "2-5",
-    "events_bucket": "6-20",
-    "edges_bucket": "0",
-    "skips_bucket": "0",
-    "rejections_bucket": "0",
-    "failures_bucket": "0",
-    "bytes_bucket": "lt_100kb",
-    "cpu_duration_bucket": "lt_1s",
-    "observed_process_peak_rss_bucket": "100mb-1gb"
+    "records_bucket": "6-20",
+    "logical_bytes_bucket": "lt_100kb"
   }
 }

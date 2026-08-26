@@ -59,14 +59,13 @@ fn immediate_follow_up(mut iteration: DaemonIteration) -> DaemonIteration {
 
 fn with_provider_refresh(
     mut iteration: DaemonIteration,
-    data_root: &Path,
     job: &Value,
     successor_pending: bool,
     terminal_persistence_pending: bool,
     observation: &dyn crate::DaemonObservationPort,
 ) -> DaemonIteration {
     if !terminal_persistence_pending {
-        if let Some(event) = observation.provider_refresh_event(data_root, job, successor_pending) {
+        if let Some(event) = observation.provider_refresh_event(job, successor_pending) {
             iteration.provider_refresh_events.push(event);
         }
     }
@@ -328,7 +327,6 @@ where
     let iteration = DaemonIteration::new(run.did_work, failed, daemon_core_cycle_state(&job));
     Ok(Some(with_provider_refresh(
         iteration,
-        data_root,
         &job,
         coordinator.has_pending_request(),
         run.terminal_persistence_pending,
@@ -410,7 +408,6 @@ where
     );
     let iteration = with_provider_refresh(
         iteration,
-        data_root,
         &job,
         source_refresh.has_pending_request(),
         terminal_persistence_pending,
@@ -484,7 +481,6 @@ where
         }
         let iteration = with_provider_refresh(
             DaemonIteration::new(run.did_work, false, state),
-            data_root,
             &job,
             coordinator.has_pending_request(),
             terminal_persistence_pending,
@@ -494,7 +490,6 @@ where
     }
     Ok(with_provider_refresh(
         DaemonIteration::new(run.did_work, failed, state),
-        data_root,
         &job,
         coordinator.has_pending_request(),
         terminal_persistence_pending,

@@ -76,39 +76,6 @@ pub enum ToolSearchFailurePhase {
     Output,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolSearchCopyClusterAvailability {
-    NotConstructedV1,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolSearchDiversificationStatus {
-    Applied,
-    NotApplicable,
-    Indeterminate,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ToolSearchConcentrationFacts {
-    pub candidate_sessions: u32,
-    pub largest_session_candidate_count: u32,
-    pub literal_roots: ToolSearchLiteralRootFacts,
-    pub provider_copy_candidate_count: u32,
-    pub copy_cluster_availability: ToolSearchCopyClusterAvailability,
-    pub diversification_status: ToolSearchDiversificationStatus,
-    pub diversification_changed_final_top_n: Option<bool>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolSearchLiteralRootFacts {
-    Observed {
-        candidate_families: u32,
-        candidate_count: u32,
-        largest_family_candidate_count: u32,
-    },
-    NotObservedDense,
-}
-
 /// Exact content-free facts crossing the tool/MCP application boundary.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ToolSearchTerminalFacts {
@@ -125,7 +92,6 @@ pub struct ToolSearchTerminalFacts {
     pub encoded_core_bytes_decoded: Option<u64>,
     pub final_candidate_pool: Option<u64>,
     pub candidate_pool_truncated: Option<bool>,
-    pub concentration: Option<ToolSearchConcentrationFacts>,
     pub stop_reason: Option<ToolSearchStopReason>,
     pub failure_phase: Option<ToolSearchFailurePhase>,
     pub output_duration: Option<Duration>,

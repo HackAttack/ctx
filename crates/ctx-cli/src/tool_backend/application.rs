@@ -18,10 +18,9 @@ use super::{
     CursorFailureKind, OpaqueMcpProxyError, QueryEventsRequest, ShowEventRequest,
     ShowSessionRequest, StructuredToolError, ToolBackend, ToolBackendError, ToolEventContent,
     ToolEventRangeDirection, ToolEventRangeScope, ToolExecutionError, ToolOperation, ToolOutcome,
-    ToolSearchBackend, ToolSearchConcentrationFacts, ToolSearchContentScope,
-    ToolSearchCopyClusterAvailability, ToolSearchDiversificationStatus, ToolSearchFailurePhase,
-    ToolSearchLiteralRootFacts, ToolSearchRefreshStatus, ToolSearchRequest, ToolSearchStopReason,
-    ToolSearchTerminalFacts, ToolSearchUsageFacts, ToolTranscriptMode, ToolUsageFacts,
+    ToolSearchBackend, ToolSearchContentScope, ToolSearchFailurePhase, ToolSearchRefreshStatus,
+    ToolSearchRequest, ToolSearchStopReason, ToolSearchTerminalFacts, ToolSearchUsageFacts,
+    ToolTranscriptMode, ToolUsageFacts,
 };
 use crate::{
     commands::list::events::{
@@ -318,56 +317,11 @@ fn search_terminal_facts(
         encoded_core_bytes_decoded: observation.work.encoded_core_bytes_decoded,
         final_candidate_pool: observation.final_candidate_pool,
         candidate_pool_truncated: observation.candidate_pool_truncated,
-        concentration: tool_search_concentration_facts(&observation),
         stop_reason: observation.stop_reason.map(search_stop_reason),
         failure_phase: observation.failure_phase.map(search_failure_phase),
         output_duration: None,
         output_served: None,
     }
-}
-
-fn tool_search_concentration_facts(
-    observation: &ctx_history_cli::SearchExecutionObservation,
-) -> Option<ToolSearchConcentrationFacts> {
-    let concentration = observation.concentration?;
-    let diversification = observation.diversification?;
-    let literal_roots = match concentration.literal_roots {
-        ctx_history_read_application::SearchLiteralRootConcentration::Observed {
-            distinct_families,
-            candidate_count,
-            largest_family_candidate_count,
-        } => ToolSearchLiteralRootFacts::Observed {
-            candidate_families: distinct_families,
-            candidate_count,
-            largest_family_candidate_count,
-        },
-        ctx_history_read_application::SearchLiteralRootConcentration::NotObservedDense => {
-            ToolSearchLiteralRootFacts::NotObservedDense
-        }
-    };
-    Some(ToolSearchConcentrationFacts {
-        candidate_sessions: concentration.distinct_sessions,
-        largest_session_candidate_count: concentration.largest_session_candidate_count,
-        literal_roots,
-        provider_copy_candidate_count: concentration.provider_copy_candidate_count,
-        copy_cluster_availability: match concentration.copy_clusters {
-            ctx_history_read_application::SearchCopyClusterAvailability::NotConstructedV1 => {
-                ToolSearchCopyClusterAvailability::NotConstructedV1
-            }
-        },
-        diversification_status: match diversification.status {
-            ctx_history_read_application::SearchDiversificationStatus::Applied => {
-                ToolSearchDiversificationStatus::Applied
-            }
-            ctx_history_read_application::SearchDiversificationStatus::NotApplicable => {
-                ToolSearchDiversificationStatus::NotApplicable
-            }
-            ctx_history_read_application::SearchDiversificationStatus::Indeterminate => {
-                ToolSearchDiversificationStatus::Indeterminate
-            }
-        },
-        diversification_changed_final_top_n: diversification.changed_final_top_n,
-    })
 }
 
 const fn search_refresh_status(
