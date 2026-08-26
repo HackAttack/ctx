@@ -48,7 +48,7 @@ pub(crate) fn run_doctor(
             ui.stdout_context(),
             &findings,
             model.health.as_ref(),
-            human_refresh_failure(&source_report),
+            human_refresh_failure(source_report),
         );
         ui.write_stdout(&document)?;
     }
