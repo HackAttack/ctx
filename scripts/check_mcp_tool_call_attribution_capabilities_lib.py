@@ -817,7 +817,7 @@ def validate_public_docs(
     required = (
         "Codex `codex_session_jsonl_tree` / `codex-nativepath-jsonl-v0`",
         "49 capability lanes: three `exact`, 45 `not-qualified`, and one `excluded`",
-        "`codex-nativepath-core-activity-v8-inherited-session-lineage`",
+        "`codex-nativepath-core-activity-v9-record-coverage`",
         "`warp-source-backed-logical-v7-neutral-activity-agent-scope`",
         "`copilot-cli-direct-native-jsonl-v8-optional-activity-admission`",
         "`activity.invocation`",

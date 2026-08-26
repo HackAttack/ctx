@@ -432,7 +432,7 @@
       "provider_id": "codex", "route": "native_import", "source_format": "codex_session_jsonl_tree", "source_schema": "codex-nativepath-jsonl-v0",
       "producer_bound": {"kind": "unversioned", "generation": 1, "unknown_generations": "not-qualified"},
       "implementation_source": "crates/ctx-history-provider-codex/src/codex/nativepath/source_backed.rs",
-      "parser_revision": "codex-nativepath-core-activity-v8-inherited-session-lineage",
+      "parser_revision": "codex-nativepath-core-activity-v9-record-coverage",
       "suite_id": "ctx-history-provider-codex::native_unit",
       "tests": [
         {"id": "codex::nativepath::rows::tests::mcp_terminal_activity_preserves_exact_server_tool_and_linkage", "source": "crates/ctx-history-provider-codex/src/codex/nativepath/rows/tests.rs"},
