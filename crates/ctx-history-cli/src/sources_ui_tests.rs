@@ -292,18 +292,23 @@ fn sources_empty_state_is_actionable() {
 }
 
 #[test]
-fn default_sources_hide_empty_provider_while_all_retains_it() {
+fn concise_sources_hide_empty_provider_while_json_and_all_retain_it() {
     let mut empty = source(ProviderSourceStatus::Empty, "/tmp/gemini");
     empty.provider = CaptureProvider::Gemini;
     empty.source_format = "gemini_session_json_tree";
     let default_sources = std::slice::from_ref(&empty)
         .iter()
-        .filter(|source| source_is_visible(source, false, &[], &[]))
+        .filter(|source| source_is_visible_for_output(source, false, OutputFormat::Text))
         .cloned()
         .collect::<Vec<_>>();
     let all_sources = std::slice::from_ref(&empty)
         .iter()
-        .filter(|source| source_is_visible(source, true, &[], &[]))
+        .filter(|source| source_is_visible_for_output(source, true, OutputFormat::Text))
+        .cloned()
+        .collect::<Vec<_>>();
+    let json_sources = std::slice::from_ref(&empty)
+        .iter()
+        .filter(|source| source_is_visible_for_output(source, false, OutputFormat::Json))
         .cloned()
         .collect::<Vec<_>>();
     let context = context(80, ColorMode::Never);
@@ -318,6 +323,8 @@ fn default_sources_hide_empty_provider_while_all_retains_it() {
         "{default}"
     );
     assert!(!default.contains("gemini"), "{default}");
+    assert_eq!(json_sources.len(), 1);
+    assert_eq!(json_sources[0].status, ProviderSourceStatus::Empty);
 
     let all = render_sources_human(
         &context,

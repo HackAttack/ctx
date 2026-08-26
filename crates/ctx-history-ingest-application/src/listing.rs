@@ -159,12 +159,11 @@ pub fn source_is_visible(
     default_visible_missing_providers: &[CaptureProvider],
 ) -> bool {
     show_all_sources
-        || (source.status != ProviderSourceStatus::Empty
-            && (source.route_provenance.configured_root().is_some()
-                || configured_provider_roots
-                    .iter()
-                    .any(|root| provider_source_belongs_to_configured_root(root, source))
-                || source_visible_by_default(source, default_visible_missing_providers)))
+        || source.route_provenance.configured_root().is_some()
+        || configured_provider_roots
+            .iter()
+            .any(|root| provider_source_belongs_to_configured_root(root, source))
+        || source_visible_by_default(source, default_visible_missing_providers)
 }
 fn source_visible_by_default(
     source: &ProviderSource,
@@ -286,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_empty_source_is_hidden_by_default_and_retained_by_all() {
+    fn existing_empty_source_remains_in_default_listing() {
         let temp = tempfile::tempdir().unwrap();
         let report = DiscoveryReport {
             sources: vec![source("empty-history", ProviderSourceStatus::Empty)],
@@ -294,7 +293,7 @@ mod tests {
         };
         let default = assemble_source_listing(
             &Port {
-                all: report.clone(),
+                all: report,
                 calls: Cell::new(0),
             },
             temp.path(),
@@ -306,24 +305,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(default.visible_sources.is_empty());
+        assert_eq!(default.visible_sources.len(), 1);
+        assert_eq!(
+            default.visible_sources[0].status,
+            ProviderSourceStatus::Empty
+        );
         assert_eq!(default.hidden_missing_sources, 0);
-
-        let all = assemble_source_listing(
-            &Port {
-                all: report,
-                calls: Cell::new(0),
-            },
-            temp.path(),
-            SourceListingRequest {
-                provider_filter: None,
-                show_all: true,
-                configured_provider_roots: vec![],
-                default_visible_missing_providers: vec![CaptureProvider::Codex],
-            },
-        )
-        .unwrap();
-        assert_eq!(all.visible_sources.len(), 1);
-        assert_eq!(all.visible_sources[0].status, ProviderSourceStatus::Empty);
     }
 }

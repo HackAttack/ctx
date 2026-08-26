@@ -70,7 +70,9 @@ where
         },
     )?;
     let discovery_report = listing.discovery;
-    let sources = &listing.visible_sources;
+    let mut sources = listing.visible_sources;
+    sources.retain(|source| source_is_visible_for_output(source, show_all_sources, request.format));
+    let sources = &sources;
     let plugin_sources = listing.plugins.sources;
     let plugin_failures = listing.plugins.failures;
     let existing = sources.iter().filter(|source| source.exists).count();
@@ -142,6 +144,14 @@ where
         content_bytes,
         output_bytes,
     })
+}
+
+fn source_is_visible_for_output(
+    source: &SourceInfo,
+    show_all_sources: bool,
+    format: OutputFormat,
+) -> bool {
+    format == OutputFormat::Json || show_all_sources || source.status != ProviderSourceStatus::Empty
 }
 
 #[cfg(test)]
