@@ -1,5 +1,4 @@
 load("@crates//:defs.bzl", "aliases", "all_crate_deps", "crate_deps", "crate_edition")
-load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:rust_sources.bzl", "RUST_PROD_SRC_EXCLUDES")
 load("//tools/bazel:ctx_rust.bzl", "ctx_rust_test")
@@ -133,31 +132,13 @@ ctx_rust_test(
     edition = crate_edition(),
 )
 
-sh_test(
+test_suite(
     name = "active_source_family_contract_tests",
-    srcs = ["tests/run-active-source-family-contracts.sh"],
-    args = [
-        "$(rootpath :unit_tests)",
-        "$(rootpath //crates/ctx-history-capture-composition:unit_tests)",
-        "$(rootpath //crates/ctx-history-provider-codex:unit_tests)",
-        "$(rootpath //crates/ctx-history-jsonl:unit_tests)",
-        "$(rootpath //crates/ctx-history-source-io:unit_tests)",
-        "$(rootpath //crates/ctx-history-source-sqlite:unit_tests)",
-        "$(rootpath tests/active-source-family-contract-tests.txt)",
-    ],
-    data = [
-        ":unit_tests",
+    tests = [
         "//crates/ctx-history-capture-composition:unit_tests",
-        "//crates/ctx-history-provider-codex:unit_tests",
+        "//crates/ctx-history-capture-runtime:unit_tests",
         "//crates/ctx-history-jsonl:unit_tests",
         "//crates/ctx-history-source-io:unit_tests",
         "//crates/ctx-history-source-sqlite:unit_tests",
-        "tests/active-source-family-contract-tests.txt",
-    ],
-    size = "small",
-    tags = [
-        "safe-presubmit",
-        "source-backed",
-        "source-family-contract",
     ],
 )
