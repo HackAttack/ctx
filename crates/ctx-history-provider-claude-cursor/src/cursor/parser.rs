@@ -724,6 +724,37 @@ mod tests {
         }
     }
 
+    fn projected_event_count(record: &[u8]) -> usize {
+        project_cursor_jsonl_record(record, 0, 0, 0, record.len() as u64)
+            .unwrap()
+            .map_or(0, |events| events.len())
+    }
+
+    #[test]
+    fn cursor_messages_without_a_nested_message_role_are_retained() {
+        // Cursor agent transcripts carry the role only at the top level; the
+        // message object holds content alone.
+        for role in ["user", "assistant"] {
+            let record = format!(
+                r#"{{"role":"{role}","message":{{"content":[{{"type":"text","text":"retained"}}]}}}}"#
+            );
+            assert!(
+                projected_event_count(record.as_bytes()) > 0,
+                "Cursor {role} message without a nested role was excluded"
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_messages_whose_roles_disagree_stay_excluded() {
+        let record = br#"{"role":"user","message":{"role":"assistant","content":[{"type":"text","text":"MUST_NOT_EMIT"}]}}"#;
+        assert_eq!(
+            projected_event_count(record),
+            0,
+            "Cursor message with disagreeing roles was retained"
+        );
+    }
+
     fn assert_rejected(label: &str, record: &[u8]) {
         assert!(
             project_cursor_jsonl_record(record, 0, 0, 0, record.len() as u64)

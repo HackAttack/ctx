@@ -278,7 +278,7 @@ fn cursor_record_admission(
         && matches!(record_type, None | Some("message"))
         && status.is_none()
         && role == Some("user")
-        && message_role == Some("user")
+        && matches!(message_role, None | Some("user"))
     {
         return CursorRecordAdmission::UserMessage;
     }
@@ -286,7 +286,7 @@ fn cursor_record_admission(
         && matches!(record_type, None | Some("message"))
         && status.is_none()
         && role == Some("assistant")
-        && message_role == Some("assistant")
+        && matches!(message_role, None | Some("assistant"))
     {
         return CursorRecordAdmission::AssistantMessage;
     }
