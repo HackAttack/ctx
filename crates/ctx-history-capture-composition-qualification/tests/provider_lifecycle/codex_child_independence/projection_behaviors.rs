@@ -113,9 +113,7 @@ fn codex_core_envelope_rejection_preserves_siblings_and_their_ids() {
     );
     let rejected_index = VerifiedIndex::open(&index_root).unwrap();
     let sibling_ids = [before_marker, after_marker].map(|marker| {
-        rejected_index
-            .search_event_candidates(marker, 8)
-            .unwrap()
+        search_event_candidates(&rejected_index, marker, 8)
             .into_iter()
             .find(|candidate| {
                 candidate.event.provider_session_id.as_deref() == Some(native_session_id)
@@ -148,9 +146,7 @@ fn codex_core_envelope_rejection_preserves_siblings_and_their_ids() {
         .into_iter()
         .zip(sibling_ids.iter().copied())
     {
-        assert!(repaired_index
-            .search_event_candidates(marker, 8)
-            .unwrap()
+        assert!(search_event_candidates(&repaired_index, marker, 8)
             .into_iter()
             .any(|candidate| candidate.event.event_id == event_id));
     }
@@ -164,9 +160,7 @@ fn codex_core_envelope_rejection_preserves_siblings_and_their_ids() {
         .into_iter()
         .zip(sibling_ids.iter().copied())
     {
-        assert!(replayed_index
-            .search_event_candidates(marker, 8)
-            .unwrap()
+        assert!(search_event_candidates(&replayed_index, marker, 8)
             .into_iter()
             .any(|candidate| candidate.event.event_id == event_id));
     }
@@ -250,7 +244,7 @@ fn inherited_codex_session_metadata_is_admitted_in_both_provider_orders() {
         (neighbor_id, "inheritedmetadataneighbormarker"),
     ] {
         assert_eq!(records_for(&index, native_session_id).len(), 1);
-        assert_eq!(index.search_event_candidates(marker, 8).unwrap().len(), 1);
+        assert_eq!(search_event_candidates(&index, marker, 8).len(), 1);
     }
     for native_session_id in [owner_first_id, ancestor_first_id] {
         let records = records_for(&index, native_session_id);
@@ -360,9 +354,7 @@ fn codex_rollout_ownership_quarantine_retries_after_file_repair() {
     assert_eq!(failure.source.provider(), CaptureProvider::Codex.as_str());
 
     let index = VerifiedIndex::open(&index_root).unwrap();
-    assert!(index
-        .search_event_candidates(neighbor_marker, 32)
-        .unwrap()
+    assert!(search_event_candidates(&index, neighbor_marker, 32)
         .into_iter()
         .any(|candidate| candidate.event.provider_session_id.as_deref() == Some(valid_session_id)));
     assert!(index.manifest().sources.iter().any(|certificate| {
@@ -376,10 +368,7 @@ fn codex_rollout_ownership_quarantine_retries_after_file_repair() {
         repairable_session_id,
         previously_valid_marker
     ));
-    assert!(index
-        .search_event_candidates(late_bad_marker, 8)
-        .unwrap()
-        .is_empty());
+    assert!(search_event_candidates(&index, late_bad_marker, 8).is_empty());
     drop(index);
 
     fs::write(
@@ -412,15 +401,10 @@ fn codex_rollout_ownership_quarantine_retries_after_file_repair() {
         previously_valid_marker
     ));
     assert_eq!(
-        repaired_index
-            .search_event_candidates(repaired_marker, 8)
-            .unwrap()
-            .len(),
+        search_event_candidates(&repaired_index, repaired_marker, 8).len(),
         1
     );
-    assert!(repaired_index
-        .search_event_candidates(neighbor_marker, 8)
-        .unwrap()
+    assert!(search_event_candidates(&repaired_index, neighbor_marker, 8)
         .into_iter()
         .any(|candidate| candidate.event.provider_session_id.as_deref() == Some(valid_session_id)));
 }
@@ -481,9 +465,7 @@ fn codex_retrieval_exclusion_survives_raw_append_hydration_and_keeps_ids_stable(
             && record.content.activity.is_some()
     }));
     assert!(
-        appended_index
-            .search_event_candidates("retrievaldiscoverymarker", 32)
-            .unwrap()
+        search_event_candidates(&appended_index, "retrievaldiscoverymarker", 32)
             .into_iter()
             .all(|candidate| candidate.event.provider_session_id.as_deref()
                 != Some(native_session_id))
@@ -521,9 +503,7 @@ fn codex_retrieval_exclusion_survives_raw_append_hydration_and_keeps_ids_stable(
         .iter()
         .all(|record| record.content.discovery_exclusion.is_none()));
     assert!(
-        controlled_index
-            .search_event_candidates("ordinarycontrolmarker", 32)
-            .unwrap()
+        search_event_candidates(&controlled_index, "ordinarycontrolmarker", 32)
             .into_iter()
             .any(|candidate| candidate.event.provider_session_id.as_deref()
                 == Some(native_session_id))
