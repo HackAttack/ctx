@@ -145,6 +145,9 @@ pub(super) fn serialize_event(
             if let Some(health) = event.terminal_health {
                 insert_provider_refresh_terminal_health_properties(&mut properties, &health);
             }
+            if let Some(stock) = event.corpus_stock {
+                insert_provider_refresh_corpus_stock_properties(&mut properties, &stock);
+            }
             (
                 "provider_refresh_completed",
                 event.surface,
@@ -366,6 +369,36 @@ fn insert_provider_refresh_terminal_health_properties(
         "refresh_processed_bytes_bucket",
         health.processed_bytes,
     );
+}
+
+fn insert_provider_refresh_corpus_stock_properties(
+    properties: &mut Map<String, Value>,
+    stock: &ProviderRefreshCorpusStockV1,
+) {
+    for (key, value) in [
+        (
+            "corpus_stock_indexed_documents_bucket",
+            stock.indexed_documents.as_str(),
+        ),
+        (
+            "corpus_stock_retained_records_bucket",
+            stock.retained_records.as_str(),
+        ),
+        (
+            "corpus_stock_rejected_records_bucket",
+            stock.rejected_records.as_str(),
+        ),
+        (
+            "corpus_stock_certified_source_bytes_bucket",
+            stock.certified_source_bytes.as_str(),
+        ),
+        (
+            "corpus_transition_removed_sources_bucket",
+            stock.removed_source_count.as_str(),
+        ),
+    ] {
+        insert_str(properties, key, value);
+    }
 }
 
 fn insert_client_operation_properties(

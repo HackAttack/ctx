@@ -11,11 +11,11 @@ use serde_json::Value;
 use ctx_client_observability::analytics::{
     bytes_bucket, count_bucket, duration_bucket, DurationBucket, ForegroundProviderRefreshV1,
     Outcome, ProviderCoreResult, ProviderRefreshChange, ProviderRefreshCompletedV1,
-    ProviderRefreshConfiguredIndexingMode, ProviderRefreshContentEvidence, ProviderRefreshCountsV1,
-    ProviderRefreshDaemonTriggerKind, ProviderRefreshFailureScope, ProviderRefreshFailureType,
-    ProviderRefreshReconciliationDemand, ProviderRefreshResult, ProviderRefreshSourceMode,
-    ProviderRefreshTerminalHealthV1, ProviderRefreshTrigger, ProviderRefreshWorkKind,
-    PublicEventV1, Surface,
+    ProviderRefreshConfiguredIndexingMode, ProviderRefreshContentEvidence,
+    ProviderRefreshCorpusStockV1, ProviderRefreshCountsV1, ProviderRefreshDaemonTriggerKind,
+    ProviderRefreshFailureScope, ProviderRefreshFailureType, ProviderRefreshReconciliationDemand,
+    ProviderRefreshResult, ProviderRefreshSourceMode, ProviderRefreshTerminalHealthV1,
+    ProviderRefreshTrigger, ProviderRefreshWorkKind, PublicEventV1, Surface,
 };
 
 pub(super) fn provider_refresh_event(
@@ -126,7 +126,29 @@ pub(super) fn provider_refresh_event(
         automatic_indexing_enabled,
         None,
     ));
+    // The existing terminal delivery is best-effort and non-retryable. Only a
+    // changed publication with this exact receipt contributes the optional
+    // sample; it is not a census or delivery/coverage denominator.
+    let event = if generation_changed {
+        match corpus_stock(&receipt) {
+            Some(stock) => event.with_corpus_stock(stock),
+            None => event,
+        }
+    } else {
+        event
+    };
     Some(PublicEventV1::ProviderRefreshCompleted(event))
+}
+
+fn corpus_stock(receipt: &SourceBackedRefreshReceipt) -> Option<ProviderRefreshCorpusStockV1> {
+    let current = receipt.current;
+    Some(ProviderRefreshCorpusStockV1 {
+        indexed_documents: count_bucket(current.indexed_documents),
+        retained_records: count_bucket(current.retained_records),
+        rejected_records: count_bucket(current.rejected_records),
+        certified_source_bytes: bytes_bucket(current.certified_source_bytes),
+        removed_source_count: count_bucket(u64::try_from(current.removed_source_count).ok()?),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -493,6 +515,12 @@ mod tests {
         assert_eq!(facts.failure_scope, ProviderRefreshFailureScope::Mixed);
         assert_eq!(facts.failure_type, ProviderRefreshFailureType::Mixed);
         assert_eq!(facts.retired_records, None);
+        let stock = event.corpus_stock.expect("best-effort receipt stock");
+        assert_eq!(stock.indexed_documents, count_bucket(0));
+        assert_eq!(stock.retained_records, count_bucket(0));
+        assert_eq!(stock.rejected_records, count_bucket(3));
+        assert_eq!(stock.certified_source_bytes, bytes_bucket(4096));
+        assert_eq!(stock.removed_source_count, count_bucket(2));
         let health = event.terminal_health.expect("terminal health");
         assert_eq!(
             health.queue_wait_duration,
@@ -560,6 +588,10 @@ mod tests {
         assert_eq!(facts.work_kind, Some(ProviderRefreshWorkKind::NoOp));
         assert_eq!(facts.core_result, ProviderCoreResult::NoOp);
         assert!(facts.work_remaining);
+        assert!(
+            event.corpus_stock.is_none(),
+            "a no-op terminal outcome is the missingness authority, not a zero stock sample"
+        );
         let health = event.terminal_health.expect("terminal health");
         assert!(health.successor_pending);
         assert_eq!(
@@ -619,6 +651,7 @@ mod tests {
         assert_eq!(facts.trigger, ProviderRefreshTrigger::Search);
         assert_eq!(facts.change, ProviderRefreshChange::Changed);
         assert_eq!(facts.work_kind, None);
+        assert!(event.corpus_stock.is_some());
     }
 
     #[test]
@@ -778,6 +811,10 @@ mod tests {
         );
         assert!(facts.work_remaining);
         assert_eq!(facts.retired_records, None);
+        assert!(
+            event.corpus_stock.is_none(),
+            "failed attempts do not attach a best-effort stock sample"
+        );
         let health = event.terminal_health.expect("terminal health");
         assert!(health.successor_pending);
         assert_eq!(health.retained_previous_generation, Some(true));

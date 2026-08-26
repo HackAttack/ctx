@@ -425,6 +425,24 @@ pub struct ProviderRefreshTerminalHealthV1 {
     pub processed_bytes: Option<BytesBucket>,
 }
 
+/// Sparse current-generation stock from an exact published refresh receipt.
+///
+/// This is a best-effort, non-retryable sampled observation attached to the
+/// existing terminal event. It is emitted only for a successfully changed
+/// daemon publication, and is neither a generation census nor a delivery or
+/// coverage denominator. Its absence means the terminal outcome/change did
+/// not provide this exact receipt-backed observation; it never means zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderRefreshCorpusStockV1 {
+    /// Logical events currently retained as indexed lexical documents.
+    pub indexed_documents: CountBucket,
+    pub retained_records: CountBucket,
+    pub rejected_records: CountBucket,
+    pub certified_source_bytes: BytesBucket,
+    /// Transition-local removed-source count, not retired logical records.
+    pub removed_source_count: CountBucket,
+}
+
 #[derive(Debug)]
 pub struct ProviderRefreshCompletedV1 {
     pub surface: Surface,
@@ -432,6 +450,7 @@ pub struct ProviderRefreshCompletedV1 {
     pub duration: DurationBucket,
     pub foreground: Option<ForegroundProviderRefreshV1>,
     pub terminal_health: Option<ProviderRefreshTerminalHealthV1>,
+    pub corpus_stock: Option<ProviderRefreshCorpusStockV1>,
 }
 
 impl ProviderRefreshCompletedV1 {
@@ -443,6 +462,7 @@ impl ProviderRefreshCompletedV1 {
             duration: duration_bucket(duration),
             foreground: None,
             terminal_health: None,
+            corpus_stock: None,
         }
     }
 
@@ -458,6 +478,7 @@ impl ProviderRefreshCompletedV1 {
             duration: duration_bucket(duration),
             foreground: Some(foreground),
             terminal_health: None,
+            corpus_stock: None,
         }
     }
 
@@ -481,6 +502,7 @@ impl ProviderRefreshCompletedV1 {
             duration,
             foreground: Some(foreground),
             terminal_health: None,
+            corpus_stock: None,
         }
     }
 
@@ -489,6 +511,11 @@ impl ProviderRefreshCompletedV1 {
         terminal_health: ProviderRefreshTerminalHealthV1,
     ) -> Self {
         self.terminal_health = Some(terminal_health);
+        self
+    }
+
+    pub fn with_corpus_stock(mut self, corpus_stock: ProviderRefreshCorpusStockV1) -> Self {
+        self.corpus_stock = Some(corpus_stock);
         self
     }
 }
@@ -582,6 +609,7 @@ mod tests {
             "peak_rss_bucket",
             "bytes",
             "observed_process_peak_rss_bytes",
+            "corpus_stock_indexed_documents_bucket",
         ] {
             assert!(!properties.contains_key(forbidden));
         }
@@ -696,6 +724,73 @@ mod tests {
             "refresh_retained_previous_generation",
         ] {
             assert!(!properties.contains_key(absent));
+        }
+    }
+
+    #[test]
+    fn best_effort_corpus_stock_serializes_only_bucketed_current_receipt_facts() {
+        let event = PublicEventV1::ProviderRefreshCompleted(
+            ProviderRefreshCompletedV1::bucketed(
+                Surface::Daemon,
+                Outcome::Success,
+                duration_bucket(Duration::from_secs(2)),
+                ForegroundProviderRefreshV1 {
+                    provider: None,
+                    trigger: ProviderRefreshTrigger::Daemon,
+                    source_mode: None,
+                    change: ProviderRefreshChange::Changed,
+                    content_evidence: ProviderRefreshContentEvidence::Unknown,
+                    work_kind: None,
+                    refresh_result: ProviderRefreshResult::Complete,
+                    core_result: ProviderCoreResult::Complete,
+                    failure_scope: ProviderRefreshFailureScope::None,
+                    failure_type: ProviderRefreshFailureType::None,
+                    work_remaining: false,
+                    retired_records: None,
+                    counts: None,
+                    performance: None,
+                },
+            )
+            .with_corpus_stock(ProviderRefreshCorpusStockV1 {
+                indexed_documents: count_bucket(21),
+                retained_records: count_bucket(7),
+                rejected_records: count_bucket(3),
+                certified_source_bytes: bytes_bucket(4096),
+                removed_source_count: count_bucket(1),
+            }),
+        );
+        let occurred_at = chrono::DateTime::parse_from_rfc3339("2026-07-22T12:34:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let serialized = serialize_event(&event, occurred_at, None, None);
+        let properties = serialized["properties"].as_object().unwrap();
+
+        assert_eq!(
+            properties["corpus_stock_indexed_documents_bucket"],
+            "21-100"
+        );
+        assert_eq!(properties["corpus_stock_retained_records_bucket"], "6-20");
+        assert_eq!(properties["corpus_stock_rejected_records_bucket"], "2-5");
+        assert_eq!(
+            properties["corpus_stock_certified_source_bytes_bucket"],
+            "lt_100kb"
+        );
+        assert_eq!(properties["corpus_transition_removed_sources_bucket"], "1");
+        for forbidden in [
+            "generation_id",
+            "session_id",
+            "message_id",
+            "tool_call_id",
+            "relationship",
+            "copy",
+            "logical_added",
+            "logical_changed",
+            "logical_retired",
+            "corpus_stock_indexed_documents",
+            "corpus_stock_certified_source_bytes",
+            "corpus_transition_removed_sources",
+        ] {
+            assert!(!properties.contains_key(forbidden));
         }
     }
 
