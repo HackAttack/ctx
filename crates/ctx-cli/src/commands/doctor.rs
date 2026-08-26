@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use crate::analytics::{count_bucket, DoctorTelemetry};
 use crate::config::AppConfig;
 use crate::output::print_json;
-use crate::semantic::{current_rejected_record_count, source_epoch_status_report};
+use crate::semantic::source_epoch_status_report;
 use crate::ui::Ui;
 use crate::DoctorArgs;
 
@@ -17,27 +17,37 @@ pub(crate) fn run_doctor(
     ui: &mut Ui,
 ) -> Result<()> {
     let json_output = args.format.is_json();
-    let facts = doctor_facts(&data_root)?;
-    let findings = facts["findings"]
+    let mut model = doctor_read_model(&data_root)?;
+    let findings = model.facts["findings"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let source_report = facts["source_epoch"].clone();
-    let rejected_records = current_rejected_record_count(&source_report);
-    let config = AppConfig::load(&data_root)?;
-    telemetry.finding_count = Some(count_bucket(findings.len() as u64));
-    telemetry.healthy = Some(findings.is_empty());
     if json_output {
-        print_json(facts)?;
+        telemetry.finding_count = Some(count_bucket(findings.len() as u64));
+        telemetry.healthy = Some(findings.is_empty());
+        print_json(model.facts)?;
     } else {
+        super::history_health::reconcile_history_inventory(
+            &mut model.health,
+            &data_root,
+            &model.config,
+        )?;
+        let coverage_issue = model
+            .health
+            .as_ref()
+            .is_some_and(ctx_history_read_application::HistoryHealthReport::is_partial);
+        telemetry.finding_count = Some(count_bucket(
+            (findings.len() + usize::from(coverage_issue)) as u64,
+        ));
+        telemetry.healthy = Some(findings.is_empty() && !coverage_issue);
+        let source_report = &model.facts["source_epoch"];
         let document = ctx_cli_presentation::commands::render_doctor_human(
             ui.stdout_context(),
-            config.auto_upgrade_mode().as_str(),
             &findings,
-            rejected_records,
+            model.health.as_ref(),
             human_refresh_failure(&source_report),
         );
         ui.write_stdout(&document)?;
@@ -70,6 +80,16 @@ fn human_refresh_failure(
 }
 
 pub(crate) fn doctor_facts(data_root: &std::path::Path) -> Result<Value> {
+    Ok(doctor_read_model(data_root)?.facts)
+}
+
+struct DoctorReadModel {
+    facts: Value,
+    health: Option<ctx_history_read_application::HistoryHealthReport>,
+    config: AppConfig,
+}
+
+fn doctor_read_model(data_root: &std::path::Path) -> Result<DoctorReadModel> {
     let mut findings = Vec::new();
     if !data_root.exists() {
         findings.push(format!("data root does not exist: {}", data_root.display()));
@@ -84,14 +104,19 @@ pub(crate) fn doctor_facts(data_root: &std::path::Path) -> Result<Value> {
     let upgrade_diagnostics = crate::upgrade::upgrade_diagnostics(&config);
     findings.extend(upgrade_diagnostics.findings);
     let upgrade = upgrade_diagnostics.report;
-    Ok(json!({
+    let facts = json!({
         "schema_version": 1,
         "ok": findings.is_empty(),
         "findings": findings,
         "source_epoch": source.report,
         "daemon": daemon,
         "upgrade": upgrade,
-    }))
+    });
+    Ok(DoctorReadModel {
+        facts,
+        health: source.health,
+        config,
+    })
 }
 
 #[cfg(test)]

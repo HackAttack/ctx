@@ -1,5 +1,6 @@
 pub mod doctor;
 mod doctor_presentation;
+mod history_health;
 mod import_diagnostics;
 pub mod index;
 mod index_dashboard;

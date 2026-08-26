@@ -292,6 +292,44 @@ fn sources_empty_state_is_actionable() {
 }
 
 #[test]
+fn default_sources_hide_empty_provider_while_all_retains_it() {
+    let mut empty = source(ProviderSourceStatus::Empty, "/tmp/gemini");
+    empty.provider = CaptureProvider::Gemini;
+    empty.source_format = "gemini_session_json_tree";
+    let default_sources = std::slice::from_ref(&empty)
+        .iter()
+        .filter(|source| source_is_visible(source, false, &[], &[]))
+        .cloned()
+        .collect::<Vec<_>>();
+    let all_sources = std::slice::from_ref(&empty)
+        .iter()
+        .filter(|source| source_is_visible(source, true, &[], &[]))
+        .cloned()
+        .collect::<Vec<_>>();
+    let context = context(80, ColorMode::Never);
+
+    let default = render_sources_human(
+        &context,
+        SourcesHumanRenderInput::from_sources(&default_sources),
+    )
+    .render_plain();
+    assert!(
+        default.starts_with("No history sources found\n"),
+        "{default}"
+    );
+    assert!(!default.contains("gemini"), "{default}");
+
+    let all = render_sources_human(
+        &context,
+        SourcesHumanRenderInput::from_sources(&all_sources),
+    )
+    .render_plain();
+    assert!(all.contains("gemini"), "{all}");
+    assert!(all.contains("empty"), "{all}");
+    assert!(all.contains("/tmp/gemini"), "{all}");
+}
+
+#[test]
 fn sources_issue_is_safe_and_actionable() {
     let issue = DiscoveryIssue {
         provider: CaptureProvider::Codex,

@@ -4,6 +4,7 @@ use anyhow::Result;
 use ctx_history_index::{
     current_source_generation_policy, current_source_generation_policy_hash, VerifiedIndex,
 };
+use ctx_history_read_application::{history_health_report, HistoryHealthReport};
 use ctx_semantic_index::{
     source_backed_semantic_vector_path, SemanticVectorStore, SourceBackedGenerationPin,
 };
@@ -62,6 +63,7 @@ pub struct SourceEpochStatus {
     pub indexed_sessions: Option<u64>,
     pub indexed_events: Option<u64>,
     pub indexed_sources: Option<u64>,
+    pub health: Option<HistoryHealthReport>,
     pub report: Value,
 }
 
@@ -96,6 +98,11 @@ pub fn source_epoch_status_report(
         read_daemon_job_status(&daemon_semantic_job_path(data_root)),
     );
     let refresh = refresh_report(refresh_job.as_ref(), generation_id.as_deref(), &daemon);
+    let mut health = admitted_index.map(history_health_report).transpose()?;
+    if let Some(health) = health.as_mut() {
+        let (source_failures, rejected_records) = refresh_diagnostic_totals(&refresh);
+        health.record_refresh_diagnostics(source_failures, rejected_records);
+    }
 
     let indexed_items = admitted_index.map(VerifiedIndex::document_count);
     let indexed_events = indexed_items;
@@ -110,6 +117,7 @@ pub fn source_epoch_status_report(
         indexed_sessions,
         indexed_events,
         indexed_sources,
+        health,
         report: compact_json(json!({
             "schema_version": 2,
             "initialized": initialized,
@@ -129,6 +137,20 @@ pub fn source_epoch_status_report(
             "read_only": true,
         })),
     })
+}
+
+fn refresh_diagnostic_totals(refresh: &Value) -> (u64, u64) {
+    let diagnostics = refresh.get("diagnostics");
+    (
+        diagnostics
+            .and_then(|value| value.get("source_failure_total"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        diagnostics
+            .and_then(|value| value.get("rejected_record_total"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+    )
 }
 
 fn attach_catch_up_status(report: &mut Value, status: Option<Value>) {

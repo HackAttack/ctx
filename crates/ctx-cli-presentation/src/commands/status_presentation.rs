@@ -1,33 +1,38 @@
 use std::path::Path;
 
 use ctx_client_observability::local_usage;
+use ctx_history_read_application::HistoryHealthReport;
 use serde_json::Value;
 
 #[cfg(test)]
 use serde_json::json;
 
-use crate::progress::format_bytes;
 use crate::ui::{
     fields, outcome, section, Document, Field, Line, Outcome, OutcomeState, RenderContext, Span,
     Token,
 };
 
+use super::history_health::{counted, history_health_fields, history_partial_cause};
 use super::status_health::*;
 
 pub fn render_status_human(
     context: &RenderContext,
     report: &Value,
+    coverage: Option<&HistoryHealthReport>,
     data_root: &Path,
     config_path: &Path,
     upgrade: &Value,
     local_usage: &local_usage::UsageReport,
 ) -> Document {
-    let history_health = history_health(report);
+    let component_health = history_health(report);
+    let coverage_cause = history_partial_cause(coverage);
     let service_issues = actionable_service_issue_count(report, upgrade, local_usage);
-    let health = if history_health == StatusHealth::Healthy && service_issues > 0 {
+    let health = if component_health == StatusHealth::Healthy
+        && (service_issues > 0 || coverage_cause.is_some())
+    {
         StatusHealth::Partial
     } else {
-        history_health
+        component_health
     };
     let unhealthy = unhealthy_history_components(report);
     let pending = unhealthy
@@ -37,7 +42,15 @@ pub fn render_status_human(
     let lexical_status = component_status(&report["lexical"]);
     let (state, title, detail) = match health {
         StatusHealth::Healthy => (OutcomeState::Success, "ctx is healthy", None),
-        StatusHealth::Partial if history_health == StatusHealth::Healthy => (
+        StatusHealth::Partial if coverage_cause.is_some() => (
+            OutcomeState::Warning,
+            "ctx needs attention",
+            Some(format!(
+                "{}. Healthy prior history remains searchable.",
+                coverage_cause.as_deref().unwrap_or_default()
+            )),
+        ),
+        StatusHealth::Partial if component_health == StatusHealth::Healthy => (
             OutcomeState::Warning,
             "ctx needs attention",
             Some(format!(
@@ -82,35 +95,8 @@ pub fn render_status_human(
     );
 
     let mut history_values = vec![("Search", component_display(&report["lexical"]).to_owned())];
-    for (label, field, singular, plural) in [
-        (
-            "Sources",
-            "indexed_sources",
-            "indexed source",
-            "indexed sources",
-        ),
-        (
-            "Sessions",
-            "indexed_sessions",
-            "indexed session",
-            "indexed sessions",
-        ),
-        (
-            "Events",
-            "indexed_events",
-            "searchable event",
-            "searchable events",
-        ),
-    ] {
-        if let Some(count) = report[field].as_u64() {
-            history_values.push((label, counted(count, singular, plural)));
-        }
-    }
-    let rejected_records = current_rejected_record_count(report);
-    if rejected_records > 0 {
-        history_values.push(("Skipped records", rejected_records.to_string()));
-    }
-    if history_health == StatusHealth::Healthy {
+    history_values.extend(history_health_fields(coverage));
+    if component_health == StatusHealth::Healthy {
         history_values.push(("Refresh", component_display(&report["refresh"]).to_owned()));
     } else {
         for (label, component) in supporting_history_components(report) {
@@ -121,24 +107,20 @@ pub fn render_status_human(
     }
     if component_status(&report["refresh"]) == "pending" {
         let progress = report["refresh"].get("progress");
-        if let Some(source) = progress
-            .and_then(|progress| progress.get("current_source"))
-            .and_then(Value::as_str)
-            .filter(|source| !source.is_empty())
-        {
-            history_values.push(("Active source", source.to_owned()));
-        }
         if let Some(records) = progress
             .and_then(|progress| progress.get("completed_records"))
             .and_then(Value::as_u64)
         {
-            history_values.push(("Accepted", counted(records, "record", "records")));
+            history_values.push(("Processed", counted(records, "record", "records")));
         }
         if let Some(bytes) = progress
             .and_then(|progress| progress.get("completed_bytes"))
             .and_then(Value::as_u64)
         {
-            history_values.push(("Scanned", format_bytes(bytes)));
+            history_values.push((
+                "Progress data",
+                format!("{} processed", ctx_history_cli::format_bytes(bytes)),
+            ));
         }
     }
     let history_fields = history_values
@@ -195,15 +177,20 @@ pub fn render_status_human(
     }
 
     if let Some(command) = status_next_command(report, health, pending, unhealthy.len()) {
-        document.push_blank();
-        document.append(section(
-            "Next",
-            Document::from_line(
+        let mut actions = Document::from_line(
+            Line::new()
+                .with(Span::text("  "))
+                .with(Span::new(command, Token::Command)),
+        );
+        if coverage_cause.is_some() {
+            actions.push_line(
                 Line::new()
                     .with(Span::text("  "))
-                    .with(Span::new(command, Token::Command)),
-            ),
-        ));
+                    .with(Span::new("ctx status --format json", Token::Command)),
+            );
+        }
+        document.push_blank();
+        document.append(section("Next", actions));
     }
     document
 }
@@ -217,34 +204,11 @@ pub(super) fn humanize_code(value: &str) -> String {
     }
 }
 
-fn counted(count: u64, singular: &str, plural: &str) -> String {
-    let noun = if count == 1 { singular } else { plural };
-    format!("{} {noun}", grouped_count(count))
-}
-
-fn grouped_count(count: u64) -> String {
-    let digits = count.to_string();
-    let mut reversed = String::with_capacity(digits.len().saturating_add(digits.len() / 3));
-    for (index, character) in digits.chars().rev().enumerate() {
-        if index > 0 && index % 3 == 0 {
-            reversed.push(',');
-        }
-        reversed.push(character);
-    }
-    reversed.chars().rev().collect()
-}
-
-fn current_rejected_record_count(report: &Value) -> u64 {
-    report
-        .get("refresh")
-        .and_then(|refresh| refresh.get("current"))
-        .and_then(|current| current.get("current_rejected_records"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
+    use ctx_history_read_application::{
+        HistoryDataCoverage, HistoryHealthReport, HistoryRootCoverage,
+    };
     use std::io::Write as _;
     use unicode_width::UnicodeWidthStr as _;
 
@@ -308,10 +272,41 @@ mod tests {
         })
     }
 
+    fn healthy_coverage() -> HistoryHealthReport {
+        HistoryHealthReport {
+            contributing_agent_histories: vec!["claude".to_owned(), "codex".to_owned()],
+            provider_roots: Some(HistoryRootCoverage {
+                included: 3,
+                partial: 0,
+                excluded: 0,
+                unknown: 0,
+            }),
+            sessions: 2,
+            messages: 1_000,
+            tool_calls: 300,
+            data: HistoryDataCoverage {
+                processed: 4 * 1024 * 1024,
+                excluded: Some(0),
+            },
+            source_failures: 0,
+            rejected_records: 0,
+        }
+    }
+
     fn render_report(context: &RenderContext, report: &Value) -> Document {
+        let coverage = healthy_coverage();
+        render_report_with_coverage(context, report, &coverage)
+    }
+
+    fn render_report_with_coverage(
+        context: &RenderContext,
+        report: &Value,
+        coverage: &HistoryHealthReport,
+    ) -> Document {
         render_status_human(
             context,
             report,
+            Some(coverage),
             std::path::Path::new("/tmp/ctx"),
             std::path::Path::new("/tmp/ctx/config.toml"),
             &healthy_upgrade(),
@@ -328,9 +323,14 @@ mod tests {
             let rendered = document.render_plain();
             let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
             assert!(rendered.starts_with("✓ ctx is healthy\n\nHistory\n"));
-            assert!(rendered.contains("1 indexed source"));
-            assert!(rendered.contains("2 indexed sessions"));
-            assert!(normalized.contains("1,000 searchable events"));
+            assert!(normalized.contains("Agent histories Claude, Codex"));
+            assert!(normalized.contains("Roots 3 included roots"));
+            assert!(!rendered.contains("747"));
+            assert!(normalized.contains("Sessions 2"));
+            assert!(normalized.contains("Messages 1,000"));
+            assert!(normalized.contains("Tool calls 300"));
+            assert!(normalized.contains("Data 4.0 MiB processed"));
+            assert!(!rendered.contains("indexed source"));
             assert!(rendered.contains("\nServices\n"));
             assert!(normalized.contains("Daemon running"));
             assert!(normalized.contains("Indexing mode auto"));
@@ -350,20 +350,37 @@ mod tests {
     }
 
     #[test]
-    fn published_rejections_keep_status_healthy_and_visible() {
+    fn published_rejections_are_partial_and_name_the_record_cause() {
         let mut report = status_report(true, "ready", "ready");
         report["refresh"]["current"] = json!({
             "current_rejected_records": 3,
             "current_sources_with_rejections": 1,
         });
-        let rendered = render_report(&context(80, ColorMode::Never), &report).render_plain();
+        let coverage = HistoryHealthReport {
+            rejected_records: 3,
+            data: HistoryDataCoverage {
+                processed: 4 * 1024 * 1024,
+                excluded: None,
+            },
+            ..healthy_coverage()
+        };
+        let rendered =
+            render_report_with_coverage(&context(80, ColorMode::Never), &report, &coverage)
+                .render_plain();
         let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
 
-        assert!(rendered.starts_with("✓ ctx is healthy\n"), "{rendered}");
+        assert!(
+            rendered.starts_with("! ctx needs attention\n"),
+            "{rendered}"
+        );
         assert!(normalized.contains("Refresh ready"), "{rendered}");
-        assert!(normalized.contains("Skipped records 3"), "{rendered}");
-        assert!(!rendered.contains("partially ready"), "{rendered}");
-        assert!(!rendered.contains("\nNext\n"), "{rendered}");
+        assert!(
+            normalized.contains("3 history records were excluded"),
+            "{rendered}"
+        );
+        assert!(normalized.contains("excluded size unknown"), "{rendered}");
+        assert!(rendered.contains("ctx doctor"), "{rendered}");
+        assert!(rendered.contains("ctx status --format json"), "{rendered}");
     }
 
     #[test]
@@ -387,6 +404,7 @@ mod tests {
         let document = render_status_human(
             &context,
             &report,
+            Some(&healthy_coverage()),
             std::path::Path::new("/tmp/ctx"),
             std::path::Path::new("/tmp/ctx/config.toml"),
             &upgrade,
@@ -464,6 +482,7 @@ mod tests {
             let rendered = render_status_human(
                 &context,
                 &report,
+                Some(&healthy_coverage()),
                 std::path::Path::new("/tmp/ctx"),
                 std::path::Path::new("/tmp/ctx/config.toml"),
                 &healthy_upgrade(),
@@ -486,7 +505,7 @@ mod tests {
             assert!(rendered.starts_with("! ctx is partially ready\n"));
             assert!(rendered.contains("Refresh"));
             assert!(rendered.contains("pending"));
-            assert!(normalized.contains("1,000 searchable events"));
+            assert!(normalized.contains("Messages 1,000"));
             assert!(rendered.contains("Next\n  ctx index watch\n"));
             assert!(!rendered.contains("\nData\n"));
             assert_fits(&document, &context);
@@ -510,9 +529,10 @@ mod tests {
         });
 
         let rendered = render_report(&context(80, ColorMode::Never), &report).render_plain();
-        assert!(rendered.contains("Active source  ~/.local/share/opencode/opencode.db"));
-        assert!(rendered.contains("Accepted       1,234 records"));
-        assert!(rendered.contains("Scanned        4.0 MiB"));
+        let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(!rendered.contains("~/.local/share/opencode/opencode.db"));
+        assert!(normalized.contains("Processed 1,234 records"));
+        assert!(normalized.contains("Progress data 4.0 MiB processed"));
         assert!(!rendered.contains("records /"));
     }
 

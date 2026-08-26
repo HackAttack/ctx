@@ -59,7 +59,10 @@ ctx daemon run
   by their owner. Setup does not write `config.toml` for implicit defaults or
   execute history-source plugin commands. In automatic indexing mode, setup
   may opportunistically start the persistent ctx-owned daemon. In manual mode
-  setup never starts a worker. Use `setup --no-daemon` for a one-run opt-out.
+  setup never starts a worker. Its concise human summary lists only agent
+  histories that contributed indexed content and warns instead of claiming
+  clean completion when a provider root is partial, excluded, or unknown. Use
+  `setup --no-daemon` for a one-run opt-out.
 - `setup --quiet` performs setup without printing success status lines, import
   summaries, data-root details, or get-started tips. It still exits nonzero and
   prints errors on failure.
@@ -69,8 +72,13 @@ ctx daemon run
 - `status` reports the ctx root, source epoch, lexical and refresh readiness,
   semantic generation and coverage, daemon and supervisor health,
   initialization state, compact local usage health, local-only marker, and
-  read-only marker. It does not initialize or repair Core or semantic state or
-  open old history.
+  read-only marker. Human output uses contributing agent histories, provider
+  roots, sessions, messages, tool calls, and processed history bytes; it does
+  not expose internal source-key cardinality. Partial coverage distinguishes
+  source failures from rejected records and keeps healthy prior history
+  searchable. JSON retains the existing `indexed_sources` meaning and is the
+  exact diagnostic drilldown. Status does not initialize or repair Core or
+  semantic state or open old history.
 - `stats` is the read-only, local, offline report for History retrieval, Code
   provenance, Measured delivery, and Estimated savings. Measured facts and
   model-based estimates are separate in JSON; the estimate model and
@@ -90,8 +98,8 @@ ctx daemon run
   reporting controls.
 - `status --quiet` performs the same local checks but prints nothing on
   success. Use `status --format json` when scripts need the actual state.
-- `doctor` validates source-epoch storage and reports lexical, semantic, and
-  daemon lock/status problems when present.
+- `doctor` turns source-epoch, refresh, semantic, and daemon problems into a
+  focused recovery action. It does not repeat the normal status inventory.
 - `index` prints a one-shot indexing status view. It is the focused view of the
   current indexing mode, lexical publication, refresh progress, semantic
   coverage, and background process state. Use `--format json` for the

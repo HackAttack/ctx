@@ -207,7 +207,7 @@ fn presentation_whole_run_stage(value: EngineWholeRunStage) -> RefreshWholeRunSt
     }
 }
 
-fn provider_display_name(provider: &str) -> String {
+pub fn provider_display_name(provider: &str) -> String {
     provider
         .parse::<CaptureProvider>()
         .ok()

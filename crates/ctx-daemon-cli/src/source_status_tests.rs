@@ -707,6 +707,20 @@ fn automatic_refresh_diagnostics_expose_bounded_local_drilldown() {
 }
 
 #[test]
+fn health_consumes_authoritative_refresh_diagnostic_totals() {
+    let refresh = json!({
+        "source_failure_total": 91,
+        "rejected_record_total": 92,
+        "diagnostics": {
+            "source_failure_total": 2,
+            "rejected_record_total": 3,
+        },
+    });
+
+    assert_eq!(refresh_diagnostic_totals(&refresh), (2, 3));
+}
+
+#[test]
 fn source_failures_and_combined_diagnostics_remain_partial() {
     let daemon = json!({"running": true});
     for (outcome, rejected_records) in [

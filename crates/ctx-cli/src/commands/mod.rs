@@ -1,4 +1,5 @@
 pub(crate) mod doctor;
+mod history_health;
 pub(crate) mod import;
 pub(crate) mod index;
 pub(crate) mod list;

@@ -92,7 +92,8 @@ pub use ports::{
     OutputStream, SearchExecutionObservation, SearchFailurePhase, SearchRefreshStatus, TerminalPort,
 };
 pub use progress::{
-    format_bytes, format_count, presentation_snapshot, ProgressReporter, ProgressWriterError,
+    format_bytes, format_count, presentation_snapshot, provider_display_name, ProgressReporter,
+    ProgressWriterError,
 };
 pub use request::{
     HistoryProvider, ImportFormat, ImportRequest, ListEventsContentProjection, ListEventsDirection,

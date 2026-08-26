@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use clap::Args;
+use ctx_history_read_application::HistoryHealthReport;
 use serde_json::Value;
 
 use crate::ui::{
@@ -8,6 +9,8 @@ use crate::ui::{
     Token,
 };
 use crate::{output::JsonOutputFormat, progress::ProgressArg};
+
+use super::history_health::{history_partial_cause, setup_history_fields};
 
 #[derive(Debug, Args)]
 pub struct SetupArgs {
@@ -47,6 +50,7 @@ pub fn render_setup_human(
     data_root: &Path,
     mode: &str,
     source: &Value,
+    health: Option<&HistoryHealthReport>,
     refresh_request: &Value,
     daemon: SetupDaemonState<'_>,
 ) -> Document {
@@ -56,7 +60,22 @@ pub fn render_setup_human(
             refresh_status,
             "accepted" | "pending" | "queued" | "running"
         );
-    let (state, title, detail) = if mode == "ready" {
+    let partial_cause = history_partial_cause(health);
+    let refresh_partial = source["refresh"]["status"] == "partial";
+    let partial_detail = partial_cause.as_ref().map(|cause| {
+        if refresh_partial {
+            format!("{cause}. Healthy prior history remains searchable.")
+        } else {
+            format!("{cause}. Indexed history remains searchable.")
+        }
+    });
+    let (state, title, detail) = if partial_cause.is_some() {
+        (
+            OutcomeState::Warning,
+            "History is searchable with exclusions",
+            partial_detail.as_deref(),
+        )
+    } else if mode == "ready" {
         (
             OutcomeState::Success,
             "History is ready to search",
@@ -84,27 +103,7 @@ pub fn render_setup_human(
         },
     );
 
-    let source_count = source["indexed_sources"]
-        .as_u64()
-        .or_else(|| source["lexical"]["certified_sources"].as_u64())
-        .or_else(|| source["refresh"]["certified_source_count"].as_u64())
-        .or_else(|| refresh_request["source_count"].as_u64());
-    let mut history_values = Vec::new();
-    if let Some(count) = source_count {
-        history_values.push(("Sources", counted(count, "source", "sources").to_owned()));
-    }
-    if let Some(count) = source["indexed_sessions"].as_u64() {
-        history_values.push(("Sessions", counted(count, "session", "sessions")));
-    }
-    let event_count = source["indexed_events"]
-        .as_u64()
-        .or_else(|| source["lexical"]["indexed_documents"].as_u64());
-    if let Some(count) = event_count {
-        history_values.push((
-            "Events",
-            counted(count, "searchable event", "searchable events"),
-        ));
-    }
+    let mut history_values = setup_history_fields(health);
     history_values.push(("Semantic", component_status(&source["semantic"]).to_owned()));
     if let Some(status) = daemon_human_status(&daemon) {
         history_values.push(("Background", status));
@@ -125,7 +124,9 @@ pub fn render_setup_human(
         ));
     }
 
-    let next_command = if mode == "ready" {
+    let next_command = if partial_cause.is_some() {
+        "ctx doctor"
+    } else if mode == "ready" {
         "ctx search \"test failure\""
     } else if queued {
         "ctx index watch"
@@ -170,27 +171,13 @@ fn daemon_human_status(daemon: &SetupDaemonState<'_>) -> Option<String> {
     }
 }
 
-fn counted(count: u64, singular: &str, plural: &str) -> String {
-    let noun = if count == 1 { singular } else { plural };
-    format!("{} {noun}", grouped_count(count))
-}
-
-fn grouped_count(count: u64) -> String {
-    let digits = count.to_string();
-    let mut reversed = String::with_capacity(digits.len().saturating_add(digits.len() / 3));
-    for (index, character) in digits.chars().rev().enumerate() {
-        if index > 0 && index % 3 == 0 {
-            reversed.push(',');
-        }
-        reversed.push(character);
-    }
-    reversed.chars().rev().collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
 
+    use ctx_history_read_application::{
+        HistoryDataCoverage, HistoryHealthReport, HistoryRootCoverage,
+    };
     use serde_json::json;
     use unicode_width::UnicodeWidthStr as _;
 
@@ -229,12 +216,35 @@ mod tests {
         })
     }
 
+    fn ready_health() -> HistoryHealthReport {
+        HistoryHealthReport {
+            contributing_agent_histories: vec!["codex".to_owned()],
+            provider_roots: Some(HistoryRootCoverage {
+                included: 1,
+                partial: 0,
+                excluded: 0,
+                unknown: 0,
+            }),
+            sessions: 2,
+            messages: 1_000,
+            tool_calls: 300,
+            data: HistoryDataCoverage {
+                processed: 4 * 1024 * 1024,
+                excluded: Some(0),
+            },
+            source_failures: 0,
+            rejected_records: 0,
+        }
+    }
+
     fn render_ready(context: &RenderContext) -> Document {
+        let health = ready_health();
         render_setup_human(
             context,
             Path::new("/tmp/ctx"),
             "ready",
             &ready_source(),
+            Some(&health),
             &json!({"status": "published"}),
             SetupDaemonState {
                 requested: false,
@@ -253,11 +263,13 @@ mod tests {
             let rendered = document.render_plain();
             let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
             assert!(rendered.starts_with("✓ History is ready to search\n\nHistory\n"));
-            assert!(rendered.contains("Sources   1 source\n"));
-            assert!(rendered.contains("Sessions  2 sessions\n"));
-            assert!(normalized.contains("Events 1,000 searchable events"));
-            assert!(!rendered.contains("9 sources"));
-            assert!(!rendered.contains("9 searchable events"));
+            assert!(normalized.contains("Agent histories Codex"));
+            assert!(normalized.contains("Roots 1 included root"));
+            assert!(normalized
+                .contains("Indexed 2 sessions; 1,000 messages; 300 tool calls; 4.0 MiB processed"));
+            assert!(!rendered.contains("747"));
+            assert!(!rendered.contains("\nSessions"));
+            assert!(!rendered.contains("indexed source"));
             assert!(rendered.contains("Next\n  ctx search \"test failure\"\n"));
             assert!(!rendered.contains("Generation"));
             assert!(!rendered.contains("PID"));
@@ -269,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_events_fall_back_to_the_equivalent_lexical_document_count() {
+    fn setup_omits_empty_agent_histories() {
         let source = json!({
             "lexical": {
                 "status": "ready",
@@ -283,6 +295,15 @@ mod tests {
             Path::new("/tmp/ctx"),
             "ready",
             &source,
+            Some(&HistoryHealthReport {
+                provider_roots: Some(HistoryRootCoverage {
+                    included: 0,
+                    partial: 0,
+                    excluded: 0,
+                    unknown: 0,
+                }),
+                ..HistoryHealthReport::default()
+            }),
             &json!({"status": "published"}),
             SetupDaemonState {
                 requested: false,
@@ -292,8 +313,8 @@ mod tests {
             },
         );
         let rendered = document.render_plain();
-        assert!(rendered.contains("Events    1 searchable event\n"));
-        assert!(!rendered.contains("Sessions"));
+        assert!(!rendered.contains("Agent histories"));
+        assert!(!rendered.contains("Gemini"));
     }
 
     #[test]
@@ -311,6 +332,7 @@ mod tests {
                 Path::new("/tmp/ctx"),
                 "pending",
                 &source,
+                None,
                 &refresh,
                 SetupDaemonState {
                     requested: true,
@@ -350,6 +372,7 @@ mod tests {
                 Path::new("/tmp/ctx"),
                 "unavailable",
                 &source,
+                None,
                 &refresh,
                 SetupDaemonState {
                     requested: false,
@@ -377,6 +400,7 @@ mod tests {
                 Path::new("/tmp/ctx"),
                 "ready",
                 &ready_source(),
+                Some(&ready_health()),
                 &json!({"status": "published"}),
                 SetupDaemonState {
                     requested: true,
@@ -405,6 +429,7 @@ mod tests {
                 Path::new("/tmp/ctx"),
                 "ready",
                 &ready_source(),
+                Some(&ready_health()),
                 &json!({"status": "published"}),
                 SetupDaemonState {
                     requested: true,

@@ -11,6 +11,7 @@ mod compact_presentation;
 mod event_read_model;
 mod filters;
 mod generation;
+mod health;
 mod json;
 mod lineage;
 mod list;
@@ -50,6 +51,9 @@ pub use filters::{
 pub use generation::{
     GenerationRead, GenerationReadAuthorityError, GenerationReadError, GenerationReadPort,
     GenerationReadReceipt, GenerationReadRequest, GenerationReadTarget, RetainedPeerRead,
+};
+pub use health::{
+    history_health_report, HistoryDataCoverage, HistoryHealthReport, HistoryRootCoverage,
 };
 pub use json::{event_copy_json, timestamp_json};
 pub use lineage::{

@@ -22,6 +22,7 @@ pub(super) fn upgrade_report(config: &config::AppConfig) -> serde_json::Value {
 
 pub(crate) struct StatusReadModel {
     pub(crate) report: Value,
+    health: Option<ctx_history_read_application::HistoryHealthReport>,
     local_usage: local_usage::UsageReport,
     initialized: bool,
     indexed_items: Option<u64>,
@@ -37,6 +38,7 @@ pub(crate) fn status_read_model_authorized(
     control: &local_usage::UsageControlSnapshot,
 ) -> Result<StatusReadModel> {
     let source = source_epoch_status_report(data_root, config)?;
+    let health = source.health;
     let upgrade = upgrade_report(config);
     let local_usage = local_usage::read_report_authorized(storage, control, false);
     let mut report = source.report;
@@ -55,6 +57,7 @@ pub(crate) fn status_read_model_authorized(
     }
     Ok(StatusReadModel {
         report,
+        health,
         local_usage,
         initialized: source.initialized,
         indexed_items: source.indexed_items,
@@ -82,7 +85,7 @@ pub(crate) fn run_status_authorized(
         return run_usage_action(mode, data_root, storage, args.format.is_json(), quiet, ui);
     }
     let config_path = data_root.join(CONFIG_FILE);
-    let status = status_read_model_authorized(data_root, config, storage, control)?;
+    let mut status = status_read_model_authorized(data_root, config, storage, control)?;
     telemetry.initialized = Some(status.initialized);
     telemetry.indexed_items = status.indexed_items.map(count_bucket);
     telemetry.indexed_sessions = status.indexed_sessions.map(count_bucket);
@@ -91,9 +94,11 @@ pub(crate) fn run_status_authorized(
     if args.format.is_json() {
         print_json(status.report)?;
     } else if !quiet {
+        super::history_health::reconcile_history_inventory(&mut status.health, data_root, config)?;
         let document = ctx_cli_presentation::commands::render_status_human(
             ui.stdout_context(),
             &status.report,
+            status.health.as_ref(),
             data_root,
             &config_path,
             &status.report["upgrade"],

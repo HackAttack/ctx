@@ -72,6 +72,10 @@ generation with complete policy-selected records and source identities,
 requests a provider-source refresh, starts or health-checks automatic background
 indexing, and prints next steps. It does not write `config.toml`
 for implicit defaults and does not execute history-source plugin commands. The
+human summary names only agent histories that contributed indexed content. A
+partial, excluded, or unknown provider root produces a warning while healthy
+prior history remains searchable; use `ctx doctor` for recovery and
+`ctx status --format json` for exact diagnostics. The
 default data root is `~/.ctx`. Use `ctx index mode manual` to select manual
 indexing or `ctx setup --no-daemon` for a one-run process-start opt-out. Check or
 change the mode with:
@@ -136,7 +140,9 @@ ctx sources
 ctx sources --format json
 ```
 
-`sources` checks known provider locations on the current machine. Today it
+`sources` checks known provider locations on the current machine. Its concise
+default hides empty providers; `ctx sources --all` retains empty and missing
+locations for diagnostics. Today it
 reports supported Codex, Pi, Antigravity, Claude, OpenCode, Kilo Code, Gemini,
 Cursor, Zed, Copilot CLI, Factory AI Droid, Warp, and other supported local
 history paths. JSON rows include

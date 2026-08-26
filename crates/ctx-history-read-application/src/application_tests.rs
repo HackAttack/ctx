@@ -31,16 +31,17 @@ use crate::{
     event_query_receipt, event_query_wire_request, event_window_with_lineage_read_model,
     execute_list_events_stream, execute_locate, execute_search, execute_search_observed,
     execute_show_event, execute_show_session_page, execute_show_session_stream,
-    normalize_search_request, normalize_uuid_prefix, paginated_session_transcript_read_model,
-    plan_search, render_event_read_model, render_search_json, retain_structured_session_page,
-    search_filters, ActiveSessionExclusion, CompactPresentationProjection, EventContentProjection,
-    EventWindowBudget, GenerationRead, GenerationReadPort, GenerationReadRequest,
-    GenerationReadTarget, HistorySemanticBatch, HistorySemanticError, HistorySemanticPort,
-    HistorySemanticQuery, ListEventsPageRequest, ListEventsRequest, ListEventsStreamCallback,
-    ListEventsStreamCompletion, ListEventsStreamControl, ListEventsStreamPage,
-    LocateApplicationRequest, LocateRequest, LocateResult, PinnedHistoryQuery, RetainedPeerRead,
-    SearchApplicationError, SearchApplicationReadModelInput, SearchApplicationRequest,
-    SearchBackend, SearchDiversificationStatus, SearchFailurePhase, SearchJsonInput, SearchPolicy,
+    history_health_report, normalize_search_request, normalize_uuid_prefix,
+    paginated_session_transcript_read_model, plan_search, render_event_read_model,
+    render_search_json, retain_structured_session_page, search_filters, ActiveSessionExclusion,
+    CompactPresentationProjection, EventContentProjection, EventWindowBudget, GenerationRead,
+    GenerationReadPort, GenerationReadRequest, GenerationReadTarget, HistorySemanticBatch,
+    HistorySemanticError, HistorySemanticPort, HistorySemanticQuery, ListEventsPageRequest,
+    ListEventsRequest, ListEventsStreamCallback, ListEventsStreamCompletion,
+    ListEventsStreamControl, ListEventsStreamPage, LocateApplicationRequest, LocateRequest,
+    LocateResult, PinnedHistoryQuery, RetainedPeerRead, SearchApplicationError,
+    SearchApplicationReadModelInput, SearchApplicationRequest, SearchBackend,
+    SearchDiversificationStatus, SearchFailurePhase, SearchJsonInput, SearchPolicy,
     SearchRenderMetrics, SearchRequest, SearchResultCommands, SemanticAvailability, SemanticReason,
     SessionEventMode, ShowEventApplicationRequest, ShowEventRequest, ShowSessionApplicationRequest,
     ShowSessionPageRequest, ShowSessionStreamCallback, ShowSessionStreamControl,
@@ -825,6 +826,23 @@ fn provider_root_and_group_selectors_share_one_source_predicate_across_backends(
             }
         }
     }
+}
+
+#[test]
+fn health_report_uses_user_concepts_without_claiming_inventory_coverage() {
+    let temp = tempdir().unwrap();
+    let (index, _records) = publish_provider_root_search(temp.path());
+
+    let health = history_health_report(&index).unwrap();
+
+    assert_eq!(health.contributing_agent_histories, ["codex"]);
+    assert_eq!(health.provider_roots, None);
+    assert_eq!(health.sessions, 5);
+    assert_eq!(health.messages, 5);
+    assert_eq!(health.tool_calls, 0);
+    assert_eq!(health.data.processed, 50);
+    assert_eq!(health.data.excluded, None);
+    assert!(!health.is_partial());
 }
 
 #[test]

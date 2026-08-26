@@ -139,11 +139,13 @@ pub(crate) fn run_setup(
     if json_output {
         print_json(output)?;
     } else if !quiet {
+        super::history_health::reconcile_history_inventory(&mut source.health, &data_root, config)?;
         let document = render_setup_human(
             ui.stdout_context(),
             &data_root,
             mode,
             &source.report,
+            source.health.as_ref(),
             &refresh_request,
             SetupDaemonState {
                 requested: daemon_autostart_requested,
