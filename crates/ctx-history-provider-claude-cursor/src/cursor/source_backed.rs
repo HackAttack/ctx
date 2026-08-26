@@ -43,10 +43,10 @@ use ctx_history_jsonl::{
 use ctx_history_provider_runtime::{
     read_bounded_record_unhashed, source_io::OpenedProviderSourceFile, CaptureError,
     JsonlFamilyAppendMode, JsonlFamilyProjectionMode, JsonlFamilyProjector,
-    JsonlFamilyTerminalProof, JsonlOrderedAppendOccurrenceState, JsonlRecordFraming,
-    JsonlRecordRef, ProviderBaseEventLookup, ProviderJsonlInventory, ProviderJsonlLeaf,
-    ProviderJsonlReader, ProviderJsonlRuntime, ProviderJsonlWorkerContext, ProviderRuntimeBinding,
-    Result,
+    JsonlFamilyRejectedLeaf, JsonlFamilyTerminalProof, JsonlOrderedAppendOccurrenceState,
+    JsonlRecordFraming, JsonlRecordRef, ProviderBaseEventLookup, ProviderJsonlInventory,
+    ProviderJsonlLeaf, ProviderJsonlReader, ProviderJsonlRuntime, ProviderJsonlWorkerContext,
+    ProviderRuntimeBinding, Result,
 };
 use ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 
@@ -221,6 +221,7 @@ where
                 .push(transcript);
         }
         let mut leaves = Vec::with_capacity(native_sessions.len());
+        let mut rejected_leaves = Vec::new();
         let mut exact_dependencies = Vec::new();
         for (native_session_id, mut routes) in native_sessions {
             routes.sort_by(|left, right| left.path().cmp(right.path()));
@@ -236,12 +237,21 @@ where
                 .collect::<Result<Vec<_>>>()?;
             let logical_transcript_sha256 = if routes.len() > 1 {
                 let signature = cursor_transcript_signature(&routes[0])?;
+                let mut copies_agree = true;
                 for route in routes.iter().skip(1) {
                     if cursor_transcript_signature(route)? != signature {
-                        return Err(CaptureError::InvalidPayload(format!(
-                            "Cursor native session ID {native_session_id:?} has conflicting transcript copies"
-                        )));
+                        copies_agree = false;
+                        break;
                     }
+                }
+                if !copies_agree {
+                    quarantine_conflicting_session(
+                        &native_session_id,
+                        &routes,
+                        &source_key_scoped(&native_session_id, self.source_anchor_scope)?,
+                        &mut rejected_leaves,
+                    )?;
+                    continue;
                 }
                 Some(signature)
             } else {
@@ -270,10 +280,14 @@ where
                 TypedKey::bytes(serde_json::to_vec(&binding)?).map_err(contract)?,
             )?);
         }
-        Ok(
-            ProviderJsonlInventory::present(self.provider(), root, authority, leaves)?
-                .with_exact_dependencies(exact_dependencies),
-        )
+        Ok(ProviderJsonlInventory::present_with_rejected(
+            self.provider(),
+            root,
+            authority,
+            leaves,
+            rejected_leaves,
+        )?
+        .with_exact_dependencies(exact_dependencies))
     }
 
     fn projector_with_provider_checkpoint(
@@ -607,6 +621,41 @@ fn cursor_transcript_signature(transcript: &CursorTranscriptPath) -> Result<[u8;
     })?;
     digest.update(event_count.to_be_bytes());
     Ok(digest.finalize().into())
+}
+
+/// Quarantines every copy of one session whose transcripts disagree, reporting a
+/// single logical source failure against the lowest-sorted copy.
+fn quarantine_conflicting_session(
+    native_session_id: &str,
+    routes: &[CursorTranscriptPath],
+    source: &SourceKey,
+    rejected_leaves: &mut Vec<JsonlFamilyRejectedLeaf>,
+) -> Result<()> {
+    for (index, route) in routes.iter().enumerate() {
+        let binding = CursorBinding {
+            native_session_id: native_session_id.to_owned(),
+            logical_transcript_sha256: None,
+            selected_route_sha256: cursor_route_sha256(route.path()),
+            alias_route_sha256: Vec::new(),
+        };
+        let mut rejected = JsonlFamilyRejectedLeaf::bind_unobserved(
+            route.path().to_path_buf(),
+            route.authority_relative_path().to_path_buf(),
+            TypedKey::bytes(serde_json::to_vec(&binding)?).map_err(contract)?,
+            0,
+        )
+        .with_quarantined_source(source.clone());
+        if index == 0 {
+            rejected = rejected.with_logical_source_failure(
+                source.clone(),
+                format!(
+                    "Cursor native session ID {native_session_id:?} has conflicting transcript copies"
+                ),
+            );
+        }
+        rejected_leaves.push(rejected);
+    }
+    Ok(())
 }
 
 fn cursor_route_sha256(path: &Path) -> [u8; 32] {

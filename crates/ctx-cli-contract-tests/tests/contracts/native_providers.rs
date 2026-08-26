@@ -698,6 +698,69 @@ fn native_provider_cli_flow_imports_supported_provider_paths() {
 }
 
 #[test]
+fn cursor_conflicting_transcript_copies_quarantine_only_their_own_session() {
+    let temp = tempdir();
+    let query = "cursor-conflicting-copies-oracle";
+    let path = write_native_cursor_fixture(&temp, query);
+    // Cursor writes the same native session under two project slugs when one
+    // chat is seen from two workspaces, and the copies can diverge.
+    let conflicted = "conflicted-session";
+    for (slug, text) in [("workspace-one", "first copy"), ("workspace-two", "second")] {
+        let session = Path::new(&path)
+            .join(slug)
+            .join("agent-transcripts")
+            .join(conflicted);
+        fs::create_dir_all(&session).unwrap();
+        fs::write(
+            session.join(format!("{conflicted}.jsonl")),
+            format!(
+                concat!(
+                    r#"{{"timestamp":"2026-06-24T12:00:00Z","role":"user","#,
+                    r#""message":{{"role":"user","content":[{{"type":"text","text":"{}"}}]}}}}"#,
+                    "\n"
+                ),
+                text
+            ),
+        )
+        .unwrap();
+    }
+    let _daemon = start_isolated_provider_daemon(&temp);
+
+    let receipt = json_output(ctx(&temp).args([
+        "import",
+        "--provider",
+        "cursor",
+        "--path",
+        &path,
+        "--no-daemon",
+        "--format=json",
+    ]));
+    wait_for_imported_core(&temp, &receipt);
+
+    assert_eq!(
+        receipt["sources"][0]["source_failure_total"], 1,
+        "conflicting copies must report exactly one failed logical source: {receipt:#}"
+    );
+
+    // The untouched session still publishes and stays searchable.
+    let (sessions, events) = provider_core_counts(&data_root(&temp), "cursor");
+    assert!(sessions >= 1, "{receipt:#}");
+    assert!(events >= 1, "{receipt:#}");
+    let search = json_output(ctx(&temp).args([
+        "search",
+        query,
+        "--provider",
+        "cursor",
+        "--refresh",
+        "off",
+        "--limit",
+        "1",
+        "--format=json",
+    ]));
+    assert_search_provider_oracle(&search, "cursor", query, 1, "message");
+}
+
+#[test]
 fn discovery_only_sqlite_explicit_paths_are_rejected_without_fallback() {
     let temp = tempdir();
     let path = write_native_astrbot_fixture(&temp, "astrbot-explicit-unsupported-oracle");
