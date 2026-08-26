@@ -20,6 +20,7 @@ impl CodexNativeScanner {
             pending_calls: BTreeMap::new(),
             terminal_authority: CodexTerminalAuthority::default(),
             counters: CodexScanCounters::default(),
+            record_rejections: SourceBackedRecordRejectionDrafts::default(),
             local_turn_started: false,
             core_source,
             core_session_id,
@@ -184,6 +185,11 @@ impl CodexNativeScanner {
             }
 
             self.counters.complete_records = self.counters.complete_records.saturating_add(1);
+            let physical = CodexPhysicalRecordContext {
+                raw_ordinal: record.physical_ordinal(),
+                start_byte: record.byte_start(),
+                end_byte: record.byte_end_exclusive(),
+            };
             let mut projection = if self.ownership_quarantined {
                 if record.terminal_nul_padding() {
                     self.counters.ignored_records = self.counters.ignored_records.saturating_add(1);
@@ -195,17 +201,16 @@ impl CodexNativeScanner {
                 self.counters.ignored_records = self.counters.ignored_records.saturating_add(1);
                 CodexRecordProjection::default()
             } else if record.oversized() {
-                self.reject(true);
+                self.reject_record(
+                    physical,
+                    None,
+                    SourceBackedRecordRejectionClass::UnsupportedRecord,
+                    "Codex record exceeds the bounded 32 MiB record size",
+                    true,
+                );
                 CodexRecordProjection::default()
             } else {
-                self.process_record(
-                    input.record_bytes(record)?,
-                    CodexPhysicalRecordContext {
-                        raw_ordinal: record.physical_ordinal(),
-                        start_byte: record.byte_start(),
-                        end_byte: record.byte_end_exclusive(),
-                    },
-                )?
+                self.process_record(input.record_bytes(record)?, physical)?
             };
 
             let page = self.active_semantic_page()?;
@@ -227,7 +232,13 @@ impl CodexNativeScanner {
                     self.restore_semantic(input, position)?;
                     return self.emit_active_semantic_page().map(Some);
                 }
-                self.reject(false);
+                self.reject_record(
+                    physical,
+                    None,
+                    SourceBackedRecordRejectionClass::UnsupportedRecord,
+                    "Codex record exceeds the bounded projection page envelope",
+                    false,
+                );
                 projection = CodexRecordProjection::default();
             } else {
                 self.active_semantic_page()?.serialized_bytes = next_bytes;

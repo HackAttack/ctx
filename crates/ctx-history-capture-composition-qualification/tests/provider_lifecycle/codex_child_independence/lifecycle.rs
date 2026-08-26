@@ -221,6 +221,14 @@ fn automatic_codex_root_replacement_partial_inventory_carries_archived_members()
                 .unwrap();
 
         assert!(receipt.failed_routes.is_empty(), "{disposition}");
+        match disposition {
+            "pending" => assert!(
+                receipt.logical_source_failures.is_empty(),
+                "an incomplete first record must not become an ownership quarantine"
+            ),
+            "quarantined" => assert_eq!(receipt.logical_source_failures.total(), 1),
+            _ => unreachable!(),
+        }
         assert!(
             !receipt
                 .complete_inventory_route_ids

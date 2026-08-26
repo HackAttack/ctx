@@ -17,7 +17,7 @@ use ctx_history_core::{
 };
 use ctx_history_index::{GenerationWriter, RevalidationTarget, WriterOptions};
 
-const CURRENT_PARSER_REVISION: &str = "codex-nativepath-core-activity-v8-inherited-session-lineage";
+const CURRENT_PARSER_REVISION: &str = "codex-nativepath-core-activity-v9-record-coverage";
 
 #[path = "codex_child_independence/quarantine.rs"]
 mod quarantine;
@@ -236,6 +236,18 @@ fn successful_result(call_id: &str, output: String) -> serde_json::Value {
             "output": format!(
                 "Chunk ID: abc123\nWall time: 0.125 seconds\nProcess exited with code 0\nFinal output:\n{output}"
             )
+        }
+    })
+}
+
+fn custom_tool_result(call_id: &str, output: String) -> serde_json::Value {
+    serde_json::json!({
+        "timestamp": "2026-08-09T12:00:04Z",
+        "type": "response_item",
+        "payload": {
+            "type": "custom_tool_call_output",
+            "call_id": call_id,
+            "output": output
         }
     })
 }

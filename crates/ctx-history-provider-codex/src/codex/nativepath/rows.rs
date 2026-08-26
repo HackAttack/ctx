@@ -223,21 +223,30 @@ pub(super) fn build_source_backed_sparse_output_row(
     session_cwd: Option<String>,
 ) -> CaptureResult<Option<CodexCoreRecordDraft>> {
     let audit = audit_codex_record(raw_record)?;
+    let content_exceeds_core = normalized_body.len() > ctx_history_core::MAX_CORE_CONTENT_BYTES;
     let lexical_body =
         source_backed_lexical_body(result_event_type, Some(EventRole::Tool), &normalized_body);
-    let activity = codex_result_activity(
-        provider_call_id,
-        result_content,
-        payload,
-        &audit,
-        occurred_at,
-    );
-    let discovery_exclusion = codex_result_discovery_exclusion(
-        raw_record,
-        linked_invocation_discovery_exclusion,
-        source_unique_terminal,
-        activity.as_ref(),
-    );
+    let activity = (!content_exceeds_core)
+        .then(|| {
+            codex_result_activity(
+                provider_call_id,
+                result_content,
+                payload,
+                &audit,
+                occurred_at,
+            )
+        })
+        .flatten();
+    let discovery_exclusion = (!content_exceeds_core)
+        .then(|| {
+            codex_result_discovery_exclusion(
+                raw_record,
+                linked_invocation_discovery_exclusion,
+                source_unique_terminal,
+                activity.as_ref(),
+            )
+        })
+        .flatten();
     Ok(Some(CodexCoreRecordDraft {
         raw_ordinal,
         provider_event_identity: (!audit.selector_ambiguous(SelectorGroup::CallId))

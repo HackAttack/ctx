@@ -245,6 +245,8 @@ pub(in crate::codex::nativepath) fn codex_core_record(
     if lexical_body.is_empty() {
         return Err(CodexSourceBackedErrorV0::MissingLexicalBody);
     }
+    let content_omission = (lexical_body.len() > ctx_history_core::MAX_CORE_CONTENT_BYTES)
+        .then_some("Codex provider record content exceeds the Core content limit");
     let mut session_facts = Vec::new();
     if let Some(cwd) = session_cwd.as_deref().filter(|value| !value.is_empty()) {
         session_facts.push(ctx_history_core::ProviderDeclaredFact {
@@ -303,7 +305,7 @@ pub(in crate::codex::nativepath) fn codex_core_record(
         raw_ordinal,
         event_type.as_str(),
         CODEX_PARSER_REVISION,
-        lexical_body,
+        content_omission.map_or(lexical_body, |_| "Codex content omitted".to_owned()),
     )?;
     record.parent_session_id = parent_session_id;
     record.root_session_id = match owner.session_relationship {
@@ -337,6 +339,14 @@ pub(in crate::codex::nativepath) fn codex_core_record(
             ctx_history_core::AgentScope::Subagent
         }
     });
+    if let Some(reason) = content_omission {
+        record.content.policy_status = ctx_history_core::CoreContentPolicyStatus::Omitted {
+            reason: reason.to_owned(),
+        };
+        record.content.normalized_body = None;
+        record.validate_contract()?;
+        return Ok(record);
+    }
     let mut structured_content = structured_content;
     if !ctx_history_jsonl::selected_content_fits(
         record

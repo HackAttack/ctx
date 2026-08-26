@@ -1,6 +1,10 @@
 use std::{collections::BTreeMap, fs::File, path::Path, sync::Arc};
 
 use chrono::{DateTime, Utc};
+use ctx_history_capture_runtime::{
+    SourceBackedRecordRejectionClass, SourceBackedRecordRejectionDraft,
+    SourceBackedRecordRejectionDrafts,
+};
 use ctx_history_core::{CoreRecord, SourceKey, StableEntityId};
 use serde_json::Value;
 
@@ -10,7 +14,8 @@ use super::{
     record::{
         classify_after_selector_ambiguity, classify_codex_record, parse_decoded_record,
         parse_session_meta, parse_turn_context, prefilter_codex_record, CodexRecordAdmission,
-        CodexRecordClass, CodexRecordProbe, CodexResultKind, CodexSkipProjection,
+        CodexRecordClass, CodexRecordProbe, CodexResultKind, CodexRetainedKind,
+        CodexSkipProjection,
     },
     rows::{
         audit_codex_record, build_source_backed_event_row, build_source_backed_sparse_output_row,
@@ -37,10 +42,10 @@ const MAX_CODEX_PAGE_UNITS: usize = 16;
 const MAX_CODEX_SOURCE_BACKED_PAGE_RECORDS: u64 = 4 * 1024;
 const MAX_CODEX_SOURCE_BACKED_PAGE_PROGRESS_BYTES: u64 = 32 * 1024 * 1024;
 const PAGE_FIXED_WIRE_BYTES: usize = 4 * 1024;
-pub(crate) const MAX_CODEX_RECORD_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_CODEX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const MAX_CODEX_PAGE_BYTES: usize = 8 * 1024 * 1024;
 // One source-backed row may retain both decoded text and structured/path data
-// derived from a single 16 MiB provider record. The ordinary page bound is a
+// derived from a single 32 MiB provider record. The ordinary page bound is a
 // rollover target; this larger envelope is valid only for a singleton row.
 pub(crate) const MAX_CODEX_SOURCE_BACKED_SINGLE_ROW_PAGE_BYTES: usize =
     PAGE_FIXED_WIRE_BYTES + (MAX_CODEX_RECORD_BYTES * 2) + (1024 * 1024);
@@ -82,6 +87,7 @@ pub(crate) struct CodexNativePage {
 pub(super) struct CodexSemanticScan {
     pub(super) checkpoint: Option<super::checkpoint::CodexSemanticCheckpoint>,
     pub(super) counters: CodexScanCounters,
+    pub(super) record_rejections: SourceBackedRecordRejectionDrafts,
 }
 
 pub(crate) struct CodexNativeScanner {
@@ -91,6 +97,7 @@ pub(crate) struct CodexNativeScanner {
     pending_calls: BTreeMap<String, CodexPendingCallV0>,
     terminal_authority: CodexTerminalAuthority,
     counters: CodexScanCounters,
+    record_rejections: SourceBackedRecordRejectionDrafts,
     local_turn_started: bool,
     core_source: SourceKey,
     core_session_id: StableEntityId,

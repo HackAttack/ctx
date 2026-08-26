@@ -65,6 +65,7 @@ impl CodexNativeScanner {
         Ok(CodexSemanticScan {
             checkpoint,
             counters: self.counters,
+            record_rejections: self.record_rejections,
         })
     }
 

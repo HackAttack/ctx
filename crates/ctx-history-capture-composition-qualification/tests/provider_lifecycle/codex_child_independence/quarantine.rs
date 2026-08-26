@@ -38,6 +38,63 @@ fn catalog_owner_rejection_is_retryable_without_a_valid_sibling() {
 }
 
 #[test]
+fn malformed_codex_record_retains_valid_peers_and_reports_local_line() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions-record-rejection");
+    let index_root = temp.path().join("index-record-rejection");
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-000000000073";
+    let path = session_path(&sessions, native_session_id);
+    write_session(
+        &sessions,
+        native_session_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        [message("record-rejection-before")],
+    );
+    OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(
+            b"{\"timestamp\":\"2026-08-09T12:00:01Z\",\"type\":\"response_item\" \"payload\":{}}\n",
+        )
+        .unwrap();
+    append_event(&path, message("record-rejection-after"));
+
+    let registry = register_tree(&[&sessions]);
+    let receipt =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+
+    assert!(receipt.failed_routes.is_empty());
+    assert!(receipt.logical_source_failures.is_empty());
+    assert_eq!(receipt.record_rejections.total(), 1);
+    let rejection = &receipt.record_rejections.rejections()[0];
+    assert_eq!(rejection.provider, CaptureProvider::Codex);
+    assert_eq!(rejection.source_selector, path.display().to_string());
+    assert_eq!(rejection.line_number, 3);
+    assert_eq!(
+        rejection.class,
+        ctx_history_capture_runtime::SourceBackedRecordRejectionClass::MalformedRecord
+    );
+    assert_eq!(
+        rejection.detail,
+        "Codex record is not valid projectable JSON"
+    );
+    let index = VerifiedIndex::open(&index_root).unwrap();
+    assert!(source_records_contain(
+        &index,
+        native_session_id,
+        "record-rejection-before"
+    ));
+    assert!(source_records_contain(
+        &index,
+        native_session_id,
+        "record-rejection-after"
+    ));
+}
+
+#[test]
 fn codex_prefix_ownership_quarantine_retains_prior_source_and_repairs() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions-prefix-owner-conflict");
@@ -356,6 +413,8 @@ fn committed_codex_good_partial_repaired_retains_prior_source_while_neighbor_adv
 
     let (middle, _) = incremental_refresh(&index_root, &registry, &cold);
     assert!(middle.failed_routes.is_empty());
+    assert!(middle.logical_source_failures.is_empty());
+    assert!(middle.record_rejections.is_empty());
     let middle_index = VerifiedIndex::open(&index_root).unwrap();
     assert_eq!(records_for(&middle_index, repairable_id).len(), 1);
     assert!(source_records_contain(

@@ -5,13 +5,13 @@ use crate::provider::source_backed::{ProviderBaseEventLookup, ProviderRuntimeBin
 use crate::{
     provider::source_backed::{
         family::jsonl::{
-            observe_opened_file, observe_opened_file_allow_append, JsonlFamilyAdapter,
-            JsonlFamilyAppendMode, JsonlFamilyExecutionIo, JsonlFamilyInventory,
-            JsonlFamilyInventoryMode, JsonlFamilyLeaf, JsonlFamilyMembershipObservation,
-            JsonlFamilyOpenedMember, JsonlFamilyProjectionMode, JsonlFamilyRejectedLeaf,
-            JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor, JsonlFamilySemanticPage,
-            JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary, JsonlFamilyWorkerContext,
-            JsonlFileObservation, JsonlRecordFraming,
+            observe_opened_file, observe_opened_file_allow_append, probe_records_until,
+            JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyExecutionIo,
+            JsonlFamilyInventory, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
+            JsonlFamilyMembershipObservation, JsonlFamilyOpenedMember, JsonlFamilyProjectionMode,
+            JsonlFamilyRejectedLeaf, JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor,
+            JsonlFamilySemanticPage, JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary,
+            JsonlFamilyWorkerContext, JsonlFileObservation, JsonlRecordFraming,
         },
         SourceBackedRouteErrorKind,
     },
@@ -65,6 +65,17 @@ fn generation_source_owner_is_admissible_v0(
         return Ok(true);
     }
     let opened = reopen_codex_source_capability(source)?;
+    if probe_records_until(&source.source_path, &opened, 1, |_| {
+        Ok::<Option<()>, CaptureError>(Some(()))
+    })?
+    .is_none()
+    {
+        // A nonempty file without one complete first physical record is an
+        // in-progress JSONL write. Shared JSONL will classify it as pending;
+        // it has no complete provider record on which to make an ownership
+        // decision yet.
+        return Ok(true);
+    }
     let observed = match crate::provider::codex::catalog::probe_codex_native_session_id(
         &source.source_path,
         &opened,
@@ -293,7 +304,8 @@ impl<B: ProviderRuntimeBinding> JsonlFamilySemanticExecutor for CodexSessionSema
             scan.counters.retained_records,
             scan.counters.rejected_complete_records,
             provider_checkpoint,
-        );
+        )
+        .with_record_rejections(scan.record_rejections);
         Ok(match ownership_quarantine {
             Some((source, detail)) => summary.with_logical_source_quarantine(source, detail),
             None => summary,
@@ -549,7 +561,7 @@ impl<B: ProviderRuntimeBinding> JsonlFamilyAdapter for CodexSessionJsonlFamilyAd
     }
 
     fn record_framing(&self) -> JsonlRecordFraming {
-        JsonlRecordFraming::terminal_nul_padded(crate::MAX_PROVIDER_JSONL_LINE_BYTES)
+        JsonlRecordFraming::terminal_nul_padded(super::super::reader::MAX_CODEX_RECORD_BYTES)
     }
 
     fn physical_encoding(&self, leaf: &JsonlFamilyLeaf) -> JsonlPhysicalEncoding {

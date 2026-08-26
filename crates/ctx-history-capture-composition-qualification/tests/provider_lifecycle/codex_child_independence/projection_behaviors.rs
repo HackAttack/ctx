@@ -1,6 +1,58 @@
 use super::*;
 
 #[test]
+fn codex_valid_custom_tool_result_over_16_mib_is_retained() {
+    let temp = tempdir().unwrap();
+    let sessions = temp.path().join("sessions-valid-large-result");
+    let index_root = temp.path().join("index-valid-large-result");
+    fs::create_dir_all(&sessions).unwrap();
+    let native_session_id = "019fb000-0000-7000-8000-000000000074";
+    let marker = "valid-large-custom-tool-result";
+    let mut output = marker.to_owned();
+    output.push_str(&" ".repeat((17 * 1024 * 1024) - marker.len()));
+    write_session(
+        &sessions,
+        native_session_id,
+        ProviderNativeSessionRelationship::Root,
+        None,
+        [custom_tool_result("large-custom-tool-call", output)],
+    );
+    assert!(
+        fs::metadata(session_path(&sessions, native_session_id))
+            .unwrap()
+            .len()
+            > 16 * 1024 * 1024
+    );
+    assert!(
+        fs::metadata(session_path(&sessions, native_session_id))
+            .unwrap()
+            .len()
+            < 32 * 1024 * 1024
+    );
+    let registry = register_tree(&[&sessions]);
+
+    let receipt =
+        refresh_source_backed_generation(&index_root, &registry, writer_options()).unwrap();
+
+    assert!(receipt.failed_routes.is_empty());
+    assert!(receipt.logical_source_failures.is_empty());
+    assert!(
+        receipt.record_rejections.is_empty(),
+        "unexpected rejections: {:?}",
+        receipt.record_rejections
+    );
+    let index = VerifiedIndex::open(&index_root).unwrap();
+    let records = records_for(&index, native_session_id);
+    assert_eq!(records.len(), 1);
+    assert!(matches!(
+        &records[0].content.policy_status,
+        ctx_history_core::CoreContentPolicyStatus::Omitted { reason }
+            if reason == "Codex provider record content exceeds the Core content limit"
+    ));
+    assert!(records[0].content.normalized_body.is_none());
+}
+
+#[test]
 fn inherited_codex_session_metadata_is_admitted_in_both_provider_orders() {
     let temp = tempdir().unwrap();
     let sessions = temp.path().join("sessions-inherited-metadata-orders");

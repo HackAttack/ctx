@@ -36,9 +36,16 @@ impl CodexNativeScanner {
             .filter(|probe| !probe.lineage_malformed())
             .or_else(|| classify_after_selector_ambiguity(record))
         else {
-            self.reject(false);
+            self.reject_record(
+                physical,
+                None,
+                SourceBackedRecordRejectionClass::MalformedRecord,
+                "Codex record is not valid projectable JSON",
+                false,
+            );
             return Ok(CodexRecordProjection::default());
         };
+        let payload_type = codex_record_payload_type(probe.class);
         match probe.class {
             CodexRecordClass::DescendantActivity | CodexRecordClass::DescendantStarted => {
                 self.counters.ignored_records = self.counters.ignored_records.saturating_add(1);
@@ -48,7 +55,13 @@ impl CodexNativeScanner {
                 self.counters.typed_json_parses = self.counters.typed_json_parses.saturating_add(1);
                 match parse_session_meta(record) {
                     Some(metadata) => self.observe_session_metadata(metadata)?,
-                    None => self.reject(false),
+                    None => self.reject_record(
+                        physical,
+                        Some(payload_type),
+                        SourceBackedRecordRejectionClass::MalformedRecord,
+                        "Codex session_meta record is malformed",
+                        false,
+                    ),
                 }
                 Ok(CodexRecordProjection::default())
             }
@@ -61,7 +74,13 @@ impl CodexNativeScanner {
                             valid_local_turn_boundary(&owner.native_session_id, turn_id)
                         });
                     }
-                    (None, _) | (_, None) => self.reject(false),
+                    (None, _) | (_, None) => self.reject_record(
+                        physical,
+                        Some(payload_type),
+                        SourceBackedRecordRejectionClass::MalformedRecord,
+                        "Codex turn_context record is malformed or has no admitted owner",
+                        false,
+                    ),
                 }
                 Ok(CodexRecordProjection::default())
             }
@@ -71,14 +90,26 @@ impl CodexNativeScanner {
             }
             CodexRecordClass::Retained(kind) => {
                 let Some(owner) = self.owner.as_ref() else {
-                    self.reject(false);
+                    self.reject_record(
+                        physical,
+                        Some(payload_type),
+                        SourceBackedRecordRejectionClass::MalformedRecord,
+                        "Codex retained record has no admitted session owner",
+                        false,
+                    );
                     return Ok(CodexRecordProjection::default());
                 };
                 self.counters.retained_json_parses =
                     self.counters.retained_json_parses.saturating_add(1);
                 self.counters.typed_json_parses = self.counters.typed_json_parses.saturating_add(1);
                 let Some(retained) = parse_decoded_record(record, owner) else {
-                    self.reject(false);
+                    self.reject_record(
+                        physical,
+                        Some(payload_type),
+                        SourceBackedRecordRejectionClass::MalformedRecord,
+                        "Codex retained record payload is malformed",
+                        false,
+                    );
                     return Ok(CodexRecordProjection::default());
                 };
                 let mut built = match build_source_backed_event_row(
@@ -94,7 +125,13 @@ impl CodexNativeScanner {
                         return Ok(CodexRecordProjection::default());
                     }
                     Err(CodexRetainedNonMaterialized::Malformed) => {
-                        self.reject(false);
+                        self.reject_record(
+                            physical,
+                            Some(payload_type),
+                            SourceBackedRecordRejectionClass::MalformedRecord,
+                            "Codex retained record semantic payload is malformed",
+                            false,
+                        );
                         return Ok(CodexRecordProjection::default());
                     }
                 };
@@ -110,7 +147,13 @@ impl CodexNativeScanner {
                     > MAX_CODEX_SOURCE_BACKED_SINGLE_ROW_PAGE_BYTES
                         .saturating_sub(PAGE_FIXED_WIRE_BYTES)
                 {
-                    self.reject(false);
+                    self.reject_record(
+                        physical,
+                        Some(payload_type),
+                        SourceBackedRecordRejectionClass::UnsupportedRecord,
+                        "Codex retained record exceeds the bounded projection row envelope",
+                        false,
+                    );
                     return Ok(CodexRecordProjection::default());
                 }
                 let lexical_bytes = built.row.lexical_body.len();
@@ -254,11 +297,23 @@ impl CodexNativeScanner {
                 })
         });
         let Some(owner) = self.owner.clone() else {
-            self.reject(false);
+            self.reject_record(
+                physical,
+                Some(codex_record_payload_type(probe.class)),
+                SourceBackedRecordRejectionClass::MalformedRecord,
+                "Codex result record has no admitted session owner",
+                false,
+            );
             return Ok(CodexRecordProjection::default());
         };
         let Some(occurred_at) = probe_timestamp(probe, owner.started_at) else {
-            self.reject(false);
+            self.reject_record(
+                physical,
+                Some(codex_record_payload_type(probe.class)),
+                SourceBackedRecordRejectionClass::MalformedRecord,
+                "Codex result record has no valid timestamp",
+                false,
+            );
             return Ok(CodexRecordProjection::default());
         };
 
@@ -280,7 +335,9 @@ impl CodexNativeScanner {
                 value => serde_json::to_string(value)?,
             }
         };
-        let structured_content = (!audit.any_selector_ambiguous()).then(|| decoded.payload.clone());
+        let content_exceeds_core = normalized_body.len() > ctx_history_core::MAX_CORE_CONTENT_BYTES;
+        let structured_content = (!content_exceeds_core && !audit.any_selector_ambiguous())
+            .then(|| decoded.payload.clone());
         let core_row = build_source_backed_sparse_output_row(
             physical.raw_ordinal,
             provider_event_identity(&decoded.payload),
@@ -304,7 +361,13 @@ impl CodexNativeScanner {
                     > MAX_CODEX_SOURCE_BACKED_SINGLE_ROW_PAGE_BYTES
                         .saturating_sub(PAGE_FIXED_WIRE_BYTES)
                 {
-                    self.reject(false);
+                    self.reject_record(
+                        physical,
+                        Some(codex_record_payload_type(probe.class)),
+                        SourceBackedRecordRejectionClass::UnsupportedRecord,
+                        "Codex result record exceeds the bounded projection row envelope",
+                        false,
+                    );
                     return Ok(CodexRecordProjection::default());
                 }
                 self.counters.retained_records = self.counters.retained_records.saturating_add(1);
@@ -401,6 +464,49 @@ impl CodexNativeScanner {
         }
         self.counters.rejected_complete_records =
             self.counters.rejected_complete_records.saturating_add(1);
+    }
+
+    pub(super) fn reject_record(
+        &mut self,
+        physical: CodexPhysicalRecordContext,
+        payload_type: Option<&str>,
+        class: SourceBackedRecordRejectionClass,
+        detail: &'static str,
+        oversized: bool,
+    ) {
+        self.reject(oversized);
+        self.record_rejections
+            .record(SourceBackedRecordRejectionDraft {
+                source: self.core_source.clone(),
+                provider: ctx_history_core::CaptureProvider::Codex,
+                source_selector: self.source.source_path.display().to_string(),
+                line_number: physical.raw_ordinal.saturating_add(1),
+                payload_type: payload_type.map(str::to_owned),
+                class,
+                detail: detail.to_owned(),
+            });
+    }
+}
+
+fn codex_record_payload_type(class: CodexRecordClass) -> &'static str {
+    match class {
+        CodexRecordClass::SessionMeta => "session_meta",
+        CodexRecordClass::TurnContext => "turn_context",
+        CodexRecordClass::DescendantActivity => "agent_message",
+        CodexRecordClass::DescendantStarted => "agent_message.started",
+        CodexRecordClass::Retained(CodexRetainedKind::Message) => "message",
+        CodexRecordClass::Retained(CodexRetainedKind::Reasoning) => "reasoning",
+        CodexRecordClass::Retained(CodexRetainedKind::Compacted) => "compacted",
+        CodexRecordClass::Retained(CodexRetainedKind::ToolCall) => "tool_call",
+        CodexRecordClass::ExcludedResult(CodexResultKind::FunctionCallOutput) => {
+            "function_call_output"
+        }
+        CodexRecordClass::ExcludedResult(CodexResultKind::CustomToolCallOutput) => {
+            "custom_tool_call_output"
+        }
+        CodexRecordClass::ExcludedResult(CodexResultKind::ToolSearchOutput) => "tool_search_output",
+        CodexRecordClass::ExcludedResult(CodexResultKind::OtherResult) => "tool_result",
+        CodexRecordClass::Ignored => "ignored",
     }
 }
 
