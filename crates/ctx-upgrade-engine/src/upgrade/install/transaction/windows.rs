@@ -108,6 +108,7 @@ pub(super) fn publish_install(
             .context("canonicalize selected Semantic cache root")?,
         );
     }
+    journal::validate_for_publication(&transaction, semantic_layout)?;
     journal::write(&transaction)?;
     before_publish()?;
     let helper_pid = helper::spawn(
@@ -148,7 +149,7 @@ pub(in crate::upgrade) fn run_replacement_helper<D: DaemonUpgradePort + ?Sized>(
         ));
     }
     let current = std::env::current_exe().context("resolve Windows replacement helper path")?;
-    if current != expected.helper_path() {
+    if !super::super::managed_install_path_identity_matches(&current, expected.helper_path()) {
         return Err(anyhow!(
             "Windows replacement helper was not launched from its journaled copy"
         ));
