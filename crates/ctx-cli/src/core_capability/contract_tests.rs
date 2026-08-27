@@ -1,7 +1,7 @@
 // Contract tests for the fixed Core capability protocol.
 use super::hosted_pair_install::{
     acquire_hosted_install_lock, hosted_source_path, replace_hosted_file, stage_hosted_bytes,
-    stage_hosted_file_if_changed, HostedInstallMarker, HostedPairPublication,
+    stage_hosted_file_if_changed, HostedPairPublication,
 };
 use super::progress_events::{CapabilityEventSink, IgnoreEvents, ProtocolEventWriter};
 use super::*;
@@ -13,6 +13,10 @@ use ctx_history_refresh::{
 #[cfg(test)]
 #[path = "contract_tests/failure_contract_tests.rs"]
 mod failure_contract_tests;
+
+#[cfg(test)]
+#[path = "contract_tests/hosted_marker_contract_tests.rs"]
+mod hosted_marker_contract_tests;
 
 #[test]
 fn fingerprint_is_the_sha256_of_the_canonical_inventory() {
@@ -503,23 +507,6 @@ fn hosted_pair_installation_is_serialized_without_persistent_lock_state() {
     assert!(acquire_hosted_install_lock(root.path()).is_err());
     drop(first);
     assert!(acquire_hosted_install_lock(root.path()).is_ok());
-}
-
-#[test]
-fn hosted_marker_channel_is_distribution_only() {
-    let staging = HostedInstallMarker {
-        schema_version: 1,
-        manager: "ctx-hosted-installer".to_owned(),
-        install_path: "/tmp/ctx".to_owned(),
-        platform: "linux-x64".to_owned(),
-        channel: "stable".to_owned(),
-        sha256: "1".repeat(64),
-        staging_dogfood: true,
-    };
-    assert_eq!(
-        staging.release_channel().unwrap(),
-        ctx_companion_bridge::ReleaseChannel::Staging
-    );
 }
 
 #[test]
