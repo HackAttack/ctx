@@ -78,10 +78,11 @@ shipped.
   validated local runtime remain lexical-safe: `hybrid` falls back to lexical
   and explicit `semantic` reports a local unavailable/runtime error instead of
   linking an unsupported backend.
-- Semantic indexing requires auto mode. Use `ctx index mode auto` before
-  `ctx setup --semantic` when manual mode is configured. Lexical search remains
-  available while embeddings build, and hybrid uses both backends when coverage
-  is ready.
+- Automatic semantic indexing requires auto mode. Use `ctx index mode auto`
+  before `ctx semantic enable --wait` when manual mode is configured. A plain
+  `ctx semantic enable` still records the opt-in in manual mode. Lexical search
+  remains available while embeddings build, and hybrid uses both backends when
+  coverage is ready.
 - The ctx macOS CLI targets macOS 13, but ONNX Runtime 1.27 follows its upstream
   macOS 14 minimum. On macOS 13, daemon-backed lexical search remains available
   while semantic search is unavailable.
@@ -101,9 +102,12 @@ shipped.
 
 - Core setup/import/search are local filesystem operations.
 - Official installer-managed binaries can use signed release metadata for an
-  explicit `ctx upgrade` command and daemon-owned automatic checks while the
-  persistent daemon, automatic indexing, and automatic upgrades are enabled.
-- Manual indexing and finite Core workers do not perform automatic upgrade
-  checks or application.
+  explicit `ctx upgrade` command and automatic checks while automatic upgrades
+  are enabled. Auto indexing with the full daemon profile uses the persistent
+  daemon as the sole automatic-upgrade authority; manual and
+  source-refresh-only modes perform no automatic upgrade work.
+- Ordinary foreground commands and MCP do not claim or spawn automatic
+  upgrades.
+- Finite Core workers do not perform automatic upgrade checks or application.
 - Unmanaged installs do not self-upgrade.
 - No provider beyond the support matrix should be described as supported.

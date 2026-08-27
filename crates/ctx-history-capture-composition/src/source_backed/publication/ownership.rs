@@ -168,13 +168,20 @@ fn route_callback(
     result.map_err(|source| SourceBackedCoordinatorError::RouteScan { provider, source })
 }
 
+pub(super) struct BaseSourceOwnershipEvidence<'a> {
+    pub(super) carried_routes: &'a BTreeSet<SourceRouteIdentity>,
+    pub(super) partial_routes: &'a BTreeSet<SourceRouteIdentity>,
+    pub(super) successful_routes: &'a BTreeSet<SourceRouteIdentity>,
+    pub(super) failed_routes: &'a BTreeMap<SourceRouteIdentity, SourceBackedFailedRoute>,
+    pub(super) logical_source_failures: &'a SourceBackedLogicalSourceFailures,
+}
+
 pub(super) fn require_complete_base_source_ownership(
     lifecycle: &impl CaptureLifecycleSink<Error = IndexError>,
     registry: &SourceBackedProviderRegistry,
     owners: &HashMap<[u8; 32], SourceOwner>,
     complete_inventory_owners: &[CompleteInventoryOwner],
-    carried_routes: &BTreeSet<SourceRouteIdentity>,
-    partial_routes: &BTreeSet<SourceRouteIdentity>,
+    evidence: BaseSourceOwnershipEvidence<'_>,
 ) -> SourceBackedCoordinatorResult<()> {
     let Some(base) = lifecycle.base_snapshot() else {
         return Ok(());
@@ -185,8 +192,8 @@ pub(super) fn require_complete_base_source_ownership(
                 && route.metadata.route_identity.as_ref() == Some(snapshot.route_identity())
         });
         if covered_by_missing_route
-            || carried_routes.contains(snapshot.route_identity())
-            || partial_routes.contains(snapshot.route_identity())
+            || evidence.carried_routes.contains(snapshot.route_identity())
+            || evidence.partial_routes.contains(snapshot.route_identity())
             || registry
                 .provider_root_route_retirements
                 .contains(snapshot.route_identity())
@@ -194,14 +201,33 @@ pub(super) fn require_complete_base_source_ownership(
             continue;
         }
         for source in snapshot.sources() {
-            let claimed = owners
-                .get(&source.identity().digest())
-                .is_some_and(|owner| {
-                    source_owner_covers_base_source(source, owner, complete_inventory_owners)
-                });
-            if !claimed {
+            let owner = owners.get(&source.identity().digest());
+            if !owner.is_some_and(|owner| {
+                source_owner_covers_base_source(source, owner, complete_inventory_owners)
+            }) {
+                let route_identity = match owner {
+                    Some(owner) => registry
+                        .routes
+                        .get(owner.route_index)
+                        .and_then(|route| route.metadata.route_identity.as_ref()),
+                    None => Some(snapshot.route_identity()),
+                }
+                .filter(|route_identity| evidence.successful_routes.contains(*route_identity))
+                .cloned()
+                .ok_or_else(|| {
+                    SourceBackedCoordinatorError::Index(index_writer_invariant(
+                        "unclaimed base source has no unique successful provider route",
+                    ))
+                })?;
                 return Err(SourceBackedCoordinatorError::UnclaimedBaseSource {
                     source_id: source.identity().to_string(),
+                    route_identity,
+                    route_failures: evidence
+                        .failed_routes
+                        .values()
+                        .map(SourceBackedFailedRouteOutcome::from)
+                        .collect(),
+                    logical_source_failures: Box::new(evidence.logical_source_failures.clone()),
                 });
             }
         }

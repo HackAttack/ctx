@@ -1,7 +1,9 @@
 //! Registry-policy coverage owned by the refresh execution crate.
 
+use super::execution_path::CompleteLexicalSearch;
 use super::*;
 use super::{discovery_fixture, run_report};
+use ctx_history_capture::legacy_automatic_source_backed_route_identity;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
@@ -25,6 +27,7 @@ fn registry_policy_source(
             ProviderSourceStatus::Missing
         },
         unsupported_reason: None,
+        route_provenance: Default::default(),
     }
 }
 
@@ -53,6 +56,93 @@ fn registry_policy_unsupported_codex_source(path: PathBuf) -> ProviderSource {
 
 fn registry_policy_nanoclaw_source(path: PathBuf) -> ProviderSource {
     registry_policy_source(CaptureProvider::NanoClaw, path, "nanoclaw_project", true)
+}
+
+fn automatic_antigravity_source(root: PathBuf, surface: &[u8]) -> ProviderSource {
+    ProviderSource {
+        provider: CaptureProvider::Antigravity,
+        path: root,
+        exists: true,
+        source_format: "antigravity_cli_transcript_jsonl_tree",
+        source_kind: ProviderSourceKind::NativeHistory,
+        import_support: ProviderImportSupport::Native,
+        catalog_support: ProviderCatalogSupport::Native,
+        status: ProviderSourceStatus::Available,
+        unsupported_reason: None,
+        route_provenance: ProviderSourceRouteProvenance::Automatic {
+            route_role: ProviderRouteRole::from_dynamic([b"surface".as_slice(), surface]).unwrap(),
+        },
+    }
+}
+
+fn write_antigravity_transcript(root: &Path, session: &str, body: &str) {
+    let logs = root.join(session).join(".system_generated/logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    std::fs::write(
+        logs.join("transcript.jsonl"),
+        format!(
+            "{{\"type\":\"user\",\"content\":{body:?},\"created_at\":\"2026-08-24T12:00:00Z\"}}\n"
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn production_refresh_persists_both_split_publications_without_provider_roots() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_root = temp.path().join("data");
+    let index_root = source_backed_index_root(&data_root);
+    ctx_history_platform::platform_security::establish_private_data_root(&data_root).unwrap();
+    let (_, _, discovery) = discovery_fixture(temp.path());
+    assert!(discovery.configured_provider_roots().is_empty());
+
+    let cli_root = temp.path().join("antigravity-cli/brain");
+    let ide_root = temp.path().join("antigravity-ide/brain");
+    write_antigravity_transcript(&cli_root, "cli-session", "cli migration needle");
+    write_antigravity_transcript(&ide_root, "ide-session", "ide migration needle");
+    let cli = automatic_antigravity_source(cli_root, b"cli");
+    let ide = automatic_antigravity_source(ide_root, b"ide");
+    let legacy = legacy_automatic_source_backed_route_identity(&cli).unwrap();
+    let successors = BTreeSet::from([
+        automatic_source_backed_route_identity(&cli).unwrap(),
+        automatic_source_backed_route_identity(&ide).unwrap(),
+    ]);
+
+    let mut writer = GenerationWriter::open(&index_root, WriterOptions::default())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    writer
+        .set_present_source_routes(vec![ctx_history_index::SourceRouteSnapshot::present(
+            legacy.clone(),
+            Vec::new(),
+        )
+        .unwrap()])
+        .unwrap();
+    writer.commit(|_| true).unwrap();
+
+    let report = || DiscoveryReport {
+        sources: vec![cli.clone(), ide.clone()],
+        issues: Vec::new(),
+    };
+    let bridge = run_report(&discovery, report(), &data_root, &index_root).unwrap();
+    let bridge_index = bridge.verified_index.as_ref().unwrap();
+    assert!(bridge_index.manifest().source_route(&legacy).is_some());
+    let bridge_metadata = SourceBackedPublicationMetadata::decode(bridge_index).unwrap();
+    assert!(bridge_metadata.route_controls.contains_key(&legacy));
+
+    let successor = run_report(&discovery, report(), &data_root, &index_root).unwrap();
+    let successor_index = successor.verified_index.as_ref().unwrap();
+    let final_routes = successor_index
+        .manifest()
+        .source_routes()
+        .iter()
+        .map(|route| route.route_identity().clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(final_routes, successors);
+    assert!(!final_routes.contains(&legacy));
+    let successor_metadata = SourceBackedPublicationMetadata::decode(successor_index).unwrap();
+    assert!(!successor_metadata.route_controls.contains_key(&legacy));
 }
 
 fn write_hermes_profile(path: &Path) {
@@ -177,6 +267,15 @@ fn only_unscopable_registry_safety_issues_block_globally() {
     };
     let error = reject_blocking_automatic_registry_issues(&[unsafe_overlap]).unwrap_err();
     assert!(format!("{error:#}").contains("injected unsafe root overlap"));
+
+    let configured_conflict = SourceBackedAutomaticRegistryIssue::Discovery(DiscoveryIssue {
+        provider: CaptureProvider::Claude,
+        path: Some(PathBuf::from("/configured/claude")),
+        kind: DiscoveryIssueKind::ConfiguredRootConflict,
+        reason: "injected configured root conflict",
+    });
+    let error = reject_blocking_automatic_registry_issues(&[configured_conflict]).unwrap_err();
+    assert!(format!("{error:#}").contains("injected configured root conflict"));
 }
 
 #[test]
@@ -403,7 +502,7 @@ fn mixed_codex_and_unsupported_warp_routes_continue_with_typed_evidence() {
     assert_eq!(verified.manifest().sources.len(), 1);
     assert_eq!(
         verified
-            .search_event_candidates("registrypolicyvalidmarker", 10)
+            .complete_lexical_search("registrypolicyvalidmarker", 10)
             .unwrap()
             .len(),
         1
@@ -497,7 +596,7 @@ fn all_route_execution_preserves_a_healthy_peer_during_source_local_registration
     assert_eq!(verified.manifest().sources.len(), 1);
     assert_eq!(
         verified
-            .search_event_candidates("registrypolicyvalidmarker", 10)
+            .complete_lexical_search("registrypolicyvalidmarker", 10)
             .unwrap()
             .len(),
         1

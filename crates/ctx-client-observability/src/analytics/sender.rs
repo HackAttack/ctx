@@ -142,6 +142,9 @@ pub(super) fn serialize_event(
             if let Some(foreground) = event.foreground {
                 insert_provider_refresh_properties(&mut properties, &foreground);
             }
+            if let Some(health) = event.terminal_health {
+                insert_provider_refresh_terminal_health_properties(&mut properties, &health);
+            }
             (
                 "provider_refresh_completed",
                 event.surface,
@@ -228,22 +231,7 @@ fn insert_provider_refresh_properties(
         insert_str(properties, "provider", provider.as_str());
     }
     insert_str(properties, "trigger", refresh.trigger.as_str());
-    insert_optional_str(
-        properties,
-        "source_mode",
-        refresh.source_mode.map(ProviderRefreshSourceMode::as_str),
-    );
     insert_str(properties, "change", refresh.change.as_str());
-    insert_str(
-        properties,
-        "content_evidence",
-        refresh.content_evidence.as_str(),
-    );
-    insert_optional_str(
-        properties,
-        "work_kind",
-        refresh.work_kind.map(ProviderRefreshWorkKind::as_str),
-    );
     insert_str(
         properties,
         "refresh_result",
@@ -253,34 +241,26 @@ fn insert_provider_refresh_properties(
     insert_str(properties, "failure_scope", refresh.failure_scope.as_str());
     insert_str(properties, "failure_type", refresh.failure_type.as_str());
     insert_bool(properties, "work_remaining", refresh.work_remaining);
-    insert_optional_count(
-        properties,
-        "retired_records_bucket",
-        refresh.retired_records,
-    );
     if let Some(counts) = refresh.counts {
-        insert_optional_count(properties, "sources_bucket", counts.sources);
-        insert_optional_count(properties, "source_files_bucket", counts.source_files);
-        insert_optional_count(properties, "sessions_bucket", counts.sessions);
-        insert_optional_count(properties, "events_bucket", counts.events);
-        insert_optional_count(properties, "edges_bucket", counts.edges);
-        insert_optional_count(properties, "skips_bucket", counts.skips);
-        insert_optional_count(properties, "rejections_bucket", counts.rejections);
-        insert_optional_count(properties, "failures_bucket", counts.failures);
-        insert_optional_bytes(properties, "bytes_bucket", counts.bytes);
+        insert_optional_count(properties, "records_bucket", counts.records);
+        insert_optional_bytes(properties, "logical_bytes_bucket", counts.logical_bytes);
     }
-    if let Some(performance) = refresh.performance {
-        insert_optional_duration(
-            properties,
-            "cpu_duration_bucket",
-            Some(performance.cpu_duration),
-        );
-        insert_optional_bytes(
-            properties,
-            "observed_process_peak_rss_bucket",
-            performance.observed_process_peak_rss,
-        );
-    }
+}
+
+fn insert_provider_refresh_terminal_health_properties(
+    properties: &mut Map<String, Value>,
+    health: &ProviderRefreshTerminalHealthV1,
+) {
+    insert_optional_bool(
+        properties,
+        "refresh_retained_previous_generation",
+        health.retained_previous_generation,
+    );
+    insert_bool(
+        properties,
+        "refresh_successor_pending",
+        health.successor_pending,
+    );
 }
 
 fn insert_client_operation_properties(
@@ -336,6 +316,9 @@ fn insert_client_operation_properties(
             );
             insert_import_result_properties(properties, &value.import);
         }
+        CliOperation::SemanticEnable
+        | CliOperation::SemanticStatus
+        | CliOperation::SemanticDisable => {}
         CliOperation::Status(value) => {
             insert_optional_bool(properties, "initialized", value.initialized);
             insert_optional_count(properties, "indexed_items_bucket", value.indexed_items);
@@ -563,6 +546,15 @@ fn insert_search_properties(properties: &mut Map<String, Value>, value: &SearchT
     insert_optional_count(properties, "citation_count_bucket", value.citation_count);
     insert_optional_bool(properties, "zero_result", value.zero_result);
     insert_optional_duration(properties, "render_duration_bucket", value.render_duration);
+    insert_optional_duration(
+        properties,
+        "search_output_duration_bucket",
+        value.output_duration.map(duration_bucket),
+    );
+    insert_optional_bool(properties, "search_output_served", value.output_served);
+    if let Some(health) = value.health {
+        health.insert_properties(properties);
+    }
 }
 
 fn insert_integration_properties(

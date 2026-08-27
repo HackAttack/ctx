@@ -4,7 +4,7 @@ use anyhow::Result;
 use ctx_history_capture::{source_backed_source_failure_identity, ProviderSource};
 use ctx_history_core::CaptureProvider;
 use ctx_history_ingest_application::{
-    HistorySourcePluginSource, IngestPublication, RefreshSelection,
+    HistorySourcePluginSource, ImportPathMissingDuringRefresh, IngestPublication, RefreshSelection,
 };
 use ctx_history_platform::platform_security::establish_private_data_root;
 use ctx_history_refresh::ExplicitSourceCatalogUpsert;
@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::{
-    core_refresh::wait_for_import_core_refresh,
+    core_refresh::{is_terminal_missing_import_path, wait_for_import_core_refresh},
     explicit_source_catalog::{
         explicit_source_for_admission, relocate_explicit_source, relocation_authority_for_import,
         upsert_explicit_source,
@@ -79,7 +79,6 @@ impl ctx_history_cli::ImportApplicationPort for CliImportHost {
     fn refresh(
         &mut self,
         data_root: &Path,
-        _config: ctx_history_cli::HistoryCliConfig,
         selection: RefreshSelection,
         no_daemon: bool,
         progress: &mut ProgressReporter<'_>,
@@ -87,7 +86,14 @@ impl ctx_history_cli::ImportApplicationPort for CliImportHost {
         let exact_route_lineages = selection
             .explicit_source_authority()
             .map(|authority| authority.route_lineages());
-        let refresh = wait_for_import_core_refresh(data_root, no_daemon, selection, progress)?;
+        let refresh = wait_for_import_core_refresh(data_root, no_daemon, selection, progress)
+            .map_err(|error| {
+                if is_terminal_missing_import_path(&error) {
+                    error.context(ImportPathMissingDuringRefresh)
+                } else {
+                    error
+                }
+            })?;
         let pinned_generation = refresh.pin.generation_id().to_owned();
         let policy_schema_hash = exact_route_lineages.is_none().then(|| {
             refresh
@@ -132,6 +138,7 @@ mod tests {
             ["ImportCore", "RefreshRequest"].concat(),
             ["run", "_ingest"].concat(),
             ["Source", "Discovery", "Port"].concat(),
+            ["History", "Cli", "Config"].concat(),
         ] {
             assert!(
                 !source.contains(&forbidden),

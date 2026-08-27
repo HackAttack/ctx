@@ -28,6 +28,12 @@ discovery/import source shapes; stored event metadata may use the corresponding
 per-file adapter format, such as
 `codex_session_jsonl` for files discovered under `codex_session_jsonl_tree`.
 
+Each row's `configured_root` object also records whether persistent named roots
+are enabled and, when enabled, the required file or directory kind and the
+provider's expansion strategy. `intentional_automatic_exact` means the provider
+retains automatic
+discovery plus one-shot exact import but does not accept `ctx sources add`.
+
 Each provider row also has `lineage_support`. `session_relationship` is either
 `exact_relationship` or `unknown`. `event_origin` distinguishes `exact_copy`,
 `certified_prefix`, `explicit_no_copy`, and `unknown`. These values describe
@@ -47,8 +53,8 @@ event-local Core capability has its own provider + route + source format +
 format version authority in
 [`mcp-tool-call-attribution-capabilities.json`](mcp-tool-call-attribution-capabilities.json).
 Capability revision 4 exact providers are Codex, Warp, and Copilot CLI. The
-complete evidence matrix contains 46 base routes and 49 capability lanes:
-three exact, 45 not-qualified, and one excluded. The Deep Agents hosted trace
+complete evidence matrix contains 47 base routes and 51 capability lanes:
+three exact, 47 not-qualified, and one excluded. The Deep Agents hosted trace
 is excluded from the local-only boundary, while its local SQLite history import
 remains Supported but not qualified for exact attribution. See
 [`mcp-tool-call-attribution.md`](mcp-tool-call-attribution.md) for absence,
@@ -68,11 +74,11 @@ support matrix is:
 | Grok Build | Supported | `grok_build_session_updates_jsonl_tree` |
 | DeepSeek Harness | Supported | `deepseek_harness_session_jsonl_tree` |
 | Pi | Supported | `pi_session_jsonl` |
-| Claude | Supported | `claude_projects_jsonl_tree` |
+| Claude Code | Supported | `claude_projects_jsonl_tree` |
 | OpenCode | Supported | `opencode_sqlite` |
 | Kilo Code | Supported | `kilo_sqlite` |
 | MiMo Code | Supported | `mimocode_sqlite` |
-| Kiro CLI | Supported | `kiro_cli_sqlite` |
+| Kiro | Supported | `kiro_cli_sqlite` |
 | Crush | Supported | `crush_sqlite` |
 | Goose | Supported | `goose_sessions_sqlite` |
 | Lingma | Supported | `lingma_sqlite` |
@@ -91,10 +97,10 @@ support matrix is:
 | Tabnine | Supported | `tabnine_cli_chat_recording_jsonl` |
 | Cursor | Supported | `cursor_agent_transcript_jsonl_tree` |
 | Zed | Supported | `zed_threads_sqlite` |
-| Copilot CLI | Supported | `copilot_cli_session_events_jsonl` |
+| GitHub Copilot | Supported | `copilot_cli_session_events_jsonl` |
 | Factory AI Droid | Supported | `factory_ai_droid_sessions_jsonl` |
 | Qwen Code | Supported | `qwen_code_chat_jsonl_tree` |
-| Kimi Code CLI | Supported | `kimi_code_cli_wire_jsonl_tree` |
+| Kimi Code | Supported | `kimi_code_cli_wire_jsonl_tree` |
 | Auggie | Supported | `auggie_session_json` |
 | Junie | Supported | `junie_session_events_jsonl_tree` |
 | Firebender | Supported | `firebender_chat_history_sqlite` |
@@ -105,6 +111,7 @@ support matrix is:
 | Rovo Dev | Supported | `rovodev_session_json_tree` |
 | Cline | Supported | `cline_sdk_session_store`, `cline_task_directory_json` |
 | Roo Code | Supported | `roo_task_directory_json` |
+| fx | Supported | `fx_sessions_tree` |
 
 Codex session-tree discovery and exact `--path` import accept both ordinary
 `.jsonl` rollouts and official standard-Zstandard `.jsonl.zst` rollouts. Both
@@ -143,6 +150,23 @@ of scope, and this import does not qualify exact MCP server/tool attribution.
 Unknown required events and future format versions fail the source. Delegated
 sessions remain independently searchable, but their immediate parent header
 does not prove the transitive root identity required for typed lineage edges.
+
+fx is Supported for legacy marker-less schema-v1/v2 `session.json` snapshots
+accepted by current fx v0.0.6 and current schema-v3 transactional session
+event logs. Discovery selects
+`~/.fx/sessions`; named roots and exact imports accept a directory with the
+same sessions-tree layout. For schema v3,
+`authority.json` establishes event-log authority, `events.jsonl` is canonical
+history, and a matching `commit.<generation>.json` watermark establishes the
+committed boundary; `session.json` is only a projection. Pending commits and
+uncommitted tails are excluded. Legacy snapshots are limited to 16 MiB. A
+supported marker-less snapshot and the schema-v3 session created by its upstream
+migration remain one logical fx session, so migration alone does not duplicate
+history or rotate stable ctx identities. Marker-less schema-v3 snapshots,
+future schemas, hosted history, and exact MCP server/tool attribution are not
+supported. Current fidelity claims cover searchable user and assistant turn
+content only; they do not claim normalized tool, command, file-touch, per-turn
+model, or per-turn token fidelity.
 
 `ctx sources --format json` reports each known provider source with `import_support`
 and `importable` fields. A source is importable only when provider-specific

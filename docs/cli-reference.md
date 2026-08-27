@@ -49,6 +49,10 @@ ctx index mode auto
 ctx index mode manual
 ctx index watch
 ctx index wait
+ctx semantic enable
+ctx semantic enable --wait
+ctx semantic status
+ctx semantic disable
 ctx daemon run
 ```
 
@@ -59,7 +63,10 @@ ctx daemon run
   by their owner. Setup does not write `config.toml` for implicit defaults or
   execute history-source plugin commands. In automatic indexing mode, setup
   may opportunistically start the persistent ctx-owned daemon. In manual mode
-  setup never starts a worker. Use `setup --no-daemon` for a one-run opt-out.
+  setup never starts a worker. Its concise human summary lists only agent
+  histories that contributed indexed content and warns instead of claiming
+  clean completion when a provider root is partial, excluded, or unknown. Use
+  `setup --no-daemon` for a one-run opt-out.
 - `setup --quiet` performs setup without printing success status lines, import
   summaries, data-root details, or get-started tips. It still exits nonzero and
   prints errors on failure.
@@ -69,8 +76,13 @@ ctx daemon run
 - `status` reports the ctx root, source epoch, lexical and refresh readiness,
   semantic generation and coverage, daemon and supervisor health,
   initialization state, compact local usage health, local-only marker, and
-  read-only marker. It does not initialize or repair Core or semantic state or
-  open old history.
+  read-only marker. Human output uses contributing agent histories, provider
+  roots, sessions, messages, tool calls, and processed history bytes; it does
+  not expose internal source-key cardinality. Partial coverage distinguishes
+  source failures from rejected records and keeps healthy prior history
+  searchable. JSON retains the existing `indexed_sources` meaning and is the
+  exact diagnostic drilldown. Status does not initialize or repair Core or
+  semantic state or open old history.
 - `stats` is the read-only, local, offline report for History retrieval, Code
   provenance, Measured delivery, and Estimated savings. Measured facts and
   model-based estimates are separate in JSON; the estimate model and
@@ -78,9 +90,11 @@ ctx daemon run
   and one-copy semantic/context byte channels separate; transport bytes never
   drive context-token or savings estimates. Byte-derived token values include
   coverage and remain unavailable for unmeasured legacy rows rather than
-  becoming false zeros. `stats --detail` adds CLI/MCP operation and latency
-  breakdowns. Reporting is uncounted and does not create `usage.sqlite` on a
-  pristine root.
+  becoming false zeros. Completed companion-backed Blame appears with calls,
+  technical success/failure, and duration; Core does not classify private
+  results, and CLI Blame output is shown as unavailable. `stats --detail` adds
+  CLI/MCP operation and latency breakdowns. Reporting is uncounted and does not
+  create `usage.sqlite` on a pristine root.
 - `status --usage disable` and `enable` write the canonical `[local_usage]
   enabled` override; `status --usage reset` atomically clears the usage
   aggregates. These controls are not counted and remain action-focused so they
@@ -90,8 +104,8 @@ ctx daemon run
   reporting controls.
 - `status --quiet` performs the same local checks but prints nothing on
   success. Use `status --format json` when scripts need the actual state.
-- `doctor` validates source-epoch storage and reports lexical, semantic, and
-  daemon lock/status problems when present.
+- `doctor` turns source-epoch, refresh, semantic, and daemon problems into a
+  focused recovery action. It does not repeat the normal status inventory.
 - `index` prints a one-shot indexing status view. It is the focused view of the
   current indexing mode, lexical publication, refresh progress, semantic
   coverage, and background process state. Use `--format json` for the
@@ -106,6 +120,12 @@ ctx daemon run
   met; `--format jsonl` emits one snapshot per line. `index wait` blocks until
   the selected lexical, semantic, or combined readiness target is met and
   supports one final `--format json` result.
+- `semantic enable` persists the explicit semantic-search opt-in. In auto mode
+  it starts or recovers daemon-owned model acquisition and semantic catch-up;
+  `--wait` waits for the current projection. `semantic status` is read-only.
+  `semantic disable` opts out without deleting downloaded model/runtime assets
+  or derived semantic indexes. Plain enablement in manual mode does not change
+  indexing mode.
 - `daemon run` is an advanced command that runs persistent local maintenance in
   the foreground and blocks until stopped. It does not change the configured
   indexing mode. In manual mode, pass `--force` to run it explicitly. Each pass
@@ -114,17 +134,12 @@ ctx daemon run
   model for semantic indexing. A looping daemon keeps the embedding model
   resident after cold start, reloads daemon/semantic configuration between
   cycles, and performs recent-work freshness checks before settling into idle
-  loops. Enabling
-  `[search] semantic = true` and rerunning setup activates the existing daemon;
-  no unrelated restart is required.
+  loops.
 
 Automatic indexing is the default. Its canonical configuration is
 `[indexing] mode = "auto"`; the other supported value is `"manual"`.
-Enable local semantic search with `ctx setup --semantic`. Semantic indexing
-requires auto mode, so run `ctx index mode auto` first if the current mode is
-manual. Lexical search remains available while embeddings build, and hybrid
-search uses lexical and semantic evidence automatically when semantic coverage
-is ready.
+Lexical search remains available while embeddings build, and hybrid search uses
+lexical and semantic evidence automatically when semantic coverage is ready.
 
 Setup and health checks do not change shell startup files, install repository
 integrations, write into source repositories, call model APIs, or require API
@@ -133,8 +148,11 @@ semantic enabled, daemon maintenance may acquire the local embedding model.
 Each daemon maintenance pass is bounded and local. Core storage checks use the
 configured data root, and JSON stdout remains structured.
 Output format does not change lifecycle authority. Use `--no-daemon` or search
-`--refresh off` for an invocation-level opt-out. The automatic persistent
-daemon, not command dispatch or a finite worker, owns signed upgrade checks.
+`--refresh off` for an invocation-level opt-out. The full automatic persistent
+daemon is the sole driver for signed automatic upgrade checks. Without that
+driver, including manual and source-refresh-only modes, no automatic upgrade
+work runs. Ordinary foreground commands and finite indexing workers do not own
+upgrade checks; explicit `ctx upgrade` remains available.
 
 ## Agent Skill
 
@@ -238,21 +256,39 @@ ctx sources
 ctx sources --format json
 ctx sources add personal --provider claude --root ~/.claude-personal --source-group personal
 ctx sources add work --provider codex --root ~/.codex-work --source-group work
+ctx sources add work --provider codex --root ~/.codex-relocated --source-group work --replace
+ctx sources add openhands-cli --provider openhands --root ~/.openhands/conversations --kind current-conversations
 ctx sources remove personal
 ```
 
 `sources` lists bounded provider history locations selected for this machine.
 Provider precedence is winner-only: an environment or persistent-config
 replacement suppresses its lower-priority default. Current coexisting installed
-surfaces or persisted profiles may produce separate rows. One-shot, old, moved,
-or unreconstructible roots require an exact `--path` and are not remembered.
-Most users need no source configuration. When one machine has multiple Claude
-or Codex homes, `sources add` registers an existing home under a stable local
-name in `config.toml`; `sources remove` removes that definition. Configured
-homes are added to the provider's ordinary environment/default winner, and
-every distinct configured home is indexed. Registering the already inferred
-home gives it a name and optional group without indexing it twice. Other
-providers keep their ordinary discovery behavior.
+surfaces or persisted profiles may produce separate rows. One-shot imports and
+unconfigured automatic locations that are old, moved, or unreconstructible
+require an exact `--path` and are not remembered. Most users need no source
+configuration. For a provider with an enabled configured-root capability,
+`sources add` registers an existing provider history root under a stable local
+name in `config.toml`; `sources remove` removes that definition. The provider
+capability determines whether the root
+must be a file or directory; the
+[provider support matrix](provider-support-matrix.json) publishes that state
+and, when enabled, the path kind and expansion strategy for every provider.
+Configured roots are
+added to the provider's ordinary environment/default winner, and every distinct
+configured root is indexed. Registering the already inferred root gives it a name and optional
+group without indexing it twice. Other providers keep their ordinary discovery
+behavior.
+
+A named root is the persisted exception to one-shot discovery: it remains
+configured and listed when its provider-owned path goes missing. Restore the
+state at that path, replace the path atomically under the same name with the
+`ctx sources add <name> --provider <provider> --root <replacement-path> --replace`
+form, or remove the definition with `ctx sources remove <name>`. A missing
+OpenClaw state root cannot safely invent its agent routes, so it appears as a
+route-less configured-root diagnostic rather than an unrelated automatic
+missing route. JSON and MCP identify that diagnostic with
+`code: "configured_root_missing"` and an explicit `configured_root` object.
 
 The equivalent editable configuration is:
 
@@ -266,33 +302,69 @@ group = "personal"
 provider = "codex"
 path = "/absolute/path/to/codex-work"
 group = "work"
+
+[sources.roots.openhands-cli]
+provider = "openhands"
+path = "/absolute/path/to/openhands/conversations"
+kind = "current-conversations"
 ```
 
 Names and groups use up to 64 ASCII letters, digits, hyphens, or underscores;
-paths are normalized absolute paths. At most 64 homes may be configured. A
-group is an optional label shared by any number of homes and is used only when
-a search explicitly supplies `--source-group`. For an additional home, the name is
-also its stable local source identity: updating only its path preserves ctx
-session IDs and citations after a move, while removing it and adding a
-different name creates a new logical home. Naming the currently inferred home
+paths are normalized absolute paths of the file or directory kind required by
+the provider capability. At most 64 roots may be configured. A group is an
+optional label shared by any number of roots and is used only when a search
+explicitly supplies `--source-group`. For an additional root, the name is also
+its stable local source identity: atomically replacing only its path preserves
+ctx session IDs and citations after a move, while removing it and adding a
+different name creates a new logical root. Naming the currently inferred root
 keeps its existing released identities. In automatic indexing mode the daemon
 reloads a valid source change as one full refresh. In manual mode, or when
 immediate publication is desired, run `ctx import --all` or search with
 `--refresh wait`.
 
+`ctx sources add <name> ... --replace` is the safe atomic edit. The name must
+refer to the supplied provider when it already exists; a mismatch fails. An
+absent name is added, and identical canonical settings are a no-op.
+`--source-group <group>` sets or replaces the group. Omitting `--source-group`
+while using `--replace` clears it. Choose a new name instead of changing
+provider under an existing name. The command holds one config transaction lock
+through read, validation, and durable replacement, so daemon refresh never
+observes an intermediate removed definition.
+
 Treat the name as a durable local mount key rather than a display label.
 Removing and later reusing the same name intentionally reuses that logical
 namespace, including reconciliation of matching provider-native session ids;
-use a new name for an unrelated home. Editing `path` under the same name is the
-move operation, editing `group` only changes filtering metadata, and changing
-the table name creates new logical identities.
+use a new name for an unrelated history root. Replacing `path` under the same
+name is the move operation, editing `group` only changes filtering metadata,
+and changing the table name creates new logical identities.
+
+OpenHands roots additionally require exactly one `--kind`. Use
+`current-conversations` when `--root` is the direct current conversations
+directory; that route accepts only
+`<conversation>/events/event-*.json`. Use `legacy-persistence` for the released
+recursive persistence-tree compatibility layout. `--kind` is rejected for
+other providers, and a hand-edited OpenHands table must contain the equivalent
+`kind = "current-conversations"` or `kind = "legacy-persistence"`. Nested
+automatic/configured OpenHands roots and ancestor-related configured legacy
+and current roots are rejected because they could select the same history.
+
+In `sources add`/`remove --format json`, `root.kind` is present for OpenHands
+and contains the selected string. The field is omitted for every other
+provider, preserving the earlier schema-v1 shape. The ordinary human success
+line remains a concise provider/name/path summary.
+
+ctx 1.1 writes generation manifest v10 and cannot produce a v8 index readable
+by ctx 1.0. To downgrade, use a fresh or separate data root and a 1.0-compatible
+config; back up the current config or use a separate `XDG_CONFIG_HOME` as
+appropriate. Then let the 1.0 binary rebuild from provider history. Never reuse
+a 1.1 data root or expect a 1.1 import to make its storage readable by 1.0.
 
 Names and groups are local provenance and query selectors. They are not upload
 consent, access-control boundaries, tenant assignment, or retention policy; a
 future sync product must ask for those decisions separately.
 
 Advanced users can disable all automatic provider discovery while keeping named
-Claude/Codex homes active:
+provider history roots active:
 
 ```toml
 [sources]
@@ -592,11 +664,17 @@ Core generation until they are explicitly imported through a supported path. Sea
 requires a non-empty query, at least one non-empty `--term`, or
 `--file <path>`; provider, workspace, time, session, event, source, and result
 flags only narrow an actual search. Ordinary results include primary and
-subagent sessions. Sessions with the same exact root-session claim are grouped
-together, while sessions without one remain their own groups; ctx returns one
-best matching span per group before repeats. Primary-session evidence gets a
-slight preference only when nearly as relevant; a stronger child-session match
-can win. Results include `more_matches_in_session` and
+subagent sessions. After filters and active-session exclusion, ctx selects the
+strongest bounded candidate for each exact session, reads all selected
+session/source coordinates in one bounded grouping query, and coalesces sparse
+direct provider claims for each coordinate. Sessions with the same positive
+coalesced root claim form one search family; an unclaimed session is its own
+family. Missing, conflicting, corrupt, or over-bound grouping authority fails
+the query instead of falling back to candidate-event roots or inferred
+lineage. Families are ordered by their strongest session champion, then ctx
+emits one remaining champion per family per relevance-stable round. Agent
+scope does not promote a weaker champion. Results
+include `more_matches_in_session` and
 `session_importance` when more indexed events from the returned session also
 matched. Use `--session <ctx-session-id>` after a default search has identified
 a session to inspect; scoped session search returns dense event hits.
@@ -632,36 +710,39 @@ follow-up commands preserve the positional and repeatable-term argument shape
 with safe shell quoting, plus a shell-quoted `ctx --data-root <path>` prefix when
 search uses a non-default data root. Each result's `rank` is its one-based
 position in the final shaped window. `retrieval_score` preserves the backend's
-diagnostic score, which can be non-monotonic after query-coverage and
-root-diversity shaping.
-Human output states `relevance order` and the selected agent scope in the
-result heading. Its compact `Event` row pairs the dynamic event reference with
-the exact matched-event UTC RFC 3339 millisecond time;
+diagnostic score, which can be non-monotonic after query-coverage and family
+shaping.
+Human output uses only the pluralized rendered-result count in the heading.
+Separate `Event` and `Time` rows show the dynamic event reference and the exact
+matched-event UTC RFC 3339 millisecond time;
 timestamps never re-sort results. `--verbose` additionally renders the stored
 event sequence and available workspace/working-directory, branch, agent, and
 parent/root lineage without repeating equal values.
-Canonical search hits also summarize bounded copied-event lineage after ranking
-is complete. The query reports the selected claim as `resolved`, `unresolved`,
-or `cyclic`; an absent copied-event target is an ordinary unresolved reference,
-and reverse results can still include sessions that directly claim it. Search
-renders at most three inherited-session follow-ups, an exact total when the
-reverse walk completes, or an `at least` lower bound when work is capped.
-`ctx show event` automatically renders up to 20 occurrence details. There is no
-lineage flag or exhaustive cursor.
+Ordinary search does not run a reverse-lineage lookup for each hit. A selected
+event can still expose its own positive direct `event_copy` claim, but that
+claim does not affect recall, ranking, grouping, or semantic eligibility.
+`ctx show event` resolves that selected event or its one direct copied-from
+target and renders up to 20 direct reverse occurrences. The target state is
+`resolved` or `unresolved`; missing targets are ordinary unresolved references
+and do not hide admitted occurrences. Counts are exact when the bounded direct
+posting scan completes and otherwise are an `at least` lower bound. This
+surface performs no parent, root, copy-component, cycle, or transitive lineage
+walk. There is no exhaustive cursor.
 Custom history imports can be filtered by canonical
 `--history-source provider_key/source_id`, or by exact `--provider-key`,
 `--source-id`, and `--source-format` values. The plugin/source alias is for
 explicit plugin import selection. These search filters imply
 `--provider custom` and cannot be combined with another provider.
-`--source-root <name>` and `--source-group <group>` are repeatable. Values across both
-flags form one union of configured homes, then intersect with provider,
-workspace, time, event, session, and other filters. Resolution happens against
-the immutable generation being queried, not live config, so lexical, semantic,
-hybrid, CLI, and MCP search select the same source keys. An unknown name or
-group in that pinned generation fails instead of widening the search. All
-homes still share one local Core/Tantivy index; selecting a root does not open
-or switch a separate index.
-Ordinary search uses the all-agent, root-diverse behavior described above. Use
+`--source-root <name>` and `--source-group <group>` are repeatable. Values
+across both flags form one union of configured history roots, then intersect
+with provider, workspace, time, event, session, and other filters. Resolution
+happens against the immutable generation being queried, not live config, so
+lexical, semantic, hybrid, CLI, and MCP search select the same source keys. An
+unknown name or group in that pinned generation fails instead of widening the
+search. All history roots still share one local Core/Tantivy index; selecting a
+root does not open or switch a separate index.
+Ordinary search uses the all-agent, coalesced-session, literal-family shaping
+described above. Use
 `--primary-only` only when a deliberately narrow search should exclude
 subagent work.
 
@@ -683,14 +764,19 @@ query service to embed the query from an already-cached model.
 Results are local hits over indexed history. Event hits include `ctx_event_id`;
 hits with known session context include `ctx_session_id`; provider metadata
 including `provider_session_id` is included when known. For Codex, that value
-is the resume UUID. Results also include title, snippet, rank, result scope, match reasons,
+is the resume UUID. Results also include title, snippet, rank, result scope,
 citations, `suggested_next_commands`, a JSON `freshness` object, a JSON
 `retrieval` object with backend, semantic coverage, worker status, and semantic
 timing/scan diagnostics when vector retrieval runs, a JSON `result_window`
 object with `limit`, `returned`, and shaped-sentinel `more_available`, and
-separate backend candidate-pool `truncation` fields. Search does not expose a
-continuation cursor or run a second count scan. Default text output is compact
-and optimized for agent reading; it ends with exactly
+separate `diversification` and backend candidate-pool `truncation` fields.
+Ordinary lexical session search performs one bounded batch with the fixed
+candidate horizon `max(limit + 1, 256)`, capped by the lexical query maximum;
+it never retries or doubles the pool. Dense `--events` and explicit
+`--session` searches use event relevance with a `limit + 1` lookahead and do
+not query grouping authority. Search does not expose a continuation cursor or
+run a second count scan. Default text output is compact and optimized for agent
+reading; it ends with exactly
 `More results available.` only when one additional shaped result exists. Use
 `--verbose` for expanded text diagnostics.
 
@@ -711,7 +797,7 @@ Filters:
 - repeatable `--exclude-session <ctx-session-id-or-prefix>`, for exact named
   sessions to omit;
 - `--term <query-or-keyword>`, repeatable broadening queries or keywords merged with OR-style semantics;
-- `--events`, for dense event-level results instead of the default root-diverse results;
+- `--events`, for dense event-level results instead of the default family-shaped results;
 - `--backend hybrid|semantic|lexical`, where `lexical` queries
   `search/lexical`, `semantic` queries `search/semantic`, and `hybrid` blends
   both only when semantic coverage is complete and bound to the active lexical
@@ -840,15 +926,15 @@ executable `ctx` candidate found on `PATH`, with warnings when another binary
 shadows the managed install or multiple `ctx` binaries are present. Diagnostics
 identify candidates without executing a shadowing binary.
 
-Official installer-managed installs use daemon-owned automatic upgrade by
-default; signed release metadata must also explicitly allow it. Automatic
-indexing's persistent daemon is the only automatic scheduler, including cadence
-and backoff. Command dispatch, MCP, and finite Core workers never schedule
-upgrades. Manual indexing causes zero automatic checks, downloads, or
-application. Scheduler state is stored beside the managed executable and does
-not write to foreground stdout or stderr. Use
-`CTX_UPGRADE_AUTO=off` for a process-level opt-out,
-or `ctx upgrade disable` to write `upgrade.auto = "off"` in `config.toml`.
+Official installer-managed installs use automatic upgrade by default; signed
+release metadata must also explicitly allow it. Automatic indexing with the
+full daemon profile uses the enabled persistent daemon as the sole automatic
+check and apply driver. Manual indexing, source-refresh-only mode, ordinary
+foreground commands, MCP, and finite Core workers do not schedule or spawn
+automatic upgrades. Scheduler state is stored beside the managed executable.
+Use `CTX_UPGRADE_AUTO=off` for a process-level opt-out, or `ctx upgrade disable`
+to write `upgrade.auto = "off"` in `config.toml`. Explicit `ctx upgrade` remains
+available independently of those automatic settings.
 
 Manual `ctx upgrade` can print progress and errors. It verifies signed release
 metadata, explicit self-upgrade policy, artifact SHA-256, the current managed

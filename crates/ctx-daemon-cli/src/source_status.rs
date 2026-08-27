@@ -4,6 +4,7 @@ use anyhow::Result;
 use ctx_history_index::{
     current_source_generation_policy, current_source_generation_policy_hash, VerifiedIndex,
 };
+use ctx_history_read_application::{history_health_report, HistoryHealthReport};
 use ctx_semantic_index::{
     source_backed_semantic_vector_path, SemanticVectorStore, SourceBackedGenerationPin,
 };
@@ -62,6 +63,7 @@ pub struct SourceEpochStatus {
     pub indexed_sessions: Option<u64>,
     pub indexed_events: Option<u64>,
     pub indexed_sources: Option<u64>,
+    pub health: Option<HistoryHealthReport>,
     pub report: Value,
 }
 
@@ -96,6 +98,11 @@ pub fn source_epoch_status_report(
         read_daemon_job_status(&daemon_semantic_job_path(data_root)),
     );
     let refresh = refresh_report(refresh_job.as_ref(), generation_id.as_deref(), &daemon);
+    let mut health = admitted_index.map(history_health_report).transpose()?;
+    if let Some(health) = health.as_mut() {
+        let (source_failures, rejected_records) = refresh_diagnostic_totals(&refresh);
+        health.record_refresh_diagnostics(source_failures, rejected_records);
+    }
 
     let indexed_items = admitted_index.map(VerifiedIndex::document_count);
     let indexed_events = indexed_items;
@@ -110,6 +117,7 @@ pub fn source_epoch_status_report(
         indexed_sessions,
         indexed_events,
         indexed_sources,
+        health,
         report: compact_json(json!({
             "schema_version": 2,
             "initialized": initialized,
@@ -129,6 +137,20 @@ pub fn source_epoch_status_report(
             "read_only": true,
         })),
     })
+}
+
+fn refresh_diagnostic_totals(refresh: &Value) -> (u64, u64) {
+    let diagnostics = refresh.get("diagnostics");
+    (
+        diagnostics
+            .and_then(|value| value.get("source_failure_total"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        diagnostics
+            .and_then(|value| value.get("rejected_record_total"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+    )
 }
 
 fn attach_catch_up_status(report: &mut Value, status: Option<Value>) {
@@ -226,6 +248,87 @@ fn refresh_report(job: Option<&Value>, generation_id: Option<&str>, daemon: &Val
             .and_then(|receipt| receipt.get("source_failure_total")),
         "rejected_record_total": request_outcome
             .and_then(|receipt| receipt.get("rejected_record_total")),
+        "diagnostics": refresh_diagnostics_report(request_outcome),
+    }))
+}
+
+fn refresh_diagnostics_report(receipt: Option<&Value>) -> Option<Value> {
+    let receipt = receipt?;
+    let mut source_failures = Vec::new();
+    let mut record_rejections = Vec::new();
+    for (route_identity, result) in receipt
+        .get("route_results")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let Some(fields) = result.as_array() else {
+            continue;
+        };
+        let outcome = fields.first().and_then(Value::as_str);
+        if matches!(outcome, Some("s" | "f")) {
+            if let Some(failures) = fields.get(4).and_then(Value::as_array) {
+                source_failures.extend(
+                    failures.iter().filter_map(|failure| {
+                        compact_source_failure_report(route_identity, failure)
+                    }),
+                );
+            }
+        }
+        if outcome == Some("s") {
+            if let Some(rejections) = fields.get(6).and_then(Value::as_array) {
+                record_rejections.extend(rejections.iter().filter_map(|rejection| {
+                    compact_record_rejection_report(route_identity, rejection)
+                }));
+            }
+        }
+    }
+    Some(compact_json(json!({
+        "source_failure_total": receipt.get("source_failure_total"),
+        "source_failures_shown": source_failures.len(),
+        "source_failures_omitted": receipt.get("source_failures_omitted"),
+        "source_failures": source_failures,
+        "rejected_record_total": receipt.get("rejected_record_total"),
+        "rejection_diagnostics_shown": record_rejections.len(),
+        "rejection_diagnostics_omitted": receipt.get("rejection_diagnostics_omitted"),
+        "record_rejections": record_rejections,
+    })))
+}
+
+fn compact_source_failure_report(route_identity: &str, value: &Value) -> Option<Value> {
+    let fields = value.as_array().filter(|fields| fields.len() == 6)?;
+    Some(json!({
+        "route_identity": route_identity,
+        "source_identity": fields[0].as_str()?,
+        "provider": fields[1].as_str()?,
+        "class": match fields[2].as_str()? {
+            "u" => "unavailable",
+            "c" => "source_changed",
+            "r" => "unreadable",
+            "i" => "incompatible",
+            _ => return None,
+        },
+        "carried_forward": fields[3].as_bool()?,
+        "source_selector": fields[4].as_str()?,
+        "detail": fields[5].as_str()?,
+    }))
+}
+
+fn compact_record_rejection_report(route_identity: &str, value: &Value) -> Option<Value> {
+    let fields = value.as_array().filter(|fields| fields.len() == 7)?;
+    Some(json!({
+        "route_identity": route_identity,
+        "source_identity": fields[0].as_str()?,
+        "provider": fields[1].as_str()?,
+        "source_selector": fields[2].as_str()?,
+        "line": fields[3].as_u64()?,
+        "payload_type": fields[4].as_str()?,
+        "class": match fields[5].as_str()? {
+            "m" => "malformed_record",
+            "u" => "unsupported_record",
+            _ => return None,
+        },
+        "detail": fields[6].as_str()?,
     }))
 }
 

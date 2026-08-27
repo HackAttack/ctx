@@ -12,21 +12,24 @@ mod manifest;
 pub mod policy;
 mod record_digest;
 mod schema;
-mod search_projection;
+#[doc(hidden)]
+pub mod search_projection;
 mod source_identity;
 mod stored_document;
 mod verification;
 mod verification_record;
 
 pub use contracts::{
-    AppliedProviderRoot, CommittedPredecessorMigrationRecovery, ConsecutiveSourceMissingCount,
-    GenerationManifest, IndexError, Result, SourceCoreRecordAggregate,
-    SourceMissingObservationPoint, SourceRouteMissingState, SourceRouteSnapshot,
-    GENERATION_MANIFEST_VERSION, LEXICAL_ANALYZER_VERSION, LEXICAL_SCHEMA_VERSION,
-    LEXICAL_SEGMENT_MERGE_FAN_IN, MAX_PUBLICATION_METADATA_BYTES,
+    AppliedProviderRoot, AppliedProviderRootSourceMembership,
+    CommittedPredecessorMigrationRecovery, ConsecutiveSourceMissingCount,
+    DetachedReleasedProviderRootAuthority, GenerationManifest, IndexError,
+    ProviderRootConnectorBinding, Result, SourceCoreRecordAggregate, SourceMissingObservationPoint,
+    SourceRouteMissingState, SourceRouteSnapshot, GENERATION_MANIFEST_VERSION,
+    LEXICAL_ANALYZER_VERSION, LEXICAL_SCHEMA_VERSION, LEXICAL_SEGMENT_MERGE_FAN_IN,
+    MAX_DETACHED_RELEASED_PROVIDER_ROOTS, MAX_PUBLICATION_METADATA_BYTES,
 };
 pub use ctx_history_capture_model::{
-    ProviderRootDefinition, ProviderRootSourceIdentity, SourceRouteIdentity,
+    ProviderRootDefinition, ProviderRootKind, ProviderRootSourceIdentity, SourceRouteIdentity,
 };
 #[doc(hidden)]
 pub use policy::is_semantic_candidate;
@@ -60,9 +63,9 @@ pub use ctx_history_capture_model::provider_source_config_digest;
 #[doc(hidden)]
 pub use index_document::{
     core_content_bytes, EventRangeOrderKey, IndexDocument, SemanticEventOrderKey,
-    SessionAuthorityKey, SessionEventOrderKey, SourceEventOrderKey, EVENT_RANGE_ORDER_KEY_LEN,
-    SEMANTIC_EVENT_ORDER_KEY_LEN, SESSION_AUTHORITY_KEY_LEN, SESSION_EVENT_ORDER_KEY_LEN,
-    SOURCE_EVENT_ORDER_KEY_LEN, SOURCE_EVENT_ORDER_SIZE_SUFFIX_LEN,
+    SessionAuthorityClaims, SessionAuthorityKey, SessionEventOrderKey, SourceEventOrderKey,
+    EVENT_RANGE_ORDER_KEY_LEN, SEMANTIC_EVENT_ORDER_KEY_LEN, SESSION_AUTHORITY_KEY_LEN,
+    SESSION_EVENT_ORDER_KEY_LEN, SOURCE_EVENT_ORDER_KEY_LEN, SOURCE_EVENT_ORDER_SIZE_SUFFIX_LEN,
     SOURCE_EVENT_ORDER_SOURCE_PREFIX_LEN,
 };
 #[doc(hidden)]

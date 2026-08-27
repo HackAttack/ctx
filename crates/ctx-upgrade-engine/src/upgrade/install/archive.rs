@@ -20,6 +20,38 @@ use super::durability::sync_directory;
 
 const MAX_RUNTIME_EXPANDED_BYTES: u64 = 1024 * 1024 * 1024;
 
+#[cfg(windows)]
+fn windows_powershell_path() -> Result<std::path::PathBuf> {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt as _};
+
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+    let mut buffer = vec![0_u16; 32_768];
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if length == 0 {
+        return Err(anyhow!(
+            "resolve Windows system directory: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if length >= buffer.len() {
+        return Err(anyhow!(
+            "Windows system directory exceeds the supported path length"
+        ));
+    }
+    let system_directory = std::path::PathBuf::from(OsString::from_wide(&buffer[..length]));
+    if !system_directory.is_absolute() {
+        return Err(anyhow!(
+            "Windows system directory is not absolute: {}",
+            system_directory.display()
+        ));
+    }
+    Ok(system_directory
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe"))
+}
+
 #[cfg(unix)]
 pub(super) fn extract_runtime_archive(
     _process: &dyn ReleaseProcessPort,
@@ -177,10 +209,11 @@ pub(super) fn extract_runtime_archive(
             "unsupported ONNX Runtime archive format for {platform}: {artifact_name}"
         ));
     }
+    let powershell = windows_powershell_path()?;
     let script_path = archive_path.with_extension("extract.ps1");
     fs::write(&script_path, super::windows_runtime_extract_script())
         .with_context(|| format!("write runtime extraction helper {}", script_path.display()))?;
-    let mut command = std::process::Command::new("powershell");
+    let mut command = std::process::Command::new(powershell);
     command
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(&script_path)
@@ -448,6 +481,7 @@ fn extract_semantic_zip(
     destination: &Path,
     asset: &SemanticAssetMetadata,
 ) -> Result<()> {
+    let powershell = windows_powershell_path()?;
     let contract_path = archive_path.with_extension("extract.json");
     let script_path = archive_path.with_extension("extract.ps1");
     let contract = serde_json::json!({
@@ -459,7 +493,7 @@ fn extract_semantic_zip(
         .with_context(|| format!("write extraction contract {}", contract_path.display()))?;
     fs::write(&script_path, WINDOWS_SEMANTIC_ZIP_EXTRACT_SCRIPT)
         .with_context(|| format!("write extraction helper {}", script_path.display()))?;
-    let mut command = std::process::Command::new("powershell");
+    let mut command = std::process::Command::new(powershell);
     command
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(&script_path)
@@ -541,7 +575,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$contract = Get-Content -LiteralPath $ContractPath -Raw | ConvertFrom-Json
+$contract = [System.IO.File]::ReadAllText($ContractPath) | ConvertFrom-Json
 $expectedArchive = @{}
 $directories = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 foreach ($file in $contract.files) {
@@ -602,9 +636,12 @@ try {
     }
     $record = $expectedArchive[$name]
     if ([long]$entry.Length -ne [long]$record.size) { throw "Semantic zip file size mismatch: '$raw'" }
-    $target = Join-Path $Destination ([string]$record.path).Replace('/', '\')
-    $parent = Split-Path -Parent $target
-    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    $target = [System.IO.Path]::Combine(
+      $Destination,
+      ([string]$record.path).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+    )
+    $parent = [System.IO.Path]::GetDirectoryName($target)
+    [void][System.IO.Directory]::CreateDirectory($parent)
     $source = $entry.Open()
     try {
       $output = [System.IO.File]::Open($target, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
@@ -652,8 +689,41 @@ try {
 "#;
 
 #[cfg(test)]
-mod semantic_zip_script_tests {
+mod windows_extract_script_tests {
     use super::WINDOWS_SEMANTIC_ZIP_EXTRACT_SCRIPT;
+
+    fn embedded_runtime_extract_script() -> &'static str {
+        include_str!("../install.rs")
+            .split_once("const EXTRACT_SCRIPT: &str = r#\"\n")
+            .unwrap()
+            .1
+            .split_once("\n\"#;")
+            .unwrap()
+            .0
+    }
+
+    #[test]
+    fn runtime_script_uses_dotnet_filesystem_apis() {
+        let script = embedded_runtime_extract_script();
+
+        assert!(script.contains("[System.IO.Path]::Combine"));
+        assert!(script.contains("[System.IO.Directory]::CreateDirectory"));
+        assert!(!script.contains("Join-Path"));
+        assert!(!script.contains("New-Item"));
+    }
+
+    #[test]
+    fn semantic_script_uses_dotnet_filesystem_apis() {
+        assert!(WINDOWS_SEMANTIC_ZIP_EXTRACT_SCRIPT.contains("[System.IO.File]::ReadAllText"));
+        assert!(WINDOWS_SEMANTIC_ZIP_EXTRACT_SCRIPT.contains("[System.IO.Path]::Combine"));
+        assert!(WINDOWS_SEMANTIC_ZIP_EXTRACT_SCRIPT.contains("[System.IO.Path]::GetDirectoryName"));
+        assert!(
+            WINDOWS_SEMANTIC_ZIP_EXTRACT_SCRIPT.contains("[System.IO.Directory]::CreateDirectory")
+        );
+        for provider in ["Get-Content", "Join-Path", "Split-Path", "New-Item"] {
+            assert!(!WINDOWS_SEMANTIC_ZIP_EXTRACT_SCRIPT.contains(provider));
+        }
+    }
 
     #[test]
     fn streamed_zip_bytes_are_bounded_before_each_write() {
@@ -674,6 +744,53 @@ mod semantic_zip_script_tests {
         assert!(file_guard < write);
         assert!(total_guard < write);
         assert!(!WINDOWS_SEMANTIC_ZIP_EXTRACT_SCRIPT.contains("$total += [long]$entry.Length"));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_powershell_tests {
+    use std::{ffi::OsStr, fs, process::Command};
+
+    use tempfile::TempDir;
+
+    use super::windows_powershell_path;
+
+    #[test]
+    fn powershell_resolves_to_an_absolute_system_path() {
+        let powershell = windows_powershell_path().unwrap();
+
+        assert!(powershell.is_absolute());
+        assert_eq!(powershell.file_name(), Some(OsStr::new("powershell.exe")));
+        assert!(powershell.ends_with(r"WindowsPowerShell\v1.0\powershell.exe"));
+    }
+
+    #[test]
+    fn hostile_path_cannot_override_system_powershell() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join("powershell.exe"),
+            b"not a trusted executable",
+        )
+        .unwrap();
+
+        let output = Command::new(windows_powershell_path().unwrap())
+            .env("PATH", temp.path())
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::Out.Write('trusted-system-powershell')",
+            ])
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "system PowerShell failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"trusted-system-powershell");
     }
 }
 

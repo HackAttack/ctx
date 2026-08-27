@@ -11,6 +11,7 @@ mod compact_presentation;
 mod event_read_model;
 mod filters;
 mod generation;
+mod health;
 mod json;
 mod lineage;
 mod list;
@@ -27,9 +28,9 @@ mod show_read_model;
 mod application_tests;
 
 pub use application::{
-    execute_search, plan_search, PinnedHistoryQuery, PlannedSearch, SearchApplicationError,
-    SearchApplicationReadModelInput, SearchApplicationRequest, SearchApplicationResult,
-    SearchQueryResult,
+    execute_search_observed, plan_search, ObservedSearchApplicationError, PinnedHistoryQuery,
+    PlannedSearch, SearchApplicationError, SearchApplicationReadModelInput,
+    SearchApplicationRequest, SearchApplicationResult, SearchQueryResult,
 };
 pub use compact_presentation::{
     normalize_uuid_prefix, reference_needs_retained_peer, CompactPresentationProjection,
@@ -51,6 +52,9 @@ pub use generation::{
     GenerationRead, GenerationReadAuthorityError, GenerationReadError, GenerationReadPort,
     GenerationReadReceipt, GenerationReadRequest, GenerationReadTarget, RetainedPeerRead,
 };
+pub use health::{
+    history_health_report, HistoryDataCoverage, HistoryHealthReport, HistoryRootCoverage,
+};
 pub use json::{event_copy_json, timestamp_json};
 pub use lineage::{
     copied_lineage_read_model, copied_lineage_relationship_summary, copied_lineage_summary,
@@ -69,19 +73,19 @@ pub use locate::{
     LocateApplicationResult, LocateRequest, LocateResult,
 };
 pub use presentation::{
-    presentations_for_search_hits_with_budget, search_snippet_fragment, SearchPresentation,
-    SearchPresentationHydrationBudget, SearchPresentationRetentionBudgetExceeded,
-    MAX_SEARCH_RESULTS, SEARCH_PRESENTATION_HYDRATION_BUDGET,
-    SEARCH_PRESENTATION_MAX_RETAINED_SNIPPET_BYTES, SEARCH_SNIPPET_MAX_BYTES,
-    SEARCH_SNIPPET_MAX_CHARS,
+    search_snippet_fragment, SearchPresentation, SearchPresentationHydrationBudget,
+    SearchPresentationRetentionBudgetExceeded, MAX_SEARCH_RESULTS,
+    SEARCH_PRESENTATION_HYDRATION_BUDGET, SEARCH_PRESENTATION_MAX_RETAINED_SNIPPET_BYTES,
+    SEARCH_SNIPPET_MAX_BYTES, SEARCH_SNIPPET_MAX_CHARS,
 };
 pub use search::{
-    collect_search_hits, collect_search_hits_using, normalize_search_request,
-    resolve_search_backend, search_filters, search_filters_with_refs, shape_search_result_window,
-    unsupported_semantic_scope, validate_search_request, ActiveSessionExclusion,
-    NormalizedSearchQuery, SearchBackend, SearchCollection, SearchEventMetadata,
-    SearchExecutionError, SearchExecutionResult, SearchHit, SearchPolicy, SearchRequest,
-    SearchResultWindow, SemanticFallbackDiagnostics,
+    normalize_search_request, resolve_search_backend, unsupported_semantic_scope,
+    validate_search_request, ActiveSessionExclusion, NormalizedSearchQuery, SearchBackend,
+    SearchCollection, SearchDiversificationDecision, SearchDiversificationStatus,
+    SearchEventMetadata, SearchExecutionError, SearchExecutionResult, SearchFailurePhase,
+    SearchHit, SearchLexicalDiagnostics, SearchLexicalExhaustionDiagnostics, SearchPolicy,
+    SearchRequest, SearchResultWindow, SearchStopReason, SearchWorkReceipt,
+    SemanticFallbackDiagnostics,
 };
 pub use search_read_model::{
     phase_attribution, render_search_json, search_json, search_result_json, search_snippet,

@@ -347,10 +347,15 @@ const CODEBUDDY_DEFAULTS: &[ProviderDefaultLocation] = &[
     },
 ];
 
+const FX_DEFAULTS: &[ProviderDefaultLocation] = &[ProviderDefaultLocation {
+    path_components: &[".fx", "sessions"],
+    source_format: "fx_sessions_tree",
+    source_kind: ProviderSourceKind::NativeHistory,
+}];
+
 pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     ProviderSourceSpec {
         provider: CaptureProvider::Codex,
-        display_name: "Codex",
         default_locations: CODEX_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::Native,
@@ -358,7 +363,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::GrokBuild,
-        display_name: "Grok Build",
         default_locations: GROK_BUILD_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -366,7 +370,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::DeepSeekHarness,
-        display_name: "DeepSeek Harness",
         default_locations: DEEPSEEK_HARNESS_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -374,7 +377,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Pi,
-        display_name: "Pi",
         default_locations: PI_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -382,7 +384,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Claude,
-        display_name: "Claude",
         default_locations: CLAUDE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -390,7 +391,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::OpenCode,
-        display_name: "OpenCode",
         default_locations: OPENCODE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -398,7 +398,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Kilo,
-        display_name: "Kilo Code",
         default_locations: KILO_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -406,7 +405,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::MiMoCode,
-        display_name: "MiMo Code",
         default_locations: MIMOCODE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -414,7 +412,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::KiroCli,
-        display_name: "Kiro CLI",
         default_locations: KIRO_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -422,7 +419,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Crush,
-        display_name: "Crush",
         default_locations: CRUSH_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -430,7 +426,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Goose,
-        display_name: "Goose",
         default_locations: GOOSE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -438,7 +433,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Antigravity,
-        display_name: "Antigravity",
         default_locations: ANTIGRAVITY_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -446,7 +440,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Gemini,
-        display_name: "Gemini",
         default_locations: GEMINI_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -454,7 +447,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Tabnine,
-        display_name: "Tabnine",
         default_locations: TABNINE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -462,7 +454,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Cursor,
-        display_name: "Cursor",
         default_locations: CURSOR_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -470,7 +461,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Zed,
-        display_name: "Zed",
         default_locations: ZED_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -478,7 +468,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::CopilotCli,
-        display_name: "Copilot CLI",
         default_locations: COPILOT_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -486,7 +475,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::FactoryAiDroid,
-        display_name: "Factory AI Droid",
         default_locations: FACTORY_DROID_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -494,7 +482,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::QwenCode,
-        display_name: "Qwen Code",
         default_locations: QWEN_CODE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -502,7 +489,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::KimiCodeCli,
-        display_name: "Kimi Code CLI",
         default_locations: KIMI_CODE_CLI_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -510,7 +496,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Auggie,
-        display_name: "Auggie",
         default_locations: AUGGIE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -518,7 +503,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Junie,
-        display_name: "Junie",
         default_locations: JUNIE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -526,7 +510,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Firebender,
-        display_name: "Firebender",
         default_locations: FIREBENDER_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -534,7 +517,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::ForgeCode,
-        display_name: "ForgeCode",
         default_locations: FORGECODE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -542,7 +524,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::DeepAgents,
-        display_name: "Deep Agents",
         default_locations: DEEPAGENTS_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -550,7 +531,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::MistralVibe,
-        display_name: "Mistral Vibe",
         default_locations: MISTRAL_VIBE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -558,7 +538,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Mux,
-        display_name: "Mux",
         default_locations: MUX_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -566,7 +545,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::RovoDev,
-        display_name: "Rovo Dev",
         default_locations: ROVODEV_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -574,7 +552,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::OpenClaw,
-        display_name: "OpenClaw",
         default_locations: OPENCLAW_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -582,7 +559,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Hermes,
-        display_name: "Hermes Agent",
         default_locations: HERMES_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -590,7 +566,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::NanoClaw,
-        display_name: "NanoClaw",
         default_locations: NANOCLAW_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -598,7 +573,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::AstrBot,
-        display_name: "AstrBot",
         default_locations: ASTRBOT_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -606,7 +580,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Shelley,
-        display_name: "Shelley",
         default_locations: SHELLEY_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -614,7 +587,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Continue,
-        display_name: "Continue",
         default_locations: CONTINUE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -622,7 +594,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::OpenHands,
-        display_name: "OpenHands",
         default_locations: OPENHANDS_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -630,7 +601,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Cline,
-        display_name: "Cline",
         default_locations: CLINE_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -638,7 +608,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::RooCode,
-        display_name: "Roo Code",
         default_locations: ROO_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -646,7 +615,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Lingma,
-        display_name: "Lingma",
         default_locations: LINGMA_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -654,7 +622,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Qoder,
-        display_name: "Qoder",
         default_locations: QODER_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -662,7 +629,6 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::Warp,
-        display_name: "Warp",
         default_locations: WARP_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
@@ -670,8 +636,14 @@ pub(super) const PROVIDER_SPECS: &[ProviderSourceSpec] = &[
     },
     ProviderSourceSpec {
         provider: CaptureProvider::CodeBuddy,
-        display_name: "CodeBuddy",
         default_locations: CODEBUDDY_DEFAULTS,
+        import_support: ProviderImportSupport::Native,
+        catalog_support: ProviderCatalogSupport::None,
+        unsupported_reason: None,
+    },
+    ProviderSourceSpec {
+        provider: CaptureProvider::Fx,
+        default_locations: FX_DEFAULTS,
         import_support: ProviderImportSupport::Native,
         catalog_support: ProviderCatalogSupport::None,
         unsupported_reason: None,

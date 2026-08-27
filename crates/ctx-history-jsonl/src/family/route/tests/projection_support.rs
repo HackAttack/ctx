@@ -142,6 +142,180 @@ impl_standard_jsonl_test_adapter!(
     }
 );
 
+pub(super) struct RecordRejectionTestAdapter;
+
+pub(super) struct RecordRejectionTestProjector {
+    source: SourceKey,
+    rejections: JsonlRecordRejections,
+}
+
+impl JsonlFamilyAdapter for RecordRejectionTestAdapter {
+    type Runtime = TestJsonlRuntime;
+
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Pi
+    }
+
+    fn source_format(&self) -> &'static str {
+        TEST_SOURCE_FORMAT
+    }
+
+    fn schema_variant(&self) -> &'static str {
+        TEST_SCHEMA
+    }
+
+    fn parser_revision(&self) -> &'static str {
+        "record-rejection-test-parser-v1"
+    }
+
+    fn append_mode(&self) -> JsonlFamilyAppendMode {
+        JsonlFamilyAppendMode::CertifiedSuffix
+    }
+
+    fn oversized_record_policy(&self) -> JsonlOversizedRecordPolicy {
+        JsonlOversizedRecordPolicy::RejectRecord
+    }
+
+    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
+        TestAdapter.discover(root)
+    }
+
+    fn projector(
+        &self,
+        leaf: &JsonlFamilyLeaf,
+        _source_file: Arc<OpenedProviderSourceFile>,
+        _imported_at: DateTime<Utc>,
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
+        Ok(Box::new(RecordRejectionTestProjector {
+            source: leaf.source().clone(),
+            rejections: JsonlRecordRejections::new(
+                leaf.source().clone(),
+                CaptureProvider::Pi,
+                leaf.source_path().display().to_string(),
+            ),
+        }))
+    }
+}
+
+impl JsonlFamilyProjector for RecordRejectionTestProjector {
+    type Runtime = TestJsonlRuntime;
+
+    fn project(
+        &mut self,
+        record: JsonlRecordRef<'_>,
+        _worker: &mut JsonlFamilyWorkerContext,
+        emit: &mut dyn FnMut(CoreRecord) -> Result<()>,
+    ) -> Result<()> {
+        if record.bytes().iter().all(u8::is_ascii_whitespace) {
+            return Ok(());
+        }
+        let detail = if record.oversized() {
+            Some("test record exceeds the JSONL record bound".to_owned())
+        } else {
+            serde_json::from_slice::<serde_json::Value>(record.bytes())
+                .err()
+                .map(|error| format!("malformed test JSONL: {error}"))
+        };
+        if let Some(detail) = detail {
+            self.rejections.malformed(record, detail);
+            return Ok(());
+        }
+        emit(emission_test_record(
+            &self.source,
+            record.evidence().physical_ordinal(),
+        )?)
+    }
+
+    fn rejected_records(&self) -> u64 {
+        self.rejections.count()
+    }
+
+    fn take_record_rejections(&mut self) -> SourceBackedRecordRejectionDrafts {
+        self.rejections.take_drafts()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ScopedPreflightTestBehavior {
+    WrongSource,
+    GenericInternal,
+    PostStagingFailure,
+}
+
+pub(super) struct ScopedPreflightTestAdapter {
+    pub(super) behavior: ScopedPreflightTestBehavior,
+}
+
+struct ScopedPreflightTestProjector {
+    behavior: ScopedPreflightTestBehavior,
+    source: SourceKey,
+    wrong_source: SourceKey,
+}
+
+impl JsonlFamilyProjector for ScopedPreflightTestProjector {
+    type Runtime = TestJsonlRuntime;
+
+    fn preflight_with_failure_scope(
+        &mut self,
+        reader: &mut JsonlReader,
+        _certified_prefix_end: Option<u64>,
+    ) -> std::result::Result<bool, JsonlFamilyProjectorPreflightError<CaptureError>> {
+        match self.behavior {
+            ScopedPreflightTestBehavior::WrongSource => {
+                return Err(JsonlFamilyProjectorPreflightError::logical_source_failure(
+                    self.wrong_source.clone(),
+                    "wrong-source preflight claim",
+                ));
+            }
+            ScopedPreflightTestBehavior::GenericInternal => {
+                return Err(JsonlFamilyProjectorPreflightError::internal(
+                    CaptureError::InvalidPayload("generic preflight failure".to_owned()),
+                ));
+            }
+            ScopedPreflightTestBehavior::PostStagingFailure => {}
+        }
+        while reader
+            .visit_page(&mut |_record| -> Result<()> { Ok(()) })?
+            .is_some()
+        {}
+        Ok(false)
+    }
+
+    fn project(
+        &mut self,
+        _record: JsonlRecordRef<'_>,
+        _worker: &mut JsonlFamilyWorkerContext,
+        emit: &mut dyn FnMut(CoreRecord) -> Result<()>,
+    ) -> Result<()> {
+        for ordinal in 0..65 {
+            emit(emission_test_record(&self.source, ordinal)?)?;
+        }
+        Err(CaptureError::InvalidPayload(
+            "post-staging generic failure".to_owned(),
+        ))
+    }
+}
+
+impl_standard_jsonl_test_adapter!(
+    ScopedPreflightTestAdapter,
+    "scoped-preflight-test-parser-v1",
+    JsonlFamilyAppendMode::ProjectorPreflight(true),
+    |adapter, leaf, _source_file, _imported_at| {
+        let wrong_source = SourceKey::derive(
+            CaptureProvider::Pi.as_str(),
+            TEST_SOURCE_FORMAT,
+            TEST_SCHEMA,
+            1,
+            SourceAnchor::CatalogLineage([0xfe; 32]),
+        )
+        .map_err(test_contract_error)?;
+        Ok(Box::new(ScopedPreflightTestProjector {
+            behavior: adapter.behavior,
+            source: leaf.source().clone(),
+            wrong_source,
+        }))
+    }
+);
 pub(super) struct FramingPolicyTestAdapter {
     pub(super) projected: Arc<Mutex<Vec<Vec<u8>>>>,
     pub(super) record_framing: JsonlRecordFraming,
@@ -181,6 +355,119 @@ impl_standard_jsonl_test_adapter!(
 pub(super) struct CheckpointTestAdapter {
     pub(super) projection_modes: Mutex<Vec<JsonlFamilyProjectionMode>>,
     pub(super) fixed_checkpoint_bytes: Option<usize>,
+}
+
+#[derive(Default)]
+pub(super) struct LogicalEofTestAdapter {
+    pub(super) projection_modes: Mutex<Vec<JsonlFamilyProjectionMode>>,
+}
+
+impl JsonlFamilyAdapter for LogicalEofTestAdapter {
+    type Runtime = TestJsonlRuntime;
+
+    fn provider(&self) -> CaptureProvider {
+        CaptureProvider::Pi
+    }
+
+    fn source_format(&self) -> &'static str {
+        TEST_SOURCE_FORMAT
+    }
+
+    fn schema_variant(&self) -> &'static str {
+        TEST_SCHEMA
+    }
+
+    fn parser_revision(&self) -> &'static str {
+        "logical-eof-test-parser-v1"
+    }
+
+    fn append_mode(&self) -> JsonlFamilyAppendMode {
+        JsonlFamilyAppendMode::CertifiedSuffix
+    }
+
+    fn discover(&self, root: &Path) -> Result<JsonlFamilyInventory> {
+        let discovered = TestAdapter.discover(root)?;
+        if discovered.root_missing() {
+            return JsonlFamilyInventory::missing(self.provider(), root);
+        }
+        let authority =
+            discovered
+                .authorities
+                .first()
+                .cloned()
+                .ok_or(CaptureError::SystemInvariant(
+                    "logical EOF test inventory has no authority",
+                ))?;
+        let mut leaves = Vec::new();
+        for leaf in discovered.accepted_leaves() {
+            let file_name = leaf
+                .source_path()
+                .file_name()
+                .ok_or(CaptureError::SystemInvariant(
+                    "logical EOF test leaf has no filename",
+                ))?
+                .to_string_lossy();
+            let control_path = PathBuf::from(format!("{file_name}.eof"));
+            let absent_path = PathBuf::from(format!("{file_name}.next"));
+            let control = authority.open_file(&control_path)?;
+            let bytes = control.read_all_bounded(1024)?;
+            let logical_eof = std::str::from_utf8(&bytes)
+                .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?
+                .trim()
+                .parse::<u64>()
+                .map_err(|error| CaptureError::InvalidPayload(error.to_string()))?;
+            leaves.push(
+                leaf.clone()
+                    .with_logical_eof(logical_eof)?
+                    .with_exact_present_dependency(control_path, &control)?
+                    .with_exact_absent_dependency(absent_path)?,
+            );
+        }
+        JsonlFamilyInventory::present(self.provider(), root, authority, leaves)
+    }
+
+    fn projector(
+        &self,
+        _leaf: &JsonlFamilyLeaf,
+        _source_file: Arc<OpenedProviderSourceFile>,
+        _imported_at: DateTime<Utc>,
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
+        Ok(Box::new(CheckpointTestProjector {
+            projected_records: 0,
+            resumed: false,
+            fixed_checkpoint_bytes: None,
+        }))
+    }
+
+    fn projector_with_provider_checkpoint(
+        &self,
+        leaf: &JsonlFamilyLeaf,
+        source_file: Arc<OpenedProviderSourceFile>,
+        imported_at: DateTime<Utc>,
+        checkpoint: Option<&TypedKey>,
+        base_event_lookup: Option<IndexBaseEventLookup>,
+        mode: JsonlFamilyProjectionMode,
+    ) -> Result<Box<JsonlFamilyProjectorObject>> {
+        self.projection_modes.lock().unwrap().push(mode);
+        let Some(checkpoint) = checkpoint else {
+            return self.projector(leaf, source_file, imported_at);
+        };
+        if mode != JsonlFamilyProjectionMode::CertifiedAppend || base_event_lookup.is_none() {
+            return Err(CaptureError::InvalidPayload(
+                "logical EOF checkpoint did not resume as an append".to_owned(),
+            ));
+        }
+        let TypedKey::U64(projected_records) = checkpoint else {
+            return Err(CaptureError::InvalidPayload(
+                "logical EOF checkpoint state is malformed".to_owned(),
+            ));
+        };
+        Ok(Box::new(CheckpointTestProjector {
+            projected_records: *projected_records,
+            resumed: true,
+            fixed_checkpoint_bytes: None,
+        }))
+    }
 }
 
 pub(super) struct OptimizedLeafTestAdapter {

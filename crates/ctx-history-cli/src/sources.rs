@@ -4,14 +4,16 @@ use anyhow::Result;
 use serde_json::json;
 
 use ctx_history_capture::{DiscoveryIssue, DiscoveryIssueKind, ProviderSourceStatus};
-use ctx_history_core::CaptureProvider;
 
-use crate::provider_sources::{configured_root_for_source, sources_json_with_selection};
+use crate::provider_sources::{
+    configured_root_conflict_details, configured_root_for_issue, configured_root_for_source,
+    sources_json_with_selection, ConfiguredRootConflictKind,
+};
 use crate::{
-    discovery_report_issues_json, history_source_plugin_report, manual_path_guidance,
-    plugin_manifest_failures_json, plugin_sources_json, provider_cli_name, CliSourceDiscoveryPort,
-    HistorySourcePluginManifestFailure, HistorySourcePluginSource, OutputFormat, SourceInfo,
-    SourcesRequest, DEFAULT_VISIBLE_SOURCE_PROVIDERS,
+    discovery_report_issues_json_with_provider_roots, history_source_plugin_report,
+    manual_path_guidance, plugin_manifest_failures_json, plugin_sources_json, provider_cli_name,
+    CliSourceDiscoveryPort, HistorySourcePluginManifestFailure, HistorySourcePluginSource,
+    OutputFormat, SourceInfo, SourcesRequest, DEFAULT_VISIBLE_SOURCE_PROVIDERS,
 };
 use ctx_terminal::{
     canonical_human_output_bytes, diagnostic, empty_state, hint, outcome, section, table, Action,
@@ -62,42 +64,36 @@ where
         ctx_history_ingest_application::SourceListingRequest {
             provider_filter,
             show_all: show_all_sources,
+            configured_provider_roots: provider_roots.clone(),
             default_visible_missing_providers: DEFAULT_VISIBLE_SOURCE_PROVIDERS.to_vec(),
         },
     )?;
     let discovery_report = listing.discovery;
-    let sources = &listing.visible_sources;
+    let sources = listing.visible_sources;
+    let output_sources = sources
+        .iter()
+        .filter(|source| source_is_visible_for_output(source, show_all_sources, request.format))
+        .cloned()
+        .collect::<Vec<_>>();
     let plugin_sources = listing.plugins.sources;
     let plugin_failures = listing.plugins.failures;
-    let existing = sources.iter().filter(|source| source.exists).count();
-    let existing_plugin_sources = plugin_sources
-        .iter()
-        .filter(|source| history_source_plugin_report(source).is_importable())
-        .count();
-    let importable = sources
-        .iter()
-        .filter(|source| {
-            source.exists
-                && source.import_support.is_importable()
-                && source.status == ProviderSourceStatus::Available
-        })
-        .count();
-    on_discovery(SourcesDiscoveryObservation {
-        providers_detected: sources
-            .len()
-            .saturating_add(plugin_sources.len())
-            .saturating_add(plugin_failures.len()) as u64,
-        providers_existing: existing.saturating_add(existing_plugin_sources) as u64,
-        providers_importable: importable.saturating_add(existing_plugin_sources) as u64,
-    });
+    on_discovery(sources_discovery_observation(
+        &sources,
+        &plugin_sources,
+        &plugin_failures,
+    ));
     let hidden_missing_sources = listing.hidden_missing_sources;
-    let mut canonical_entries = sources_json_with_selection(sources, &provider_roots);
+    let mut canonical_entries = sources_json_with_selection(&output_sources, &provider_roots);
     canonical_entries.extend(plugin_sources_json(&plugin_sources));
     canonical_entries.extend(plugin_manifest_failures_json(&plugin_failures));
     let result_count = canonical_entries.len();
     let content_bytes = serde_json::to_vec(&canonical_entries)?.len();
     let output_bytes = if request.format == OutputFormat::Json {
-        let (issues, issues_truncated) = discovery_report_issues_json(&discovery_report);
+        let (issues, issues_truncated) = discovery_report_issues_json_with_provider_roots(
+            &discovery_report,
+            &provider_roots,
+            automatic_provider_discovery,
+        );
         let value = json!({
             "schema_version": 1,
             "scope": if show_all_sources { "all" } else { "default" },
@@ -114,7 +110,7 @@ where
         output_bytes
     } else {
         let render_input = SourcesHumanRenderInput {
-            sources,
+            sources: &output_sources,
             issues: &discovery_report.issues,
             plugin_sources: &plugin_sources,
             plugin_failures: &plugin_failures,
@@ -136,8 +132,47 @@ where
     })
 }
 
+fn sources_discovery_observation(
+    sources: &[SourceInfo],
+    plugin_sources: &[HistorySourcePluginSource],
+    plugin_failures: &[HistorySourcePluginManifestFailure],
+) -> SourcesDiscoveryObservation {
+    let existing = sources.iter().filter(|source| source.exists).count();
+    let existing_plugin_sources = plugin_sources
+        .iter()
+        .filter(|source| history_source_plugin_report(source).is_importable())
+        .count();
+    let importable = sources
+        .iter()
+        .filter(|source| {
+            source.exists
+                && source.import_support.is_importable()
+                && source.status == ProviderSourceStatus::Available
+        })
+        .count();
+    SourcesDiscoveryObservation {
+        providers_detected: sources
+            .len()
+            .saturating_add(plugin_sources.len())
+            .saturating_add(plugin_failures.len()) as u64,
+        providers_existing: existing.saturating_add(existing_plugin_sources) as u64,
+        providers_importable: importable.saturating_add(existing_plugin_sources) as u64,
+    }
+}
+
+fn source_is_visible_for_output(
+    source: &SourceInfo,
+    show_all_sources: bool,
+    format: OutputFormat,
+) -> bool {
+    format == OutputFormat::Json
+        || show_all_sources
+        || source.status != ProviderSourceStatus::Empty
+        || source.route_provenance.configured_root().is_some()
+}
+
 #[cfg(test)]
-use ctx_history_ingest_application::{merge_sources, source_identity, source_is_visible};
+use ctx_history_ingest_application::{merge_sources, source_is_visible};
 
 #[derive(Clone, Copy)]
 struct SourcesHumanRenderInput<'a> {
@@ -286,7 +321,7 @@ fn render_sources_human(context: &RenderContext, input: SourcesHumanRenderInput<
                 },
             );
             locations.push_row([
-                source_provider_cli_name(source.provider).to_owned(),
+                source.provider.display_name().to_owned(),
                 source.status.as_str().to_owned(),
                 human_path(&source.path, home),
                 selection,
@@ -314,7 +349,7 @@ fn render_sources_human(context: &RenderContext, input: SourcesHumanRenderInput<
         .iter()
         .filter(|source| source.status == ProviderSourceStatus::Unsupported)
     {
-        let provider = source_provider_cli_name(source.provider);
+        let provider = source.provider.display_name();
         let summary = format!("{provider} history cannot be imported automatically");
         let location = human_path(&source.path, home);
         let reason = source
@@ -367,7 +402,12 @@ fn render_sources_human(context: &RenderContext, input: SourcesHumanRenderInput<
     }
     for issue in issues {
         document.push_blank();
-        document.append(render_discovery_issue(context, issue));
+        document.append(render_discovery_issue(
+            context,
+            issue,
+            provider_roots,
+            automatic_provider_discovery,
+        ));
     }
     for failure in plugin_failures {
         let manifest = human_path(&failure.manifest_path, home);
@@ -445,8 +485,108 @@ fn human_source_format(format: &str) -> String {
     }
 }
 
-fn render_discovery_issue(context: &RenderContext, issue: &DiscoveryIssue) -> Document {
-    let provider = source_provider_cli_name(issue.provider);
+fn render_discovery_issue(
+    context: &RenderContext,
+    issue: &DiscoveryIssue,
+    provider_roots: &[ctx_history_capture::ProviderRootDefinition],
+    automatic_provider_discovery: bool,
+) -> Document {
+    let provider = issue.provider.display_name();
+    let provider_selector = provider_cli_name(issue.provider);
+    if issue.kind == DiscoveryIssueKind::ConfiguredRootConflict {
+        let details =
+            configured_root_conflict_details(issue, provider_roots, automatic_provider_discovery);
+        let summary = match details.kind {
+            Some(ConfiguredRootConflictKind::ConfiguredConfigured) => {
+                format!("{provider} configured roots conflict")
+            }
+            Some(ConfiguredRootConflictKind::AutomaticConfigured) => {
+                format!("{provider} automatic and configured roots conflict")
+            }
+            None => format!("{provider} configured roots conflict"),
+        };
+        let root_descriptions = details
+            .roots
+            .iter()
+            .map(|root| format!("{} ({})", root.id, human_path(&root.path, None)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let reported_path = issue.path.as_deref().map(|path| human_path(path, None));
+        let conflict = details.kind.map(|kind| match kind {
+            ConfiguredRootConflictKind::ConfiguredConfigured => "configured/configured",
+            ConfiguredRootConflictKind::AutomaticConfigured => "automatic/configured",
+        });
+        let mut fields = Vec::new();
+        if let Some(conflict) = conflict {
+            fields.push(Field::new("Conflict", conflict));
+        }
+        if !root_descriptions.is_empty() {
+            fields.push(Field::new("Configured roots", &root_descriptions));
+        }
+        if let Some(reported_path) = reported_path.as_deref() {
+            fields.push(Field::new("Reported path", reported_path));
+        }
+        fields.push(Field::new("Reason", issue.reason));
+
+        let repair_root = details.roots.last();
+        let detail = match (details.kind, repair_root) {
+            (Some(ConfiguredRootConflictKind::ConfiguredConfigured), Some(root)) => format!(
+                "Remove one named root, or move `{}` persistently with `ctx sources add {} --provider {} --root <different-path> --replace`.",
+                root.id,
+                root.id,
+                provider_selector,
+            ),
+            (Some(ConfiguredRootConflictKind::AutomaticConfigured), Some(root)) => format!(
+                "Remove or move `{}`; if named roots should replace automatic discovery, set `[sources] automatic=false`.",
+                root.id,
+            ),
+            _ => format!(
+                "Repair the persisted roots with `ctx sources remove <name>` or `ctx sources add <name> --provider {provider_selector} --root <different-path> --replace`; use `[sources] automatic=false` when automatic discovery should be disabled."
+            ),
+        };
+        let action_command = repair_root.map(|root| format!("ctx sources remove {}", root.id));
+        return diagnostic(
+            context,
+            Diagnostic {
+                level: DiagnosticLevel::Warning,
+                summary: &summary,
+                detail: Some(&detail),
+                fields: &fields,
+                action: action_command.as_deref().map(|command| Action { command }),
+            },
+        );
+    }
+    if issue.kind == DiscoveryIssueKind::ConfiguredRootMissing {
+        let root = configured_root_for_issue(issue, provider_roots);
+        let root_name = root.map_or("configured root", |root| root.id.as_str());
+        let selection = root.map(|root| match root.group.as_deref() {
+            Some(group) => format!("{} ({group})", root.id),
+            None => root.id.clone(),
+        });
+        let location = issue.path.as_deref().map(|path| human_path(path, None));
+        let mut fields = Vec::new();
+        if let Some(selection) = selection.as_deref() {
+            fields.push(Field::new("Selection", selection));
+        }
+        if let Some(location) = location.as_deref() {
+            fields.push(Field::new("Location", location));
+        }
+        fields.push(Field::new("Reason", issue.reason));
+        let detail = format!(
+            "The named root remains configured, but its provider-owned state is absent. Restore it, replace its persisted path with `ctx sources add <name> --provider {provider_selector} --root <replacement-path> --replace`, or remove `{root_name}` when it is no longer needed."
+        );
+        let action_command = root.map(|root| format!("ctx sources remove {}", root.id));
+        return diagnostic(
+            context,
+            Diagnostic {
+                level: DiagnosticLevel::Warning,
+                summary: &format!("{provider} configured history root is missing"),
+                detail: Some(&detail),
+                fields: &fields,
+                action: action_command.as_deref().map(|command| Action { command }),
+            },
+        );
+    }
     let (summary, detail) = match issue.kind {
         DiscoveryIssueKind::NoDiskHistory => (
             format!("{provider} has no disk history selected"),
@@ -460,6 +600,8 @@ fn render_discovery_issue(context: &RenderContext, issue: &DiscoveryIssue) -> Do
             format!("{provider} has no established automatic history location"),
             issue.reason,
         ),
+        DiscoveryIssueKind::ConfiguredRootConflict => unreachable!(),
+        DiscoveryIssueKind::ConfiguredRootMissing => unreachable!(),
     };
     let command = manual_path_guidance(issue.provider);
     diagnostic(
@@ -474,323 +616,6 @@ fn render_discovery_issue(context: &RenderContext, issue: &DiscoveryIssue) -> Do
     )
 }
 
-pub(crate) fn source_provider_cli_name(provider: CaptureProvider) -> &'static str {
-    provider_cli_name(provider)
-}
-
 #[cfg(test)]
-mod ui_tests {
-    use std::{io::Write as _, path::PathBuf};
-
-    use ctx_history_capture::{
-        ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
-    };
-    use unicode_width::UnicodeWidthStr as _;
-
-    use super::*;
-    use ctx_terminal::{ColorMode, StreamKind, TestContext};
-
-    fn context(width: usize, color: ColorMode) -> RenderContext {
-        RenderContext::for_test(TestContext::tty(StreamKind::Stdout, width).color(color))
-    }
-
-    fn assert_fits(document: &Document, context: &RenderContext) {
-        let width = context.content_width().unwrap_or(1);
-        for line in document.render_plain().lines() {
-            let copyable_path = {
-                let atom = line.trim_start();
-                atom.starts_with("~/") || atom.starts_with('/')
-            };
-            assert!(
-                line.width() <= width || copyable_path,
-                "{line:?} exceeded {width} columns"
-            );
-        }
-    }
-
-    fn strip_ansi(rendered: &str) -> String {
-        let mut stream = anstream::StripStream::new(Vec::new());
-        stream.write_all(rendered.as_bytes()).unwrap();
-        String::from_utf8(stream.into_inner()).unwrap()
-    }
-
-    fn source(status: ProviderSourceStatus, path: &str) -> ProviderSource {
-        ProviderSource {
-            provider: CaptureProvider::Codex,
-            path: PathBuf::from(path),
-            exists: status != ProviderSourceStatus::Missing,
-            source_format: "codex_session_jsonl_tree",
-            source_kind: ProviderSourceKind::NativeHistory,
-            import_support: ProviderImportSupport::Native,
-            catalog_support: ProviderCatalogSupport::Native,
-            status,
-            unsupported_reason: None,
-        }
-    }
-
-    #[test]
-    fn source_merge_is_stable_and_keeps_configured_missing_sources_visible() {
-        let automatic = source(ProviderSourceStatus::Available, "/tmp/shared-history");
-        let configured_duplicate = automatic.clone();
-        let configured_missing = source(ProviderSourceStatus::Missing, "/tmp/configured-missing");
-        let mut merged = vec![automatic];
-        merge_sources(
-            &mut merged,
-            vec![configured_duplicate, configured_missing.clone()],
-        );
-        assert_eq!(
-            merged
-                .iter()
-                .map(|source| source.path.as_path())
-                .collect::<Vec<_>>(),
-            [
-                std::path::Path::new("/tmp/shared-history"),
-                std::path::Path::new("/tmp/configured-missing"),
-            ]
-        );
-
-        let configured = [source_identity(&configured_missing)].into_iter().collect();
-        assert!(source_is_visible(
-            &configured_missing,
-            false,
-            &configured,
-            &[]
-        ));
-        let mut unknown_missing = source(ProviderSourceStatus::Missing, "/tmp/unknown-missing");
-        unknown_missing.provider = CaptureProvider::Goose;
-        assert!(!source_is_visible(
-            &unknown_missing,
-            false,
-            &configured,
-            &[]
-        ));
-    }
-
-    #[test]
-    fn configured_source_selection_is_visible_and_automatic_disable_is_explicit() {
-        let mut configured_source = source(ProviderSourceStatus::Available, "/tmp/claude/projects");
-        configured_source.provider = CaptureProvider::Claude;
-        configured_source.source_format = "claude_projects_jsonl_tree";
-        let root = ctx_history_capture::ProviderRootDefinition {
-            id: "personal-claude".to_owned(),
-            provider: CaptureProvider::Claude,
-            path: PathBuf::from("/tmp/claude"),
-            group: Some("personal".to_owned()),
-        };
-        assert_eq!(
-            configured_root_for_source(std::slice::from_ref(&root), &configured_source)
-                .map(|root| root.id.as_str()),
-            Some("personal-claude")
-        );
-
-        let context = context(100, ColorMode::Never);
-        let rendered = render_sources_human(
-            &context,
-            SourcesHumanRenderInput::from_sources(&[configured_source])
-                .with_automatic_provider_discovery(false)
-                .with_provider_roots(&[root]),
-        )
-        .render_plain();
-        assert!(
-            rendered.contains("personal-claude (personal)"),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("Automatic discovery is disabled"),
-            "{rendered}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn configured_source_selection_recognizes_physical_path_aliases() {
-        use std::os::unix::fs::symlink;
-
-        let temp = tempfile::tempdir().unwrap();
-        let physical = temp.path().join("claude-physical");
-        std::fs::create_dir_all(physical.join("projects")).unwrap();
-        let alias = temp.path().join("claude-alias");
-        symlink(&physical, &alias).unwrap();
-        let mut source = source(
-            ProviderSourceStatus::Available,
-            &physical.join("projects").to_string_lossy(),
-        );
-        source.provider = CaptureProvider::Claude;
-        source.source_format = "claude_projects_jsonl_tree";
-        let root = ctx_history_capture::ProviderRootDefinition {
-            id: "personal-claude".to_owned(),
-            provider: CaptureProvider::Claude,
-            path: alias,
-            group: Some("personal".to_owned()),
-        };
-
-        assert_eq!(
-            configured_root_for_source(std::slice::from_ref(&root), &source)
-                .map(|root| root.id.as_str()),
-            Some("personal-claude")
-        );
-    }
-
-    #[test]
-    fn sources_success_is_outcome_first_and_responsive() {
-        let home = PathBuf::from("private-capture-root");
-        let location = home.join(".codex/sessions/and/a/long/location");
-        let sources = vec![source(
-            ProviderSourceStatus::Available,
-            &location.to_string_lossy(),
-        )];
-        let concise_prefix = Path::new("~").join(".codex").display().to_string();
-        for width in [32, 48, 80, 100, 120] {
-            let context = context(width, ColorMode::Never);
-            let document = render_sources_human(
-                &context,
-                SourcesHumanRenderInput::from_sources(&sources)
-                    .with_hidden_missing_sources(2)
-                    .with_home(Some(&home)),
-            );
-            let rendered = document.render_plain();
-            assert!(rendered.starts_with("✓ 1 history source is ready\n"));
-            assert!(rendered.contains("Locations\n"));
-            assert!(rendered.contains(&concise_prefix), "{width}: {rendered}");
-            assert!(
-                !rendered.contains("private-capture-root"),
-                "{width}: {rendered}"
-            );
-            assert!(rendered.contains("ctx sources --all"));
-            for atom in ["codex", "available"] {
-                assert_eq!(
-                    rendered
-                        .split_whitespace()
-                        .filter(|token| *token == atom)
-                        .count(),
-                    1,
-                    "{atom:?} did not remain intact at {width} columns: {rendered}"
-                );
-            }
-            assert!(rendered.contains("Session history"), "{width}: {rendered}");
-            assert!(!rendered.contains("jsonl"), "{width}: {rendered}");
-            if width < 100 {
-                assert!(
-                    rendered.contains("Source\n  codex\nStatus\n  available\n"),
-                    "{width}: {rendered}"
-                );
-            } else {
-                assert!(
-                    rendered.contains("Source  Status     Location"),
-                    "{width}: {rendered}"
-                );
-            }
-            assert_fits(&document, &context);
-        }
-    }
-
-    #[test]
-    fn human_paths_only_abbreviate_complete_home_prefixes() {
-        let home = PathBuf::from("test-home/example");
-        assert_eq!(human_path(&home, Some(&home)), "~");
-        let nested = home.join(".codex/sessions");
-        assert_eq!(
-            human_path(&nested, Some(&home)),
-            Path::new("~").join(".codex/sessions").display().to_string()
-        );
-        let sibling = PathBuf::from("test-home/example-other/history");
-        assert_eq!(
-            human_path(&sibling, Some(&home)),
-            sibling.display().to_string()
-        );
-    }
-
-    #[test]
-    fn sources_stack_when_fixed_columns_do_not_fit_and_keep_atoms_whole() {
-        let home = PathBuf::from("test-home");
-        let factory_path = home.join(".factory/sessions");
-        let mut factory = source(
-            ProviderSourceStatus::Available,
-            &factory_path.to_string_lossy(),
-        );
-        factory.provider = CaptureProvider::FactoryAiDroid;
-        factory.source_format = "factory_ai_droid_sessions_jsonl";
-        let cursor_path = home.join(".cursor/projects/example/agent-transcripts");
-        let mut cursor = source(
-            ProviderSourceStatus::Available,
-            &cursor_path.to_string_lossy(),
-        );
-        cursor.provider = CaptureProvider::Cursor;
-        cursor.source_format = "cursor_agent_transcript_jsonl_tree";
-        let sources = [factory, cursor];
-
-        for width in [80, 100, 120] {
-            let context = context(width, ColorMode::Never);
-            let document = render_sources_human(
-                &context,
-                SourcesHumanRenderInput::from_sources(&sources).with_home(Some(&home)),
-            );
-            let rendered = document.render_plain();
-            for atom in ["factory-ai-droid", "available", "cursor"] {
-                assert!(
-                    rendered.split_whitespace().any(|token| token == atom),
-                    "{atom:?} did not remain intact at {width} columns: {rendered}"
-                );
-            }
-            assert!(rendered.contains("Session history"), "{width}: {rendered}");
-            assert!(
-                rendered.contains("Agent transcripts"),
-                "{width}: {rendered}"
-            );
-            assert!(!rendered.contains("jsonl"), "{width}: {rendered}");
-            if width < 120 {
-                assert!(
-                    rendered.contains("Source\n  factory-ai-droid\nStatus\n  available\n"),
-                    "{rendered}"
-                );
-            } else {
-                assert!(
-                    rendered.contains("Source            Status     Location"),
-                    "{width}: {rendered}"
-                );
-            }
-            assert_fits(&document, &context);
-        }
-    }
-
-    #[test]
-    fn sources_empty_state_is_actionable() {
-        let context = context(48, ColorMode::Never);
-        let rendered = render_sources_human(&context, SourcesHumanRenderInput::from_sources(&[]))
-            .render_plain();
-        assert!(rendered.starts_with("No history sources found\n"));
-        assert!(rendered.contains("Next\n  ctx sources --all\n"));
-    }
-
-    #[test]
-    fn sources_issue_is_safe_and_actionable() {
-        let issue = DiscoveryIssue {
-            provider: CaptureProvider::Codex,
-            path: None,
-            kind: DiscoveryIssueKind::SelectorUnreconstructible,
-            reason: "selector contained \u{1b}[31mcontrol",
-        };
-        let context = context(48, ColorMode::Never);
-        let document = render_sources_human(
-            &context,
-            SourcesHumanRenderInput::from_sources(&[]).with_issues(&[issue]),
-        );
-        let rendered = document.render_plain();
-        assert!(rendered.contains("\\x1b[31mcontrol"));
-        assert!(rendered.contains("ctx import --provider codex --path <path>"));
-        assert!(!rendered.as_bytes().contains(&0x1b));
-        assert_fits(&document, &context);
-    }
-
-    #[test]
-    fn sources_plain_output_matches_ansi_stripped_output() {
-        let sources = vec![source(ProviderSourceStatus::Available, "/tmp/codex")];
-        let context = context(80, ColorMode::Always);
-        let document =
-            render_sources_human(&context, SourcesHumanRenderInput::from_sources(&sources));
-        assert_eq!(
-            strip_ansi(&document.render(&context)),
-            document.render_plain()
-        );
-    }
-}
+#[path = "sources_ui_tests.rs"]
+mod ui_tests;

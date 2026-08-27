@@ -482,6 +482,147 @@ fn oversized_directories_exhaust_before_order_can_change_the_result() {
 }
 
 #[test]
+fn codex_flat_session_probe_admits_more_than_ten_thousand_direct_entries() {
+    let entries = (0..13_001).map(|_| DirectMatchEntry::Match);
+
+    assert_eq!(
+        bounded_direct_match_probe(
+            entries,
+            PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
+            PROVIDER_JSONL_INVENTORY_MAX_ELIGIBLE_PATHS
+        ),
+        BoundedProbe::Found
+    );
+}
+
+#[test]
+fn codex_flat_session_probe_checks_its_complete_bounded_stream() {
+    let over_entry_bound =
+        (0..=PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES).map(|_| DirectMatchEntry::Other);
+    assert_eq!(
+        bounded_direct_match_probe(
+            over_entry_bound,
+            PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
+            PROVIDER_JSONL_INVENTORY_MAX_ELIGIBLE_PATHS
+        ),
+        BoundedProbe::BudgetExhausted
+    );
+    let over_match_bound =
+        (0..=PROVIDER_JSONL_INVENTORY_MAX_ELIGIBLE_PATHS).map(|_| DirectMatchEntry::Match);
+    assert_eq!(
+        bounded_direct_match_probe(
+            over_match_bound,
+            PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
+            PROVIDER_JSONL_INVENTORY_MAX_ELIGIBLE_PATHS
+        ),
+        BoundedProbe::BudgetExhausted
+    );
+    assert_eq!(
+        bounded_direct_match_probe(
+            [DirectMatchEntry::Match, DirectMatchEntry::IoError].into_iter(),
+            2,
+            2
+        ),
+        BoundedProbe::IoError
+    );
+}
+
+#[test]
+fn codex_filesystem_probe_admits_a_flat_tree_above_the_generic_budget() {
+    const DIRECT_ENTRIES: usize = 10_001;
+    const SEEDS: usize = 16;
+
+    let temp = tempdir();
+    let root = temp.path().join("archived_sessions");
+    let seeds = temp.path().join("seeds");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(&seeds).unwrap();
+    let seed_paths = (0..SEEDS)
+        .map(|index| {
+            let path = seeds.join(format!("seed-{index:02}.jsonl"));
+            fs::write(&path, b"{}\n").unwrap();
+            path
+        })
+        .collect::<Vec<_>>();
+    for index in 0..DIRECT_ENTRIES {
+        fs::hard_link(
+            &seed_paths[index % SEEDS],
+            root.join(format!("rollout-{index:05}.jsonl")),
+        )
+        .unwrap();
+    }
+
+    assert_eq!(has_codex_session_file(&root), BoundedProbe::Found);
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_flat_session_probe_does_not_admit_a_symlinked_jsonl() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempdir();
+    let outside = tempdir();
+    let target = outside.path().join("session.jsonl");
+    fs::write(&target, b"{}\n").unwrap();
+    symlink(&target, temp.path().join("session.jsonl")).unwrap();
+
+    assert_eq!(has_codex_session_file(temp.path()), BoundedProbe::NotFound);
+}
+
+#[test]
+fn auggie_probe_matches_the_adapter_flat_directory_selections() {
+    let direct = tempdir();
+    fs::write(direct.path().join("direct.json"), b"{}\n").unwrap();
+    assert_eq!(has_auggie_session_json(direct.path()), BoundedProbe::Found);
+
+    let parent = tempdir();
+    fs::create_dir(parent.path().join("sessions")).unwrap();
+    fs::write(parent.path().join("sessions/child.json"), b"{}\n").unwrap();
+    assert_eq!(has_auggie_session_json(parent.path()), BoundedProbe::Found);
+
+    let nested = tempdir();
+    fs::create_dir(nested.path().join("nested")).unwrap();
+    fs::write(nested.path().join("nested/decoy.json"), b"{}\n").unwrap();
+    assert_eq!(
+        has_auggie_session_json(nested.path()),
+        BoundedProbe::NotFound
+    );
+
+    let shadowed = tempdir();
+    fs::write(shadowed.path().join("ignored.json"), b"{}\n").unwrap();
+    fs::create_dir(shadowed.path().join("sessions")).unwrap();
+    assert_eq!(
+        has_auggie_session_json(shadowed.path()),
+        BoundedProbe::NotFound
+    );
+}
+
+#[test]
+fn auggie_probe_preserves_the_direct_directory_entry_bound() {
+    let temp = tempdir();
+    for index in 0..=MAX_DIRECT_DIRECTORY_ENTRIES {
+        fs::write(temp.path().join(format!("decoy-{index:04}")), b"").unwrap();
+    }
+    assert_eq!(
+        has_auggie_session_json(temp.path()),
+        BoundedProbe::BudgetExhausted
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn auggie_probe_fails_closed_for_a_link_in_the_selected_flat_directory() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempdir();
+    fs::write(temp.path().join("session.json"), b"{}\n").unwrap();
+    fs::create_dir(temp.path().join("target")).unwrap();
+    symlink(temp.path().join("target"), temp.path().join("linked")).unwrap();
+
+    assert_eq!(has_auggie_session_json(temp.path()), BoundedProbe::IoError);
+}
+
+#[test]
 fn cursor_probe_accepts_every_exact_layout_entry_point() {
     let temp = tempdir();
     let data_root = temp.path().join(".cursor");
@@ -564,4 +705,201 @@ fn cursor_probe_maps_symlink_rejection_to_io_error() {
     symlink(&real, &linked).unwrap();
 
     assert_eq!(has_cursor_agent_transcript(&linked), BoundedProbe::IoError);
+}
+
+#[test]
+fn fx_legacy_summary_probe_rejects_duplicate_required_fields() {
+    let cases = [
+        (
+            "schema-version",
+            r#"{"schema_version":1,"schema_version":2,"id":"duplicate","created_at_ms":1,"updated_at_ms":2,"conversation_language":"en","history_len":0,"history":[]}"#,
+        ),
+        (
+            "id",
+            r#"{"schema_version":1,"id":"duplicate","id":"duplicate","created_at_ms":1,"updated_at_ms":2,"conversation_language":"en","history_len":0,"history":[]}"#,
+        ),
+        (
+            "language",
+            r#"{"schema_version":1,"id":"duplicate","created_at_ms":1,"updated_at_ms":2,"conversation_language":"en","conversation_language":"ja","history_len":0,"history":[]}"#,
+        ),
+    ];
+
+    for (name, json) in cases {
+        let temp = tempdir();
+        let session = temp.path().join("duplicate");
+        fs::create_dir(&session).unwrap();
+        let candidate = session.join("session.json");
+        fs::write(&candidate, json).unwrap();
+        assert!(!is_fx_session_candidate(&candidate), "{name}");
+    }
+}
+
+fn write_fx_legacy_session(session: &Path, id: &str) {
+    fs::create_dir_all(session).unwrap();
+    fs::write(
+        session.join("session.json"),
+        format!(
+            r#"{{"schema_version":2,"id":"{id}","created_at_ms":1,"updated_at_ms":2,"workspace_root":null,"conversation_language":"en","history_len":0,"history":[]}}"#,
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn fx_probe_discovers_first_event_larger_than_64_kib() {
+    const PREVIOUS_FIRST_EVENT_LIMIT_BYTES: usize = 64 * 1024;
+    const GENERATION: &str = "00000000000000000000000000000002";
+    const EVENT_ID: &str = "00000000000000000000000000000003";
+
+    let temp = tempdir();
+    let sessions = temp.path().join("sessions");
+    let session = sessions.join("large-first-event");
+    fs::create_dir_all(&session).unwrap();
+    fs::write(
+        session.join("authority.json"),
+        r#"{"schema_version":1,"session_id":"large-first-event","authority_id":"00000000000000000000000000000001","storage_format":"event_log_v1","source":"native_create"}"#,
+    )
+    .unwrap();
+
+    let padding = "x".repeat(PREVIOUS_FIRST_EVENT_LIMIT_BYTES);
+    let events = format!(
+        r#"{{"schema_version":1,"log_generation":"{GENERATION}","seq":1,"event_id":"{EVENT_ID}","timestamp_ms":1,"kind":"session_started","payload":{{"padding":"{padding}"}}}}
+"#,
+    );
+    assert!(events.len() > PREVIOUS_FIRST_EVENT_LIMIT_BYTES);
+    assert!(events.len() <= MAX_PROVIDER_JSONL_LINE_BYTES);
+    fs::write(session.join("events.jsonl"), &events).unwrap();
+    fs::write(
+        session.join(format!("commit.{GENERATION}.json")),
+        format!(
+            r#"{{"schema_version":1,"session_id":"large-first-event","log_generation":"{GENERATION}","through_seq":1,"through_event_id":"{EVENT_ID}","through_event_log_bytes":{}}}"#,
+            events.len(),
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(
+        has_fx_session_under_immediate_child(&sessions, 10_000),
+        BoundedProbe::Found
+    );
+}
+
+#[test]
+fn fx_probe_only_admits_immediate_child_session_directories() {
+    let temp = tempdir();
+    let sessions = temp.path().join("sessions");
+    write_fx_legacy_session(&sessions.join("nested/session"), "session");
+    write_fx_legacy_session(&sessions.join("mismatched"), "different-id");
+
+    assert_eq!(
+        has_fx_session_under_immediate_child(&sessions, 10_000),
+        BoundedProbe::NotFound
+    );
+
+    write_fx_legacy_session(&sessions.join("direct"), "direct");
+    assert_eq!(
+        has_fx_session_under_immediate_child(&sessions, 10_000),
+        BoundedProbe::Found
+    );
+}
+
+#[test]
+fn fx_immediate_child_probe_preserves_the_aggregate_entry_budget() {
+    let temp = tempdir();
+    let sessions = temp.path().join("sessions");
+    write_fx_legacy_session(&sessions.join("bounded"), "bounded");
+
+    assert_eq!(
+        has_fx_session_under_immediate_child(&sessions, 1),
+        BoundedProbe::BudgetExhausted
+    );
+    assert_eq!(
+        has_fx_session_under_immediate_child(&sessions, 2),
+        BoundedProbe::Found
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn fx_immediate_child_probe_rejects_symlinked_session_directories() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempdir();
+    let sessions = temp.path().join("sessions");
+    let real_session = temp.path().join("real-session");
+    write_fx_legacy_session(&real_session, "linked");
+    fs::create_dir(&sessions).unwrap();
+    symlink(&real_session, sessions.join("linked")).unwrap();
+
+    assert_eq!(
+        has_fx_session_under_immediate_child(&sessions, 10_000),
+        BoundedProbe::NotFound
+    );
+}
+
+#[test]
+fn fx_legacy_summary_probe_bounds_key_value_and_depth_amplification() {
+    let oversized = "x".repeat(FX_LEGACY_SUMMARY_PREFIX_MAX_BYTES as usize * 2);
+    let cases = [
+        (
+            "key",
+            format!(
+                r#"{{"{oversized}":null,"schema_version":1,"id":"amplification","created_at_ms":1,"updated_at_ms":2,"conversation_language":"en","history_len":0,"history":[]}}"#
+            ),
+        ),
+        (
+            "id",
+            format!(
+                r#"{{"schema_version":1,"id":"{oversized}","created_at_ms":1,"updated_at_ms":2,"conversation_language":"en","history_len":0,"history":[]}}"#
+            ),
+        ),
+        (
+            "language",
+            format!(
+                r#"{{"schema_version":1,"id":"amplification","created_at_ms":1,"updated_at_ms":2,"conversation_language":"{oversized}","history_len":0,"history":[]}}"#
+            ),
+        ),
+        (
+            "depth",
+            format!(
+                r#"{{"unknown":{}0{},"schema_version":1,"id":"amplification","created_at_ms":1,"updated_at_ms":2,"conversation_language":"en","history_len":0,"history":[]}}"#,
+                "[".repeat(140),
+                "]".repeat(140),
+            ),
+        ),
+    ];
+
+    for (name, json) in cases {
+        let temp = tempdir();
+        let session = temp.path().join("amplification");
+        fs::create_dir(&session).unwrap();
+        let candidate = session.join("session.json");
+        fs::write(&candidate, json).unwrap();
+        assert!(!is_fx_session_candidate(&candidate), "{name}");
+    }
+}
+
+#[test]
+fn fx_legacy_summary_probe_matches_the_whole_record_size_boundary() {
+    for (name, length, expected) in [
+        ("exact", MAX_PROVIDER_JSONL_LINE_BYTES as u64, true),
+        ("over", MAX_PROVIDER_JSONL_LINE_BYTES as u64 + 1, false),
+    ] {
+        let temp = tempdir();
+        let session = temp.path().join("size-boundary");
+        fs::create_dir(&session).unwrap();
+        let candidate = session.join("session.json");
+        fs::write(
+            &candidate,
+            r#"{"schema_version":1,"id":"size-boundary","created_at_ms":1,"updated_at_ms":2,"conversation_language":"en","history_len":0,"history":[]}"#,
+        )
+        .unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&candidate)
+            .unwrap()
+            .set_len(length)
+            .unwrap();
+        assert_eq!(is_fx_session_candidate(&candidate), expected, "{name}");
+    }
 }

@@ -1,22 +1,22 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use ctx_history_index_query::{
-    CopiedEventLineage, EventSearchFilters, VerifiedIndex, SEARCH_COPIED_EVENT_LINEAGE_POLICY,
-};
+use ctx_history_index_query::{CompiledSearchFilter, EventSearchFilters, VerifiedIndex};
 use serde_json::Value;
 
 use crate::generation::PinnedGenerationRead;
-use crate::presentation::presentations_for_search_hits;
+use crate::presentation::hydrate_ranked_search_collection;
+use crate::search::{
+    collect_search_hits_observed, search_filters_with_refs, ObservedSearchExecutionError,
+};
 use crate::{
-    collect_search_hits, copied_lineage_read_model, normalize_search_request,
-    reference_needs_retained_peer, render_search_json, resolve_search_backend,
-    search_filters_with_refs, validate_search_request, ActiveSessionExclusion,
+    normalize_search_request, reference_needs_retained_peer, render_search_json,
+    resolve_search_backend, validate_search_request, ActiveSessionExclusion,
     CompactPresentationProjection, CompactRefResolver, GenerationReadError, GenerationReadPort,
     GenerationReadReceipt, GenerationReadRequest, GenerationReadTarget, HistorySemanticPort,
     NormalizedSearchQuery, RetainedPeerRead, SearchCollection, SearchExecutionError,
-    SearchExecutionResult, SearchJsonInput, SearchPolicy, SearchPresentation, SearchRenderMetrics,
-    SearchRequest, SearchResultCommands,
+    SearchExecutionResult, SearchFailurePhase, SearchJsonInput, SearchPolicy, SearchPresentation,
+    SearchRenderMetrics, SearchRequest, SearchResultCommands, SearchWorkReceipt,
 };
 
 /// Query implementation contract for one caller-supplied, already-verified
@@ -47,37 +47,50 @@ impl<'index> PinnedHistoryQuery<'index> {
         plan: PlannedSearch,
         active_session: Option<&ActiveSessionExclusion>,
         semantic_port: &P,
-    ) -> SearchExecutionResult<SearchQueryResult> {
+    ) -> std::result::Result<SearchQueryResult, ObservedSearchExecutionError> {
         let PlannedSearch { request, policy } = plan;
         let filters =
-            search_filters_with_refs(&request, self.index, &self.references, active_session)?;
-        let collection = collect_search_hits(
+            search_filters_with_refs(&request, self.index, &self.references, active_session)
+                .map_err(|error| {
+                    ObservedSearchExecutionError::new(
+                        error.into(),
+                        SearchWorkReceipt::default(),
+                        SearchFailurePhase::QueryPreparation,
+                    )
+                })?;
+        let compiled_filter = CompiledSearchFilter::compile(filters.clone()).map_err(|error| {
+            ObservedSearchExecutionError::new(
+                error.into(),
+                SearchWorkReceipt::default(),
+                SearchFailurePhase::QueryPreparation,
+            )
+        })?;
+        let ranked_collection = collect_search_hits_observed(
             &request,
             self.index,
-            &filters,
+            &compiled_filter,
             policy.semantic,
             semantic_port,
         )?;
-        let presentations = presentations_for_search_hits(
+        let work = ranked_collection.work;
+        let (collection, presentations) = hydrate_ranked_search_collection(
             self.index,
-            &collection.result_window.hits,
+            ranked_collection,
             &NormalizedSearchQuery::from_request(&request),
-        )?;
-        let copied_lineages = collection
-            .result_window
-            .hits
-            .iter()
-            .map(|hit| {
-                self.index
-                    .copied_event_lineage(hit.event.event_id, SEARCH_COPIED_EVENT_LINEAGE_POLICY)
-            })
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+            &compiled_filter,
+        )
+        .map_err(|error| {
+            ObservedSearchExecutionError::new(
+                error.into(),
+                work,
+                SearchFailurePhase::ResultProjection,
+            )
+        })?;
         Ok(SearchQueryResult {
             request,
             filters,
             collection,
             presentations,
-            copied_lineages,
         })
     }
 }
@@ -114,7 +127,6 @@ pub struct SearchQueryResult {
     pub filters: EventSearchFilters,
     pub collection: SearchCollection,
     pub presentations: Vec<SearchPresentation>,
-    pub copied_lineages: Vec<CopiedEventLineage>,
 }
 
 pub struct SearchApplicationRequest {
@@ -152,10 +164,35 @@ pub enum SearchApplicationError<GenerationError> {
     Query(SearchExecutionError),
 }
 
+#[derive(Debug)]
+pub struct ObservedSearchApplicationError<GenerationError> {
+    error: Box<SearchApplicationError<GenerationError>>,
+    work: SearchWorkReceipt,
+    failure_phase: SearchFailurePhase,
+    query_duration: Option<Duration>,
+}
+
+impl<GenerationError> ObservedSearchApplicationError<GenerationError> {
+    pub const fn work(&self) -> SearchWorkReceipt {
+        self.work
+    }
+
+    pub const fn failure_phase(&self) -> SearchFailurePhase {
+        self.failure_phase
+    }
+
+    pub const fn query_duration(&self) -> Option<Duration> {
+        self.query_duration
+    }
+
+    pub fn into_error(self) -> SearchApplicationError<GenerationError> {
+        *self.error
+    }
+}
+
 pub struct SearchApplicationResult {
     generation: PinnedGenerationRead,
     query: SearchQueryResult,
-    copied_lineage_read_models: Vec<Value>,
     query_duration: Duration,
 }
 
@@ -172,10 +209,6 @@ impl SearchApplicationResult {
         &self.query
     }
 
-    pub fn copied_lineage_read_models(&self) -> &[Value] {
-        &self.copied_lineage_read_models
-    }
-
     pub const fn query_duration(&self) -> Duration {
         self.query_duration
     }
@@ -187,7 +220,6 @@ impl SearchApplicationResult {
             collection: &self.query.collection,
             filters: &self.query.filters,
             presentations: &self.query.presentations,
-            copied_lineages: &self.copied_lineage_read_models,
             commands: input.commands,
             freshness_mode: input.freshness_mode,
             generated_at: input.generated_at,
@@ -216,11 +248,11 @@ pub struct SearchApplicationReadModelInput<'input> {
     pub metrics: SearchRenderMetrics<'input>,
 }
 
-pub fn execute_search<Generation, Semantic>(
+pub fn execute_search_observed<Generation, Semantic>(
     request: SearchApplicationRequest,
     generation_port: &mut Generation,
     semantic_port: &Semantic,
-) -> std::result::Result<SearchApplicationResult, SearchApplicationError<Generation::Error>>
+) -> std::result::Result<SearchApplicationResult, ObservedSearchApplicationError<Generation::Error>>
 where
     Generation: GenerationReadPort,
     Semantic: HistorySemanticPort,
@@ -239,23 +271,25 @@ where
             retained_peer,
         },
     )
-    .map_err(SearchApplicationError::Generation)?;
+    .map_err(|error| ObservedSearchApplicationError {
+        error: Box::new(SearchApplicationError::Generation(error)),
+        work: SearchWorkReceipt::default(),
+        failure_phase: SearchFailurePhase::GenerationOpen,
+        query_duration: None,
+    })?;
     let query_started = Instant::now();
     let query = PinnedHistoryQuery::new(generation.index(), generation.retained_peer())
         .search(plan, active_session.as_ref(), semantic_port)
-        .map_err(SearchApplicationError::Query)?;
+        .map_err(|failure| ObservedSearchApplicationError {
+            error: Box::new(SearchApplicationError::Query(*failure.error)),
+            work: failure.work,
+            failure_phase: failure.failure_phase,
+            query_duration: Some(query_started.elapsed()),
+        })?;
     let query_duration = query_started.elapsed();
-    let copied_lineage_read_models = query
-        .copied_lineages
-        .iter()
-        .map(copied_lineage_read_model)
-        .collect::<Result<Vec<_>>>()
-        .map_err(SearchExecutionError::from)
-        .map_err(SearchApplicationError::Query)?;
     Ok(SearchApplicationResult {
         generation,
         query,
-        copied_lineage_read_models,
         query_duration,
     })
 }

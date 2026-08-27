@@ -7,7 +7,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use ctx_history_core::utc_now;
 use ctx_semantic_model::SharedSemanticRuntime;
-use ctx_upgrade_engine::{DaemonUpgradeLease, DaemonUpgradePort, PreparedDaemonUpgrade};
+use ctx_upgrade_engine::{DaemonUpgradeLease, DaemonUpgradePort, PreparedAutomaticUpgrade};
 use serde_json::Value;
 
 #[cfg(test)]
@@ -43,12 +43,14 @@ use super::{
     query_service::{DaemonLifecycleState, DaemonQueryService},
 };
 
+mod automatic_upgrade;
 mod config_reload;
 mod lifecycle;
 mod source_watch;
 mod telemetry;
 mod watch_runtime;
 
+use automatic_upgrade::abort_prepared_automatic_upgrade;
 use config_reload::{
     daemon_semantic_runtime_active, reload_daemon_runtime_config, DaemonConfigReloadOutcome,
     DaemonConfigReloadState, DaemonConfigReloadTargets,
@@ -202,6 +204,7 @@ fn daemon_run_facts(args: &DaemonRunArgs) -> DaemonRunFactsV1 {
         DaemonTriggerCommandArg::Setup => DaemonTriggerV1::Setup,
         DaemonTriggerCommandArg::Import => DaemonTriggerV1::Import,
         DaemonTriggerCommandArg::Search => DaemonTriggerV1::Search,
+        DaemonTriggerCommandArg::Semantic => DaemonTriggerV1::Semantic,
     });
     DaemonRunFactsV1::new(start_mode, supervisor, trigger)
 }
@@ -297,9 +300,10 @@ where
     if !config.daemon.enabled && !args.force && !finite_core_worker {
         return Ok(());
     }
+    let automatic_recovery_allowed = daemon_automatic_recovery_allowed(&config, finite_core_worker);
     if ports
         .installation
-        .lifecycle_blocks_current_process(data_root)
+        .lifecycle_blocks_current_process(data_root, automatic_recovery_allowed)
     {
         return Ok(());
     }
@@ -320,7 +324,7 @@ where
         .upgrade_handoff_blocks_current_process(data_root)
         || ports
             .installation
-            .lifecycle_blocks_current_process(data_root)
+            .lifecycle_blocks_current_process(data_root, automatic_recovery_allowed)
     {
         drop(lock);
         return Ok(());
@@ -350,6 +354,7 @@ where
         ports
             .installation
             .current_process_owns_upgrade_handoff(data_root),
+        automatic_recovery_allowed,
         !finite_core_worker,
     ) {
         Ok(Some(lease)) => Some(lease),
@@ -492,14 +497,13 @@ where
         if lifecycle_ready {
             ctx_daemon_runtime::block_daemon_main_after_ready_for_test(data_root)?;
         }
-        // This is the sole automatic scheduler authority. The first tick is
-        // after readiness; later ticks only revisit installation-scoped
-        // cadence/backoff or reconcile a completed helper.
+        // The ready persistent daemon is the automatic-check driver; foreground commands never are.
         if lifecycle_ready
             && !finite_core_worker
             && daemon_should_schedule_auto_upgrade(
                 runtime.config.daemon.enabled,
                 runtime.config.daemon.mode,
+                runtime.config.automatic_upgrade_enabled,
             )
         {
             prepared_auto_upgrade = upgrade
@@ -535,7 +539,7 @@ where
             if stop_disabled {
                 break;
             }
-            if reload_daemon_runtime_config(
+            let reload_outcome = reload_daemon_runtime_config(
                 data_root,
                 &args,
                 &mut runtime,
@@ -547,8 +551,22 @@ where
                 &wakeup,
                 &lifecycle_state,
                 ports.config,
-            ) == DaemonConfigReloadOutcome::StopDisabled
-            {
+            );
+            if !daemon_should_schedule_auto_upgrade(
+                runtime.config.daemon.enabled,
+                runtime.config.daemon.mode,
+                runtime.config.automatic_upgrade_enabled,
+            ) {
+                // Live policy revocation cancels staged automatic work before handoff publication.
+                if let Some(prepared) = prepared_auto_upgrade.take() {
+                    let canceled =
+                        anyhow!("automatic upgrade canceled after daemon maintenance was disabled");
+                    prepared
+                        .abort(&canceled)
+                        .context("terminalize automatic upgrade after daemon policy change")?;
+                }
+            }
+            if reload_outcome == DaemonConfigReloadOutcome::StopDisabled {
                 write_daemon_lifecycle_status_with_runtime(
                     data_root,
                     &args,
@@ -569,13 +587,6 @@ where
                         .as_ref()
                         .and(source_refresh_coordinator.as_ref()),
                 );
-            }
-            if runtime.config.daemon.mode.runs_only_source_refresh() {
-                // A live mode change must not carry a previously prepared
-                // automatic upgrade into the source-refresh-only profile.
-                // Dropping it retains any resumable upgrade journal for a
-                // future full-mode daemon without applying it here.
-                prepared_auto_upgrade = None;
             }
             if let (Some(watch_runtime), Some(source_refresh)) = (
                 watch_runtime.as_mut(),
@@ -601,13 +612,9 @@ where
                 daemon_semantic_runtime_active(&runtime, query_service.as_ref()),
                 &config_reload.to_json(),
             )?;
-            if !finite_core_worker
-                && prepared_auto_upgrade.is_none()
-                && daemon_should_schedule_auto_upgrade(
-                    runtime.config.daemon.enabled,
-                    runtime.config.daemon.mode,
-                )
-            {
+            let automatic_recovery_allowed =
+                daemon_automatic_recovery_allowed(&runtime.config, finite_core_worker);
+            if prepared_auto_upgrade.is_none() && automatic_recovery_allowed {
                 prepared_auto_upgrade = upgrade
                     .engine
                     .prepare_automatic(
@@ -630,7 +637,7 @@ where
                     .upgrade_handoff_blocks_current_process(data_root)
                 || ports
                     .installation
-                    .lifecycle_blocks_current_process(data_root)
+                    .lifecycle_blocks_current_process(data_root, automatic_recovery_allowed)
             {
                 break;
             }
@@ -826,12 +833,14 @@ where
                     },
                 );
             }
+            let automatic_recovery_allowed =
+                daemon_automatic_recovery_allowed(&runtime.config, finite_core_worker);
             if ports
                 .installation
                 .upgrade_handoff_blocks_current_process(data_root)
                 || ports
                     .installation
-                    .lifecycle_blocks_current_process(data_root)
+                    .lifecycle_blocks_current_process(data_root, automatic_recovery_allowed)
             {
                 break;
             }
@@ -840,7 +849,7 @@ where
         lifecycle_state.mark_stopping();
         if let Some(attempt_id) = prepared_auto_upgrade
             .as_ref()
-            .and_then(PreparedDaemonUpgrade::attempt_id)
+            .and_then(PreparedAutomaticUpgrade::attempt_id)
         {
             auto_upgrade_handoff = Some(upgrade.daemon.begin_current(
                 data_root,
@@ -886,6 +895,11 @@ where
             publish_daemon_fatal_status_while_owned(&lock, data_root, &args, started_at_ms, &error);
             drop(installation_daemon_lease);
             drop(lock);
+            let error = abort_prepared_automatic_upgrade(
+                prepared_auto_upgrade.take(),
+                auto_upgrade_handoff.take(),
+                error,
+            );
             let events = telemetry.fatal_events(Instant::now());
             send_daemon_events(ports.observation, data_root, &events);
             return Err(error);
@@ -901,7 +915,7 @@ where
                 ctx_upgrade_engine::active_installation_upgrade_attempt_id()?;
             let upgrade_attempt_id = prepared_auto_upgrade
                 .as_ref()
-                .and_then(PreparedDaemonUpgrade::attempt_id)
+                .and_then(PreparedAutomaticUpgrade::attempt_id)
                 .map(str::to_owned)
                 .or(active_installation_attempt);
             if let Some(attempt_id) = upgrade_attempt_id.as_deref() {
@@ -915,11 +929,21 @@ where
     if let Err(error) = owned_shutdown_result {
         publish_daemon_fatal_status_while_owned(&lock, data_root, &args, started_at_ms, &error);
         drop(lock);
-        return Err(error);
+        return Err(abort_prepared_automatic_upgrade(
+            prepared_auto_upgrade.take(),
+            auto_upgrade_handoff.take(),
+            error,
+        ));
     }
     drop(lock);
     if let Some(handoff) = auto_upgrade_handoff.as_ref() {
-        handoff.wait_for_installation_quiescence()?;
+        if let Err(error) = handoff.wait_for_installation_quiescence() {
+            return Err(abort_prepared_automatic_upgrade(
+                prepared_auto_upgrade.take(),
+                auto_upgrade_handoff.take(),
+                error,
+            ));
+        }
     }
     let events = telemetry.stopped_events(failed, Instant::now());
     send_daemon_events(ports.observation, data_root, &events);

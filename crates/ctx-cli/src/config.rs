@@ -6,7 +6,11 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use ctx_history_capture::{ProviderRootDefinition, MAX_CONFIGURED_PROVIDER_ROOTS};
+use ctx_history_capture::{
+    provider_paths_equivalent, ProviderRootDefinition, ProviderRootKind,
+    MAX_CONFIGURED_PROVIDER_ROOTS,
+};
+use ctx_history_cli::parse_capture_provider_name;
 use ctx_history_core::CaptureProvider;
 use ctx_history_platform::platform_security::{
     establish_private_data_root, validate_provider_source_outside_data_root,
@@ -17,15 +21,18 @@ mod mutation;
 mod provider_roots;
 mod toml_subset;
 
+#[cfg(test)]
+pub(crate) use mutation::add_claude_root;
 pub(crate) use mutation::{
-    add_provider_root, persisted_daemon_enabled, remove_provider_root, set_daemon_enabled,
-    set_semantic_search_enabled, write_default_config,
+    add_provider_root_with_kind, persisted_daemon_enabled, remove_provider_root,
+    set_daemon_enabled, set_semantic_search_enabled, write_default_config, ProviderRootMutation,
 };
 
 use crate::deprecated_controls::DeprecatedControls;
 use durable_write::{write_config_durably, ConfigMutationLock};
 use provider_roots::{
-    validate_provider_root_path, validate_provider_root_support, validate_root_selector,
+    validate_provider_root_existing_kind, validate_provider_root_kind, validate_provider_root_path,
+    validate_provider_root_support, validate_root_selector,
 };
 use toml_subset::*;
 
@@ -34,6 +41,19 @@ pub const AUTO_UPGRADE_DEFAULT_MODE: &str = "apply";
 pub const DAEMON_MODE_ENV: &str = "CTX_DAEMON_MODE";
 pub const LOCAL_USAGE_DEFAULT_ENABLED: bool = true;
 pub const SEMANTIC_SEARCH_DEFAULT_ENABLED: bool = false;
+
+pub(crate) fn normalized_analytics_environment_override() -> Option<bool> {
+    let deprecated_controls = DeprecatedControls::detect();
+    if deprecated_controls.disables_analytics() {
+        return Some(false);
+    }
+    env::var_os("CTX_ANALYTICS_ENABLED")
+        .map(|value| value.to_str().and_then(parse_bool_value).unwrap_or(false))
+}
+
+pub(crate) fn resolved_analytics_consent(config: &AppConfig) -> bool {
+    config.analytics.enabled && normalized_analytics_environment_override() != Some(false)
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum IndexingMode {
@@ -288,6 +308,24 @@ pub struct DaemonConfig {
 #[derive(Debug, Clone)]
 pub struct SearchConfig {
     pub semantic: Option<bool>,
+    semantic_source: SemanticSearchSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SemanticSearchSource {
+    Default,
+    Config,
+    Environment,
+}
+
+impl SemanticSearchSource {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Config => "config",
+            Self::Environment => "environment",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -319,7 +357,10 @@ impl Default for AppConfig {
             daemon: DaemonConfig {
                 mode: DaemonMode::Full,
             },
-            search: SearchConfig { semantic: None },
+            search: SearchConfig {
+                semantic: None,
+                semantic_source: SemanticSearchSource::Default,
+            },
             sources: SourcesConfig { automatic: true },
             provider_roots: BTreeMap::new(),
         }
@@ -350,10 +391,13 @@ impl AppConfig {
     }
 
     pub fn semantic_search_source(&self) -> &'static str {
-        if self.search.semantic.is_some() {
-            "config"
-        } else {
-            "default"
+        self.search.semantic_source.as_str()
+    }
+
+    pub(crate) fn apply_persisted_semantic_search_enabled(&mut self, enabled: bool) {
+        if self.search.semantic_source != SemanticSearchSource::Environment {
+            self.search.semantic = Some(enabled);
+            self.search.semantic_source = SemanticSearchSource::Config;
         }
     }
 
@@ -402,8 +446,15 @@ impl AppConfig {
     fn apply_values(&mut self, values: &BTreeMap<String, ConfigValue>) -> Result<()> {
         let mut legacy_daemon_enabled = None;
         let mut indexing_mode = None;
-        let mut provider_roots =
-            BTreeMap::<String, (Option<CaptureProvider>, Option<PathBuf>, Option<String>)>::new();
+        let mut provider_roots = BTreeMap::<
+            String,
+            (
+                Option<CaptureProvider>,
+                Option<PathBuf>,
+                Option<String>,
+                Option<ProviderRootKind>,
+            ),
+        >::new();
         for (key, value) in values {
             if let Some(dynamic) = key.strip_prefix("sources.roots.") {
                 let Some((id, field)) = dynamic.rsplit_once('.') else {
@@ -416,9 +467,9 @@ impl AppConfig {
                 let draft = provider_roots.entry(id.to_owned()).or_default();
                 match field {
                     "provider" => {
-                        let provider = parse_non_empty_string(key, value)?
-                            .parse::<CaptureProvider>()
-                            .with_context(|| {
+                        let provider_name = parse_non_empty_string(key, value)?;
+                        let provider =
+                            parse_capture_provider_name(&provider_name).with_context(|| {
                                 format!(
                                     "sources.roots.{id}.provider at line {} is unknown",
                                     value.line
@@ -436,6 +487,15 @@ impl AppConfig {
                         let group = parse_non_empty_string(key, value)?;
                         validate_root_selector("source group", &group)?;
                         draft.2 = Some(group);
+                    }
+                    "kind" => {
+                        let kind = parse_non_empty_string(key, value)?.parse().map_err(|_| {
+                            anyhow::anyhow!(
+                                "sources.roots.{id}.kind at line {} must be current-conversations or legacy-persistence",
+                                value.line
+                            )
+                        })?;
+                        draft.3 = Some(kind);
                     }
                     _ => bail!("unknown config key `{key}` at line {}", value.line),
                 }
@@ -472,6 +532,7 @@ impl AppConfig {
                 }
                 "search.semantic" => {
                     self.search.semantic = Some(parse_config_bool(key, value)?);
+                    self.search.semantic_source = SemanticSearchSource::Config;
                 }
                 "sources.automatic" => {
                     self.sources.automatic = parse_config_bool(key, value)?;
@@ -492,11 +553,12 @@ impl AppConfig {
         }
         self.provider_roots = provider_roots
             .into_iter()
-            .map(|(id, (provider, path, group))| {
+            .map(|(id, (provider, path, group, kind))| {
                 let provider = provider
                     .ok_or_else(|| anyhow::anyhow!("sources.roots.{id}.provider is required"))?;
                 let path =
                     path.ok_or_else(|| anyhow::anyhow!("sources.roots.{id}.path is required"))?;
+                validate_provider_root_kind(provider, kind)?;
                 Ok((
                     id.clone(),
                     ProviderRootDefinition {
@@ -504,6 +566,7 @@ impl AppConfig {
                         provider,
                         path,
                         group,
+                        kind,
                     },
                 ))
             })
@@ -514,21 +577,38 @@ impl AppConfig {
                 root.path = physical_path;
             }
         }
-        let mut physical_roots = BTreeMap::new();
-        for root in self.provider_roots.values() {
-            // Hand-edited config may use a symlink spelling even though the
-            // safe CLI editor records canonical non-symlink homes. Compare
-            // existing paths by their physical target so two aliases cannot
-            // stage the same provider source through distinct routes.
-            let key = (root.provider.as_str(), root.path.clone());
-            if let Some(previous) = physical_roots.insert(key, root.id.as_str()) {
-                bail!(
-                    "provider roots `{previous}` and `{}` select the same {} home {}",
-                    root.id,
-                    root.provider.as_str(),
-                    root.path.display()
-                );
-            }
+        let roots = self.provider_roots.values().collect::<Vec<_>>();
+        if let Some((left, right)) = roots.iter().enumerate().find_map(|(index, left)| {
+            roots[index + 1..]
+                .iter()
+                .find(|right| {
+                    left.provider == right.provider
+                        && provider_paths_equivalent(&left.path, &right.path)
+                })
+                .map(|right| (*left, *right))
+        }) {
+            // Use the same physical-file identity authority as the safe editor
+            // and discovery. Canonical spellings alone do not collapse hard
+            // links to one provider database.
+            bail!(
+                "provider roots `{}` and `{}` select the same {} history root {}",
+                left.id,
+                right.id,
+                right.provider.as_str(),
+                right.path.display()
+            );
+        }
+        if let Some((left, right)) = roots.iter().enumerate().find_map(|(index, left)| {
+            roots[index + 1..]
+                .iter()
+                .find(|right| left.openhands_selected_histories_overlap(right))
+                .map(|right| (*left, *right))
+        }) {
+            bail!(
+                "openhands provider roots `{}` and `{}` select overlapping legacy and current history",
+                left.id,
+                right.id
+            );
         }
         Ok(())
     }
@@ -598,6 +678,7 @@ impl AppConfig {
         if let Ok(value) = env::var("CTX_SEARCH_SEMANTIC") {
             if let Some(enabled) = parse_bool_value(&value) {
                 self.search.semantic = Some(enabled);
+                self.search.semantic_source = SemanticSearchSource::Environment;
             }
         }
         Ok(())
@@ -657,7 +738,7 @@ pub(crate) fn count_app_config_loads<T>(operation: impl FnOnce() -> T) -> (T, us
 }
 
 pub fn set_local_usage_enabled(data_root: &Path, enabled: bool) -> Result<()> {
-    set_config_bool(data_root, "local_usage", "enabled", enabled)
+    mutation::set_config_bool(data_root, "local_usage", "enabled", enabled)
 }
 
 pub(crate) fn read_local_usage_control(data_root: &Path) -> Result<LocalUsageControl> {
@@ -888,91 +969,8 @@ fn decode_basic_key_unicode_escape(
     char::from_u32(value)
 }
 
-fn set_config_bool(data_root: &Path, section: &str, key: &str, enabled: bool) -> Result<()> {
-    establish_private_data_root(data_root)?;
-    let path = AppConfig::config_path(data_root);
-    let _mutation_lock = ConfigMutationLock::acquire(&path)?;
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
-    };
-    let parsed = parse_toml_subset(&text).with_context(|| format!("parse {}", path.display()))?;
-    let mut config = AppConfig::default();
-    config
-        .apply_values(&parsed)
-        .with_context(|| format!("load {}", path.display()))?;
-    config
-        .validate_provider_root_data_root(data_root)
-        .with_context(|| format!("load {}", path.display()))?;
-    let updated = set_toml_bool(&text, section, key, enabled);
-    let parsed =
-        parse_toml_subset(&updated).with_context(|| format!("parse updated {}", path.display()))?;
-    let mut config = AppConfig::default();
-    config
-        .apply_values(&parsed)
-        .with_context(|| format!("load updated {}", path.display()))?;
-    config
-        .validate_provider_root_data_root(data_root)
-        .with_context(|| format!("load updated {}", path.display()))?;
-    if updated == text {
-        return Ok(());
-    }
-    write_config_durably(&path, updated.as_bytes())?;
-    Ok(())
-}
-
-fn set_toml_bool(text: &str, section: &str, key: &str, enabled: bool) -> String {
-    let rendered = format!("{key} = {enabled}");
-    let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
-    let mut current_section = String::new();
-    let mut section_start = None;
-    let mut insert_before = lines.len();
-    for (index, raw_line) in lines.iter().enumerate() {
-        let line = strip_comment(raw_line).trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            if section_start.is_some() && current_section == section {
-                insert_before = index;
-                break;
-            }
-            current_section = line[1..line.len() - 1].trim().to_owned();
-            if current_section == section {
-                section_start = Some(index);
-                insert_before = lines.len();
-            }
-            continue;
-        }
-        if current_section == section {
-            if let Some((candidate, _)) = line.split_once('=') {
-                if candidate.trim() == key {
-                    lines[index] = rendered;
-                    return ensure_trailing_newline(lines.join("\n"));
-                }
-            }
-        }
-    }
-    match section_start {
-        Some(start) => {
-            let insert_at = insert_before.max(start + 1);
-            lines.insert(insert_at, rendered);
-        }
-        None => {
-            if !lines.last().is_none_or(|line| line.trim().is_empty()) {
-                lines.push(String::new());
-            }
-            lines.push(format!("[{section}]"));
-            lines.push(rendered);
-        }
-    }
-    ensure_trailing_newline(lines.join("\n"))
-}
-
-fn ensure_trailing_newline(mut text: String) -> String {
-    if !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text
-}
+#[cfg(test)]
+mod provider_root_mutation_tests;
 
 #[cfg(test)]
 #[path = "config_tests.rs"]

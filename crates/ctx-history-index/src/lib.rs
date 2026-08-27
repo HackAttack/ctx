@@ -41,7 +41,6 @@ pub use ctx_history_index_format::policy;
 pub use ctx_history_index_format::project_body_search;
 #[cfg(test)]
 pub(crate) use ctx_history_index_format::required_field;
-pub(crate) use ctx_history_index_format::source_token;
 pub(crate) use ctx_history_index_format::{
     accumulate_core_record, core_record_accumulator_leaf, core_record_leaf, implicit_source_routes,
     source_sort_key, INDEX_MEMORY_MIN_PER_THREAD,
@@ -63,35 +62,35 @@ pub(crate) use ctx_history_index_format::{
     fields_from_schema, lexical_schema, provider_source_config_digest, validate_schema, Fields,
 };
 pub use ctx_history_index_format::{
-    AppliedProviderRoot, CommittedPredecessorMigrationRecovery, ConsecutiveSourceMissingCount,
-    GenerationManifest, IndexError, ProviderRootDefinition, ProviderRootSourceIdentity, Result,
-    SourceCoreRecordAggregate, SourceMissingObservationPoint, SourceRouteIdentity,
-    SourceRouteMissingState, SourceRouteSnapshot, GENERATION_MANIFEST_VERSION,
+    source_token, AppliedProviderRoot, AppliedProviderRootSourceMembership,
+    CommittedPredecessorMigrationRecovery, ConsecutiveSourceMissingCount,
+    DetachedReleasedProviderRootAuthority, GenerationManifest, IndexError, ProviderRootDefinition,
+    ProviderRootSourceIdentity, Result, SourceCoreRecordAggregate, SourceMissingObservationPoint,
+    SourceRouteIdentity, SourceRouteMissingState, SourceRouteSnapshot, GENERATION_MANIFEST_VERSION,
     LEXICAL_ANALYZER_VERSION, LEXICAL_SCHEMA_VERSION, LEXICAL_SEGMENT_MERGE_FAN_IN,
-    MAX_PUBLICATION_METADATA_BYTES,
+    MAX_DETACHED_RELEASED_PROVIDER_ROOTS, MAX_PUBLICATION_METADATA_BYTES,
 };
 #[cfg(test)]
 pub(crate) use ctx_history_index_generation::sha256_hex;
 pub(crate) use ctx_history_index_generation::{hex, is_generation_id, MANIFEST_DIRECTORY};
 pub use ctx_history_index_query::VerifiedIndex;
 pub use ctx_history_index_query::{
-    AgentScope, CopiedEventLineage, CopiedEventLineageOccurrence, CopiedEventLineagePolicy,
-    CopiedEventLineageRelationshipCount, CopiedEventLineageResolution, CoreEventBatch,
-    CoreEventPageBudget, CoreEventRangeCursor, CoreEventRangeDirection, CoreEventRangeDomain,
-    CoreEventRangeError, CoreEventRangeFilters, CoreEventRangePage, CoreEventRangeScope,
-    CoreEventRangeSelection, CoreEventRecord, CoreSemanticEventPage, CoreSessionEventPage,
-    CoreSourceEventPage, CoreSourceEventPagePlan, EventRecord, EventSearchCandidate,
-    EventSearchFilters, ExcludedSessionTree, LexicalQueryLimits, SearchContentScope,
-    SemanticEligibility, SemanticEventCursor, SemanticEventPage, SemanticFilterProjection,
-    SessionEventCoordinate, SessionEventCursor, SessionRecord, SourceEventCursor, SourceEventPage,
-    StoredCoreEventRecord, StoredCoreRecordJson, StoredCoreSourceEventPage,
-    DEFAULT_CORE_EVENT_PAGE_BUDGET, LEXICAL_QUERY_LIMITS,
-    MAX_COPIED_EVENT_LINEAGE_EVENT_AND_SESSION_IDENTITY_POSTING_VISITS,
+    AgentScope, CompiledSearchFilter, CopiedEventLineage, CopiedEventLineageOccurrence,
+    CopiedEventLineagePolicy, CopiedEventLineageRelationshipCount, CopiedEventLineageResolution,
+    CoreEventBatch, CoreEventPageBudget, CoreEventRangeCursor, CoreEventRangeDirection,
+    CoreEventRangeDomain, CoreEventRangeError, CoreEventRangeFilters, CoreEventRangePage,
+    CoreEventRangeScope, CoreEventRangeSelection, CoreEventRecord, CoreSemanticEventPage,
+    CoreSessionEventPage, CoreSourceEventPage, CoreSourceEventPagePlan, EventRecord,
+    EventSearchCandidate, EventSearchFilters, ExcludedSessionTree, LexicalExecution, LexicalMode,
+    LexicalQueryLimits, RankedEventRef, SearchContentScope, SemanticEligibility,
+    SemanticEventCursor, SemanticEventPage, SemanticFilterProjection, SessionEventCoordinate,
+    SessionEventCursor, SessionRecord, SourceEventCursor, SourceEventPage, StoredCoreEventRecord,
+    StoredCoreRecordJson, StoredCoreSourceEventPage, DEFAULT_CORE_EVENT_PAGE_BUDGET,
+    LEXICAL_QUERY_LIMITS, MAX_COPIED_EVENT_LINEAGE_EVENT_AND_SESSION_IDENTITY_POSTING_VISITS,
     MAX_COPIED_EVENT_LINEAGE_OCCURRENCES, MAX_COPIED_EVENT_LINEAGE_POSTING_VISITS,
     MAX_CORE_EVENT_RANGE_PAGE_ITEMS, MAX_LEXICAL_QUERY_RESULTS, MAX_SEMANTIC_EVENT_PAGE_ITEMS,
     MAX_SESSION_EVENT_COORDINATE_PREFIX_ITEMS, MAX_SESSION_EVENT_COORDINATE_WINDOW_ITEMS,
-    MAX_SESSION_EVENT_PAGE_ITEMS, MAX_SOURCE_EVENT_PAGE_ITEMS, SEARCH_COPIED_EVENT_LINEAGE_POLICY,
-    SHOW_COPIED_EVENT_LINEAGE_POLICY,
+    MAX_SESSION_EVENT_PAGE_ITEMS, MAX_SOURCE_EVENT_PAGE_ITEMS, SHOW_COPIED_EVENT_LINEAGE_POLICY,
 };
 pub(crate) use identity::{
     prior_session_identity_facts, register_compact_identity, BaseWitnessSource,
@@ -109,12 +108,11 @@ pub use preparation::{
 pub(crate) use publication::publish_active_generation_pointer;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use publication::republish_current_for_qualification;
-#[cfg(not(windows))]
-pub(crate) use publication::verify_candidate_physical_fence;
 #[cfg(test)]
 pub(crate) use publication::verify_searcher;
 pub(crate) use publication::{
-    best_effort_post_republish_cleanup, canonical_commit_payload, create_candidate_generation,
+    best_effort_post_republish_cleanup, canonical_commit_payload,
+    certify_candidate_physical_integrity, create_candidate_generation,
     load_active_generation_pointer, meta_generation, open_slot_index, payload_generation_id,
     prepare_successor_manifest, prime_candidate_physical_proof,
     publish_active_generation_pointer_validated, reclaim_inactive_generation_directories,
@@ -328,6 +326,14 @@ fn classify_active_integrity_failure(
     }
 }
 
+fn prior_session_identity_lookup_failure_is_passthrough(error: &IndexError) -> bool {
+    matches!(
+        error,
+        IndexError::CompactIdentityCollision { .. }
+            | IndexError::SessionAuthorityWorkLimitExceeded { .. }
+    )
+}
+
 #[cfg(test)]
 type GenerationPathHook = Box<dyn FnOnce(&Path) + Send>;
 
@@ -365,6 +371,7 @@ pub struct GenerationWriter {
     root: PathBuf,
     index: Index,
     active_pointer: Option<ActiveGenerationPointer>,
+    active_pointer_fence: ctx_history_index_generation::ActiveGenerationPointerFence,
     candidate_directory_name: Option<String>,
     candidate_physical_proof: Option<CandidatePhysicalProof>,
     candidate_activation_fence: Option<CandidateActivationFence>,
@@ -392,6 +399,7 @@ pub struct GenerationWriter {
     changed_session_registry_memory_bytes: usize,
     source_route_plan: Option<SourceRoutePlan>,
     active_source_route_stage: Option<SourceRouteStageCheckpoint>,
+    active_source_route_cohort_stage: Option<SourceRouteStageCheckpoint>,
     reusable_base_rebuild_detail: Option<String>,
     #[cfg(test)]
     index_writer_constructions: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -675,7 +683,7 @@ impl GenerationWriter {
                         match lookup {
                             Ok(prior) => prior,
                             Err(error)
-                                if matches!(error, IndexError::CompactIdentityCollision { .. }) =>
+                                if prior_session_identity_lookup_failure_is_passthrough(&error) =>
                             {
                                 return Err(error);
                             }

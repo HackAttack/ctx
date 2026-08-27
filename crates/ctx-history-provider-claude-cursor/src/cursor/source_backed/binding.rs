@@ -9,12 +9,23 @@ pub(super) struct CursorBinding {
     pub(super) alias_route_sha256: Vec<[u8; 32]>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CursorDivergentAliasProof {
+    pub(super) schema_version: u8,
+    pub(super) native_session_id: String,
+    pub(super) selected_signature: [u8; 32],
+    pub(super) rejected_route_sha256: [u8; 32],
+}
+
 pub(super) fn validate_binding(
     leaf: &JsonlFamilyLeaf,
     binding: &CursorBinding,
     _source_file: &OpenedProviderSourceFile,
+    source_anchor_scope: SourceAnchorScope,
 ) -> Result<()> {
-    if !source_key(&binding.native_session_id)?.exact_descriptor_eq(leaf.source())
+    if !source_key_scoped(&binding.native_session_id, source_anchor_scope)?
+        .exact_descriptor_eq(leaf.source())
         || cursor_route_sha256(leaf.source_path()) != binding.selected_route_sha256
     {
         return Err(CaptureError::SourceChangedDuringCapture);

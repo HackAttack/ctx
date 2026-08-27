@@ -4,15 +4,6 @@ use std::{collections::BTreeMap, path::Path};
 
 pub use ctx_history_capture_composition::source_backed::*;
 
-pub(crate) mod family {
-    #[allow(
-        dead_code,
-        reason = "capture-local provider compatibility aliases retain the pre-split path"
-    )]
-    pub(crate) type CaptureProviderRuntime =
-        ctx_history_capture_composition::CaptureProviderRuntime;
-}
-
 use crate::{DiscoveryContext, DiscoveryReport};
 
 pub fn build_automatic_source_backed_registry(
@@ -40,20 +31,20 @@ pub fn build_automatic_source_backed_registry_from_report(
 }
 
 #[doc(hidden)]
-pub fn build_automatic_source_backed_registry_from_report_with_root_identities(
+pub fn build_automatic_source_backed_registry_from_report_with_retained_roots(
     discovery: &DiscoveryContext,
     data_root: &Path,
     report: DiscoveryReport,
-    provider_root_identities: &BTreeMap<
+    retained_provider_roots: &BTreeMap<
         String,
-        ctx_history_capture_model::ProviderRootSourceIdentity,
+        ctx_history_capture_model::RetainedProviderRootAuthority,
     >,
 ) -> SourceBackedAutomaticRegistryBuild {
-    ctx_history_capture_composition::build_automatic_source_backed_registry_from_report_with_probes_and_root_identities(
+    ctx_history_capture_composition::build_automatic_source_backed_registry_from_report_with_probes_and_retained_roots(
         &crate::provider_sources::BUILTIN_PROVIDER_PROBES,
         discovery,
         data_root,
         report,
-        provider_root_identities,
+        retained_provider_roots,
     )
 }

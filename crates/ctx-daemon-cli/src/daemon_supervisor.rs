@@ -49,6 +49,14 @@ impl ctx_daemon_application::DaemonApplicationHost for CliDaemonApplicationHost<
         ctx_upgrade_engine::installation_upgrade_is_active()
     }
 
+    fn automatic_upgrade_recovery_allowed(&self, data_root: &Path) -> Result<bool> {
+        let config = crate::config::AppConfig::load(data_root)?;
+        Ok(config.daemon.enabled
+            && config.daemon.mode == crate::config::DaemonMode::Full
+            && config.auto_upgrade_enabled()
+            && ctx_upgrade_engine::installation_interrupted_automatic_upgrade_is_recoverable()?)
+    }
+
     fn daemon_config(
         &self,
         data_root: &Path,
@@ -190,6 +198,7 @@ pub(super) const fn daemon_trigger_arg(
         ctx_daemon_application::DaemonTrigger::Setup => crate::DaemonTriggerCommandArg::Setup,
         ctx_daemon_application::DaemonTrigger::Import => crate::DaemonTriggerCommandArg::Import,
         ctx_daemon_application::DaemonTrigger::Search => crate::DaemonTriggerCommandArg::Search,
+        ctx_daemon_application::DaemonTrigger::Semantic => crate::DaemonTriggerCommandArg::Semantic,
     }
 }
 
@@ -200,6 +209,7 @@ pub(super) const fn daemon_trigger(
         crate::DaemonTriggerCommandArg::Setup => ctx_daemon_application::DaemonTrigger::Setup,
         crate::DaemonTriggerCommandArg::Import => ctx_daemon_application::DaemonTrigger::Import,
         crate::DaemonTriggerCommandArg::Search => ctx_daemon_application::DaemonTrigger::Search,
+        crate::DaemonTriggerCommandArg::Semantic => ctx_daemon_application::DaemonTrigger::Semantic,
     }
 }
 

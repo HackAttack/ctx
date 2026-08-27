@@ -4,9 +4,7 @@ use super::super::probes::BoundedProbe;
 #[cfg(unix)]
 use super::super::ProviderSource;
 use super::super::{ProviderDefaultLocation, ProviderSourceKind, ProviderSourceStatus};
-use super::support::{assert_source_status, tempdir};
-#[cfg(unix)]
-use super::support::{EnvGuard, ENV_LOCK};
+use super::support::{tempdir, EnvGuard, ENV_LOCK};
 
 fn default_location_import_probe(
     data_root: Option<&std::path::Path>,
@@ -41,18 +39,30 @@ fn discover_provider_sources_for_provider_report(
 }
 
 #[test]
-fn bounded_probe_reports_budget_exhausted_source_as_unknown() {
+fn codex_nested_probe_reports_budget_exhaustion_as_explicit_unknown() {
+    let _lock = ENV_LOCK.lock().unwrap();
     let temp = tempdir();
-    let claude = temp.path().join(".claude/projects");
-    std::fs::create_dir_all(&claude).unwrap();
+    let _codex_home = EnvGuard::remove("CODEX_HOME");
+    let sessions = temp.path().join(".codex/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
     for index in 0..10_001 {
-        std::fs::create_dir(claude.join(format!("project-{index:05}"))).unwrap();
+        std::fs::create_dir(sessions.join(format!("partition-{index:05}"))).unwrap();
     }
 
-    assert_source_status(
+    let report = super::super::discover_provider_sources_for_provider_report(
+        &super::super::TEST_PROVIDER_PROBES,
         temp.path(),
-        CaptureProvider::Claude,
-        ProviderSourceStatus::Unknown,
+        CaptureProvider::Codex,
+    );
+    let source = report
+        .sources
+        .iter()
+        .find(|source| source.path == sessions)
+        .expect("bounded Codex source remains visible as incomplete");
+    assert_eq!(source.status, ProviderSourceStatus::Unknown);
+    assert_eq!(
+        source.unsupported_reason,
+        Some("path exists but the Codex session transcript probe hit its scan budget")
     );
 }
 

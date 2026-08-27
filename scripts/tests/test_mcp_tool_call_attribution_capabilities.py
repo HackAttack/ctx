@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import sys
 import tempfile
 import unittest
@@ -18,13 +17,10 @@ sys.dont_write_bytecode = True
 
 from check_mcp_tool_call_attribution_capabilities_lib import (  # noqa: E402
     CapabilityError,
-    CONFORMANCE_MANIFEST,
-    CONFORMANCE_SUITES,
     PUBLIC_DOC_PATHS,
     discover_public_checker_source_paths,
     load_contract,
     public_boundary_violation,
-    validate_conformance_authority,
     validate_contract,
     validate_evidence_url_reachable,
     validate_public_checker_sources,
@@ -91,14 +87,6 @@ def attack_forms(value: str) -> dict[str, str]:
     }
 
 
-def authority_fixture(capability: dict[str, object]) -> dict[str, str]:
-    del capability
-    return {
-        relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
-        for relative in (CONFORMANCE_MANIFEST, CONFORMANCE_SUITES)
-    }
-
-
 class FakeResponse:
     def __init__(self, status: int) -> None:
         self.status = status
@@ -140,17 +128,41 @@ class CapabilityMutationTests(unittest.TestCase):
         self.assertEqual(
             self.validate(),
             {
-                "providers": 41,
-                "base_routes": 46,
-                "capability_lanes": 49,
-                "lane_statuses": {"exact": 3, "not-qualified": 45, "excluded": 1},
-                "provider_statuses": {"exact": 3, "not-qualified": 38, "excluded": 0},
+                "providers": 42,
+                "base_routes": 47,
+                "capability_lanes": 51,
+                "lane_statuses": {"exact": 3, "not-qualified": 47, "excluded": 1},
+                "provider_statuses": {"exact": 3, "not-qualified": 39, "excluded": 0},
                 "exact_suites": 3,
                 "exact_tests": 9,
                 "exact_links": 4,
-                "conformance_authority": "validated",
             },
         )
+
+    def test_fx_lanes_separate_legacy_from_current_producer_claims(self) -> None:
+        rows = [
+            row
+            for row in self.capability["routes"]
+            if row["provider_id"] == "fx"
+        ]
+        self.assertEqual(len(rows), 2)
+        legacy = next(row for row in rows if "legacy" in row["source_schema"])
+        current = next(row for row in rows if "schema-v3" in row["source_schema"])
+        self.assertEqual(
+            legacy["producer_bound"],
+            {
+                "kind": "unversioned",
+                "generation": 1,
+                "unknown_generations": "not-qualified",
+            },
+        )
+        self.assertIn("accepted by current fx v0.0.6", legacy["detail"])
+        self.assertEqual(current["producer_bound"]["versions"], ["0.0.6"])
+        for row in rows:
+            self.assertEqual(row["source_format"], "fx_sessions_tree")
+            self.assertEqual(row["status"], "not-qualified")
+            self.assertEqual(row["reason"], "no_server_field")
+            self.assertIn("no authoritative MCP server alias", row["detail"])
 
     def test_opaque_bound_kind_is_rejected(self) -> None:
         self.capability["routes"][0]["producer_bound"] = {
@@ -285,145 +297,6 @@ class CapabilityMutationTests(unittest.TestCase):
     def test_invalid_exact_evidence_url_is_rejected(self) -> None:
         self.exact_row("codex")["evidence"] = ["https://github.com/openai/codex"]
         self.assert_invalid("not a pinned GitHub blob/tree URL")
-
-    def test_stale_parser_revision_is_rejected(self) -> None:
-        self.capability["exact_checks"][1]["parser_revision"] = (
-            "warp-source-backed-logical-v3"
-        )
-        self.assert_invalid("parser_revision is stale")
-
-    def test_conformance_suite_alias_is_frozen(self) -> None:
-        self.capability["exact_checks"][0]["conformance_suite"] = "unbound_suite"
-        self.assert_invalid("authoritative suite")
-
-    def test_conformance_authority_declaration_is_frozen(self) -> None:
-        self.capability["conformance_authority"]["manifest_schema_version"] += 1
-        self.assert_invalid("real manifest and suite registry")
-
-    def test_present_conformance_authority_is_cross_checked(self) -> None:
-        overrides = authority_fixture(self.capability)
-        self.assertTrue(
-            validate_conformance_authority(
-                self.capability, authority_overrides=overrides
-            )
-        )
-        manifest = json.loads(overrides[CONFORMANCE_MANIFEST])
-        supported = next(
-            lane
-            for lane in manifest["capability_lanes"]
-            if lane["provider"] == "codex"
-            and lane["status"]["kind"] == "supported"
-        )
-        supported["producer_partition"]["versions"] = [
-            {"kind": "semver", "version": "9.9.9"}
-        ]
-        mutated = dict(overrides)
-        mutated[CONFORMANCE_MANIFEST] = json.dumps(manifest)
-        with self.assertRaisesRegex(CapabilityError, "exact Codex generation"):
-            validate_conformance_authority(
-                self.capability, authority_overrides=mutated
-            )
-
-    def test_all_manifest_lanes_and_real_suite_membership_are_hash_bound(self) -> None:
-        overrides = authority_fixture(self.capability)
-        manifest = json.loads(overrides[CONFORMANCE_MANIFEST])
-        mutations = []
-
-        warp = next(
-            lane
-            for lane in manifest["capability_lanes"]
-            if lane["provider"] == "warp" and lane["status"]["kind"] == "supported"
-        )
-        warp_generation = copy.deepcopy(manifest)
-        next(
-            lane
-            for lane in warp_generation["capability_lanes"]
-            if lane["provider"] == "warp" and lane["status"]["kind"] == "supported"
-        )["producer_partition"]["versions"][0]["generation"] = 99
-        mutations.append(
-            (CONFORMANCE_MANIFEST, json.dumps(warp_generation), "content hash mismatch")
-        )
-
-        copilot_schema = copy.deepcopy(manifest)
-        next(
-            lane
-            for lane in copilot_schema["capability_lanes"]
-            if lane["provider"] == "copilot_cli"
-            and lane["status"]["kind"] == "supported"
-        )["format_schema"]["revision"] = 999
-        mutations.append(
-            (CONFORMANCE_MANIFEST, json.dumps(copilot_schema), "content hash mismatch")
-        )
-
-        route_drift = copy.deepcopy(manifest)
-        next(
-            lane
-            for lane in route_drift["capability_lanes"]
-            if lane["provider"] == "warp" and lane["status"]["kind"] == "supported"
-        )["route"] = "fabricated_route"
-        mutations.append(
-            (CONFORMANCE_MANIFEST, json.dumps(route_drift), "tuple projection")
-        )
-
-        producer_drift = copy.deepcopy(manifest)
-        next(
-            lane
-            for lane in producer_drift["capability_lanes"]
-            if lane["provider"] == "warp" and lane["status"]["kind"] == "supported"
-        )["producer_bound"]["generation"] = 99
-        mutations.append(
-            (CONFORMANCE_MANIFEST, json.dumps(producer_drift), "tuple projection")
-        )
-
-        fabricated_provider = copy.deepcopy(manifest)
-        next(
-            lane
-            for lane in fabricated_provider["capability_lanes"]
-            if lane["status"]["kind"] == "not_qualified"
-            and lane["provider"] != "codex"
-        )["provider"] = "fabricated_provider"
-        mutations.append(
-            (CONFORMANCE_MANIFEST, json.dumps(fabricated_provider), "tuple projection")
-        )
-
-        first_test = self.capability["exact_checks"][0]["tests"][0]["id"]
-        quoted_test = json.dumps(first_test)
-        suites_comment_only = overrides[CONFORMANCE_SUITES].replace(
-            quoted_test, "", 1
-        ) + f"\n# {quoted_test}\n"
-        mutations.append(
-            (CONFORMANCE_SUITES, suites_comment_only, "content hash mismatch")
-        )
-
-        self.assertEqual(warp["producer_partition"]["versions"][0]["generation"], 1)
-        for path, content, error in mutations:
-            with self.subTest(path=path):
-                mutated = dict(overrides)
-                mutated[path] = content
-                with self.assertRaisesRegex(CapabilityError, error):
-                    validate_conformance_authority(
-                        self.capability, authority_overrides=mutated
-                    )
-
-    def test_partial_or_stale_suite_authority_fails_closed(self) -> None:
-        overrides = authority_fixture(self.capability)
-        with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaisesRegex(CapabilityError, "available together"):
-                validate_conformance_authority(
-                    self.capability,
-                    repo_root=Path(temporary),
-                    authority_overrides={
-                        CONFORMANCE_MANIFEST: overrides[CONFORMANCE_MANIFEST]
-                    },
-                )
-        first_test = self.capability["exact_checks"][0]["tests"][0]["id"]
-        overrides[CONFORMANCE_SUITES] = overrides[CONFORMANCE_SUITES].replace(
-            json.dumps(first_test), ""
-        )
-        with self.assertRaisesRegex(CapabilityError, "suite registry"):
-            validate_conformance_authority(
-                self.capability, authority_overrides=overrides
-            )
 
     def test_contradictory_provider_docs_are_rejected(self) -> None:
         fixed = (

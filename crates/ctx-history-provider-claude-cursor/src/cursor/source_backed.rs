@@ -1,23 +1,16 @@
 //! Thin Cursor adapter for the shared certified-append JSONL family.
 
-use std::{
-    collections::BTreeMap,
-    fs,
-    io::{self, BufReader},
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, fs, io, path::Path, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use ctx_history_capture_runtime::BaseEventLookup;
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, ActivityInvocation, ActivityJsonCapture,
     ActivityResult, ActivityTextCapture, AgentScope, CaptureProvider, CoreActivity, CoreRecord,
-    CoreRecordAnnotation, EventIdentityInput, EventType, NativeItemKey, SourceKey, StableEntityId,
-    TypedKey, CORE_ACTIVITY_REVISION,
+    CoreRecordAnnotation, EventIdentityInput, EventType, NativeItemKey, SourceAnchorScope,
+    SourceKey, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
 };
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
 #[cfg(any(test, feature = "test-support"))]
 use std::{
     cell::Cell,
@@ -25,23 +18,27 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
+#[cfg(test)]
+use super::parser::project_cursor_jsonl_record;
 use super::{
     discover_cursor_transcripts,
-    layout::CursorTranscriptPath,
-    parser::project_cursor_jsonl_record,
+    parser::{
+        project_cursor_jsonl_record_with_rejection, CursorJsonlRecordOutcome, CursorRejectionKind,
+    },
     projection::{CursorEventBody, CursorNativeEvent},
 };
 use crate::CURSOR_AGENT_TRANSCRIPT_SOURCE_FORMAT;
 use ctx_history_jsonl::{
     fit_jsonl_activity, selected_content_fits, JsonlActivityObservedBytes, JsonlFamilyAdapter,
+    JsonlFamilyRejectedLeaf, JsonlOversizedRecordPolicy, JsonlRecordRejections,
+    SourceBackedRecordRejectionClass, SourceBackedRecordRejectionDrafts,
 };
 use ctx_history_provider_runtime::{
-    read_bounded_record_unhashed, source_io::OpenedProviderSourceFile, CaptureError,
-    JsonlFamilyAppendMode, JsonlFamilyProjectionMode, JsonlFamilyProjector,
-    JsonlFamilyTerminalProof, JsonlOrderedAppendOccurrenceState, JsonlRecordFraming,
-    JsonlRecordRef, ProviderBaseEventLookup, ProviderJsonlInventory, ProviderJsonlLeaf,
-    ProviderJsonlReader, ProviderJsonlRuntime, ProviderJsonlWorkerContext, ProviderRuntimeBinding,
-    Result,
+    source_io::OpenedProviderSourceFile, CaptureError, JsonlFamilyAppendMode,
+    JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyTerminalProof,
+    JsonlFileObservation, JsonlOrderedAppendOccurrenceState, JsonlRecordRef,
+    ProviderBaseEventLookup, ProviderJsonlInventory, ProviderJsonlLeaf, ProviderJsonlReader,
+    ProviderJsonlRuntime, ProviderJsonlWorkerContext, ProviderRuntimeBinding, Result,
 };
 use ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 
@@ -50,17 +47,20 @@ type JsonlReader = ProviderJsonlReader;
 type JsonlFamilyWorkerContext<B> = ProviderJsonlWorkerContext<B>;
 
 const SOURCE_ANCHOR_NAMESPACE: &str = "cursor.session";
+const DIVERGENT_COPY_ANCHOR_NAMESPACE: &str = "cursor.divergent-transcript-copy.v1";
 const NATIVE_SESSION_NAMESPACE: &str = "cursor.session";
 const NATIVE_EVENT_LOGICAL_KIND: &str = "cursor.logical-event-v3";
 const LOGICAL_SESSION_KIND: &str = "cursor-session";
 const LOGICAL_EVENT_KIND: &str = "cursor-event";
 const SOURCE_SCHEMA_VARIANT: &str = "cursor-agent-transcript-jsonl-v1";
-const PARSER_REVISION: &str = "cursor-shared-jsonl-core-activity-v1";
+const PARSER_REVISION: &str = "cursor-shared-jsonl-core-activity-v2-top-level-role";
 const EVENT_SEQUENCE_PARTS: u64 = u16::MAX as u64 + 1;
 
 mod binding;
+mod duplicates;
 
 use binding::*;
+use duplicates::*;
 
 #[cfg(any(test, feature = "test-support"))]
 static CURSOR_PROJECTED_RECORDS: LazyLock<Mutex<HashMap<StableEntityId, u64>>> =
@@ -121,15 +121,31 @@ pub(crate) fn cursor_base_identity_probes() -> u64 {
     CURSOR_BASE_IDENTITY_PROBES.get()
 }
 
-#[derive(Debug, Default)]
-struct CursorJsonlAdapter<B>(std::marker::PhantomData<fn() -> B>);
+#[derive(Debug)]
+struct CursorJsonlAdapter<B> {
+    source_anchor_scope: SourceAnchorScope,
+    binding: std::marker::PhantomData<fn() -> B>,
+}
 
 pub(crate) fn cursor_jsonl_adapter<B>(
 ) -> Arc<dyn JsonlFamilyAdapter<Runtime = ProviderJsonlRuntime<B>>>
 where
     B: ProviderRuntimeBinding,
 {
-    Arc::new(CursorJsonlAdapter(std::marker::PhantomData))
+    cursor_jsonl_adapter_with_source_root_lineage(None)
+}
+
+pub(crate) fn cursor_jsonl_adapter_with_source_root_lineage<B>(
+    source_root_lineage: Option<[u8; 32]>,
+) -> Arc<dyn JsonlFamilyAdapter<Runtime = ProviderJsonlRuntime<B>>>
+where
+    B: ProviderRuntimeBinding,
+{
+    Arc::new(CursorJsonlAdapter {
+        source_anchor_scope: source_root_lineage
+            .map_or(SourceAnchorScope::Unqualified, SourceAnchorScope::Lineage),
+        binding: std::marker::PhantomData,
+    })
 }
 
 impl<B> JsonlFamilyAdapter for CursorJsonlAdapter<B>
@@ -156,6 +172,10 @@ where
 
     fn append_mode(&self) -> JsonlFamilyAppendMode {
         JsonlFamilyAppendMode::ProjectorPreflight(true)
+    }
+
+    fn oversized_record_policy(&self) -> JsonlOversizedRecordPolicy {
+        JsonlOversizedRecordPolicy::RejectRecord
     }
 
     fn discover(&self, root: &Path) -> Result<ProviderJsonlInventory> {
@@ -196,6 +216,7 @@ where
                 .push(transcript);
         }
         let mut leaves = Vec::with_capacity(native_sessions.len());
+        let mut rejected_leaves = Vec::new();
         let mut exact_dependencies = Vec::new();
         for (native_session_id, mut routes) in native_sessions {
             routes.sort_by(|left, right| left.path().cmp(right.path()));
@@ -209,46 +230,88 @@ where
                     )
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let logical_transcript_sha256 = if routes.len() > 1 {
-                let signature = cursor_transcript_signature(&routes[0])?;
-                for route in routes.iter().skip(1) {
-                    if cursor_transcript_signature(route)? != signature {
-                        return Err(CaptureError::InvalidPayload(format!(
-                            "Cursor native session ID {native_session_id:?} has conflicting transcript copies"
-                        )));
-                    }
-                }
-                Some(signature)
-            } else {
-                None
-            };
+            let duplicate_selection = (routes.len() > 1)
+                .then(|| select_cursor_transcript(&routes))
+                .transpose()?;
             for proof in &route_proofs {
                 proof.revalidate_dependency()?;
             }
-            let source = source_key(&native_session_id)?;
-            let selected = routes.remove(0);
-            exact_dependencies.extend(route_proofs.into_iter().skip(1));
+            let source = source_key_scoped(&native_session_id, self.source_anchor_scope)?;
+            let selected_index = duplicate_selection
+                .as_ref()
+                .map_or(0, |selection| selection.selected_index);
+            let logical_transcript_sha256 = duplicate_selection
+                .as_ref()
+                .map(|selection| selection.selected_signature);
+            let alias_route_sha256 = routes
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != selected_index)
+                .map(|(_, route)| cursor_route_sha256(route.path()))
+                .collect::<Vec<_>>();
+            if let Some(selection) = duplicate_selection.as_ref() {
+                for index in selection.divergent_indices.iter().copied() {
+                    let route = &routes[index];
+                    let route_sha256 = cursor_route_sha256(route.path());
+                    let proof = CursorDivergentAliasProof {
+                        schema_version: 1,
+                        native_session_id: native_session_id.clone(),
+                        selected_signature: selection.selected_signature,
+                        rejected_route_sha256: route_sha256,
+                    };
+                    rejected_leaves.push(
+                        JsonlFamilyRejectedLeaf::bind_observed(
+                            route.path().to_path_buf(),
+                            route.authority_relative_path().to_path_buf(),
+                            selection.route_observations[index].clone(),
+                            TypedKey::bytes(serde_json::to_vec(&proof)?).map_err(contract)?,
+                            0,
+                        )
+                        .with_logical_source_failure(
+                            divergent_copy_source_key(route_sha256, self.source_anchor_scope)?,
+                            "Cursor transcript copy diverges from another copy of the same session; ctx retained the deterministic copy with the most valid history and did not merge this alternative",
+                        ),
+                    );
+                }
+            }
+            let selected = routes.remove(selected_index);
+            exact_dependencies.extend(route_proofs.into_iter().enumerate().filter_map(
+                |(index, proof)| {
+                    (index != selected_index
+                        && duplicate_selection
+                            .as_ref()
+                            .is_none_or(|selection| !selection.divergent_indices.contains(&index)))
+                    .then_some(proof)
+                },
+            ));
             let binding = CursorBinding {
                 native_session_id,
                 logical_transcript_sha256,
                 selected_route_sha256: cursor_route_sha256(selected.path()),
-                alias_route_sha256: routes
-                    .iter()
-                    .map(|route| cursor_route_sha256(route.path()))
-                    .collect(),
+                alias_route_sha256,
             };
-            leaves.push(ProviderJsonlLeaf::observe(
+            let leaf = ProviderJsonlLeaf::observe(
                 source,
                 selected.path().to_path_buf(),
                 Arc::clone(&authority),
                 selected.authority_relative_path().to_path_buf(),
                 TypedKey::bytes(serde_json::to_vec(&binding)?).map_err(contract)?,
+            )?;
+            leaves.push(authenticate_selected_cursor_leaf(
+                leaf,
+                duplicate_selection
+                    .as_ref()
+                    .map(|selection| &selection.selected_observation),
             )?);
         }
-        Ok(
-            ProviderJsonlInventory::present(self.provider(), root, authority, leaves)?
-                .with_exact_dependencies(exact_dependencies),
-        )
+        Ok(ProviderJsonlInventory::present_with_rejected(
+            self.provider(),
+            root,
+            authority,
+            leaves,
+            rejected_leaves,
+        )?
+        .with_exact_dependencies(exact_dependencies))
     }
 
     fn projector_with_provider_checkpoint(
@@ -261,7 +324,12 @@ where
         mode: JsonlFamilyProjectionMode,
     ) -> Result<Box<dyn JsonlFamilyProjector<Runtime = ProviderJsonlRuntime<B>>>> {
         let binding = decode_binding(leaf)?;
-        validate_binding(leaf, &binding, source_file.as_ref())?;
+        validate_binding(
+            leaf,
+            &binding,
+            source_file.as_ref(),
+            self.source_anchor_scope,
+        )?;
         let session_id = session_id(leaf.source(), &binding.native_session_id)?;
         Ok(Box::new(CursorProjector {
             source: leaf.source().clone(),
@@ -273,8 +341,39 @@ where
                 }
                 _ => JsonlOrderedAppendOccurrenceState::default(),
             },
+            rejections: JsonlRecordRejections::new(
+                leaf.source().clone(),
+                CaptureProvider::Cursor,
+                leaf.source_path().display().to_string(),
+            ),
         }))
     }
+}
+
+fn authenticate_selected_cursor_leaf(
+    leaf: ProviderJsonlLeaf,
+    expected: Option<&JsonlFileObservation>,
+) -> Result<ProviderJsonlLeaf> {
+    if expected.is_some_and(|expected| leaf.observation() != expected) {
+        return Err(CaptureError::SourceChangedDuringCapture);
+    }
+    Ok(leaf)
+}
+
+fn divergent_copy_source_key(
+    route_sha256: [u8; 32],
+    scope: SourceAnchorScope,
+) -> Result<SourceKey> {
+    SourceKey::derive_provider_native_scoped(
+        CaptureProvider::Cursor.as_str(),
+        CURSOR_AGENT_TRANSCRIPT_SOURCE_FORMAT,
+        SOURCE_SCHEMA_VARIANT,
+        1,
+        DIVERGENT_COPY_ANCHOR_NAMESPACE,
+        TypedKey::bytes(route_sha256.to_vec()).map_err(contract)?,
+        scope,
+    )
+    .map_err(contract)
 }
 
 struct CursorProjector<B: ProviderRuntimeBinding> {
@@ -283,6 +382,19 @@ struct CursorProjector<B: ProviderRuntimeBinding> {
     session_id: StableEntityId,
     event_identities:
         JsonlOrderedAppendOccurrenceState<CursorLogicalEventIdentity, ProviderBaseEventLookup<B>>,
+    rejections: JsonlRecordRejections,
+}
+
+impl<B: ProviderRuntimeBinding> CursorProjector<B> {
+    fn reject(&mut self, record: JsonlRecordRef<'_>, kind: CursorRejectionKind, detail: String) {
+        let class = match kind {
+            CursorRejectionKind::MalformedJson => SourceBackedRecordRejectionClass::MalformedRecord,
+            CursorRejectionKind::UnsupportedShape => {
+                SourceBackedRecordRejectionClass::UnsupportedRecord
+            }
+        };
+        self.rejections.record(record, class, detail);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -333,16 +445,28 @@ where
     ) -> Result<()> {
         #[cfg(any(test, feature = "test-support"))]
         observe_cursor_projected_record(&self.source);
+        if record.oversized() {
+            self.reject(
+                record,
+                CursorRejectionKind::MalformedJson,
+                format!("Cursor record exceeds the {MAX_PROVIDER_JSONL_LINE_BYTES} byte limit"),
+            );
+            return Ok(());
+        }
         let evidence = record.evidence();
-        let Some(events) = project_cursor_jsonl_record(
+        let events = match project_cursor_jsonl_record_with_rejection(
             record.bytes(),
             evidence.physical_ordinal(),
             evidence.physical_ordinal(),
             evidence.byte_start(),
             evidence.byte_end_exclusive(),
-        )?
-        else {
-            return Ok(());
+        )? {
+            CursorJsonlRecordOutcome::Events(events) => events,
+            CursorJsonlRecordOutcome::Ignored => return Ok(()),
+            CursorJsonlRecordOutcome::Rejected(kind, detail) => {
+                self.reject(record, kind, detail);
+                return Ok(());
+            }
         };
         for event in events {
             let duplicate_occurrence = next_event_occurrence::<B>(
@@ -372,6 +496,14 @@ where
 
     fn provider_checkpoint(&self) -> Result<Option<TypedKey>> {
         Ok(None)
+    }
+
+    fn rejected_records(&self) -> u64 {
+        self.rejections.count()
+    }
+
+    fn take_record_rejections(&mut self) -> SourceBackedRecordRejectionDrafts {
+        self.rejections.take_drafts()
     }
 }
 
@@ -518,93 +650,6 @@ fn cursor_result_text(
     }
 }
 
-fn cursor_transcript_signature(transcript: &CursorTranscriptPath) -> Result<[u8; 32]> {
-    let source = transcript
-        .authority()
-        .open_file(transcript.authority_relative_path())?;
-    let mut digest = sha2::Sha256::new();
-    digest.update(b"ctx.cursor.logical-transcript.v1\0");
-    let mut event_count = 0_u64;
-    visit_cursor_events(&source, |event| {
-        #[cfg(any(test, feature = "test-support"))]
-        CURSOR_SIGNATURE_RECORDS.set(CURSOR_SIGNATURE_RECORDS.get().saturating_add(1));
-        digest.update(event_count.to_be_bytes());
-        digest.update(event.provider_event_hash);
-        event_count = event_count
-            .checked_add(1)
-            .ok_or(CaptureError::SystemInvariant(
-                "Cursor logical transcript event count overflowed",
-            ))?;
-        Ok(())
-    })?;
-    digest.update(event_count.to_be_bytes());
-    Ok(digest.finalize().into())
-}
-
-fn cursor_route_sha256(path: &Path) -> [u8; 32] {
-    let mut digest = sha2::Sha256::new();
-    digest.update(b"ctx.cursor.transcript-route.v1\0");
-    digest.update(path.as_os_str().as_encoded_bytes());
-    digest.finalize().into()
-}
-
-fn visit_cursor_events(
-    source: &OpenedProviderSourceFile,
-    mut visit: impl FnMut(CursorNativeEvent) -> Result<()>,
-) -> Result<()> {
-    let mut reader = BufReader::new(source.file().try_clone()?);
-    let mut line = Vec::new();
-    let mut physical_ordinal = 0_u64;
-    let mut offset = 0_u64;
-    let frozen_len = source.len();
-    while offset < frozen_len {
-        let record = read_bounded_record_unhashed(
-            &mut reader,
-            &mut line,
-            frozen_len.saturating_sub(offset),
-            JsonlRecordFraming::ordinary(),
-            || CaptureError::SourceChangedDuringCapture,
-        )?
-        .ok_or(CaptureError::SourceChangedDuringCapture)?;
-        offset = offset
-            .checked_add(record.byte_len)
-            .ok_or(CaptureError::SystemInvariant(
-                "Cursor signature offset overflowed",
-            ))?;
-        if line.last() == Some(&b'\r') {
-            line.pop();
-        }
-        if record.complete
-            && !record.oversized
-            && line.len() <= MAX_PROVIDER_JSONL_LINE_BYTES
-            && !line.is_empty()
-        {
-            if let Some(events) = project_cursor_jsonl_record(
-                &line,
-                physical_ordinal,
-                physical_ordinal,
-                0,
-                u64::try_from(line.len()).map_err(|_| {
-                    CaptureError::InvalidPayload("Cursor line length exceeds u64".to_owned())
-                })?,
-            )? {
-                for event in events {
-                    visit(event)?;
-                }
-            }
-        }
-        physical_ordinal = physical_ordinal
-            .checked_add(1)
-            .ok_or(CaptureError::SystemInvariant(
-                "Cursor physical ordinal overflowed",
-            ))?;
-        if !record.complete {
-            break;
-        }
-    }
-    source.revalidate_leaf()
-}
-
 struct CursorProjectedContent {
     annotation: ctx_history_core::CoreRecordAnnotation,
     normalized_body: Option<String>,
@@ -741,14 +786,23 @@ fn cursor_normalized_body(event: &CursorNativeEvent) -> Result<Option<String>> {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn source_key(native_session_id: &str) -> Result<SourceKey> {
-    SourceKey::derive_provider_native(
+    source_key_scoped(native_session_id, SourceAnchorScope::Unqualified)
+}
+
+pub(crate) fn source_key_scoped(
+    native_session_id: &str,
+    source_anchor_scope: SourceAnchorScope,
+) -> Result<SourceKey> {
+    SourceKey::derive_provider_native_scoped(
         CaptureProvider::Cursor.as_str(),
         CURSOR_AGENT_TRANSCRIPT_SOURCE_FORMAT,
         SOURCE_SCHEMA_VARIANT,
         1,
         SOURCE_ANCHOR_NAMESPACE,
         TypedKey::utf8(native_session_id).map_err(contract)?,
+        source_anchor_scope,
     )
     .map_err(contract)
 }

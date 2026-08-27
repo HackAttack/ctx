@@ -15,7 +15,8 @@ pub use locate::run_locate;
 use search::mcp_search;
 pub use search::{
     mcp_search_with_compact, normalize_mcp_search_request, run_search,
-    validate_explicit_semantic_scope, McpSearchError, SourceSearchRequest,
+    validate_explicit_semantic_scope, McpSearchError, McpSearchExecutionFailure,
+    SourceSearchRequest,
 };
 pub use shared::generation_query_authority_error_json;
 pub use show::{
@@ -28,7 +29,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use ctx_history_core::CaptureProvider;
 #[cfg(test)]
-use ctx_history_index::{CoreEventRecord, EventRecord, EventSearchCandidate};
+use ctx_history_index::{CoreEventRecord, EventRecord};
 
 #[cfg(test)]
 use crate::{config, semantic::SemanticNotReady, RefreshMode};
@@ -42,9 +43,9 @@ type SearchBackendArg = ctx_history_read_application::SearchBackend;
 use render::{enforce_json_output_limit, pretty_json_stdout_bytes, stdout_body_bytes};
 #[cfg(test)]
 use search::{
-    collect_search_hits_with_backend, collect_search_hits_with_backend_using, index_search_filters,
-    refresh_for_search, refresh_for_search_with, search_context_observation,
-    search_existing_generation, shape_search_result_window, source_backed_refresh_mode,
+    collect_search_hits_with_backend, collect_search_hits_with_backend_using,
+    collect_search_hits_with_semantic_availability, refresh_for_search, refresh_for_search_with,
+    search_context_observation, search_existing_generation, source_backed_refresh_mode,
 };
 #[cfg(test)]
 use shared::{externalize_query_error, index_root, open_index};

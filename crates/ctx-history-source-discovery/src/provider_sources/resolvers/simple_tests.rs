@@ -5,7 +5,7 @@ use super::super::super::{
 use std::fs;
 
 use super::*;
-use crate::{provider_source_specs, test_support_paths};
+use crate::test_support_paths;
 
 fn tempdir() -> tempfile::TempDir {
     test_support_paths::tempdir()
@@ -20,18 +20,11 @@ fn context(temp: &tempfile::TempDir, platform: DiscoveryPlatform) -> DiscoveryCo
     DiscoveryContext::new(home, cwd, platform, DiscoveryPlatformDirs::default())
 }
 
-fn spec(provider: CaptureProvider) -> &'static ProviderSourceSpec {
-    provider_source_specs()
-        .iter()
-        .find(|spec| spec.provider == provider)
-        .unwrap()
-}
-
 fn resolve_provider(context: &DiscoveryContext, provider: CaptureProvider) -> DiscoveryReport {
-    resolve(
+    crate::provider_sources::discover_provider_sources_for_provider_with_context(
         &crate::provider_sources::TEST_PROVIDER_PROBES,
         context,
-        spec(provider),
+        provider,
     )
 }
 
@@ -124,12 +117,14 @@ fn configured_codex_roots_add_to_scalar_selection_and_expand_independently() {
             provider: CaptureProvider::Codex,
             path: personal.clone(),
             group: Some("personal".to_owned()),
+            kind: None,
         },
         ctx_history_capture_model::ProviderRootDefinition {
             id: "work".to_owned(),
             provider: CaptureProvider::Codex,
             path: work.clone(),
             group: Some("work".to_owned()),
+            kind: None,
         },
     ];
     let report = resolve_provider(
@@ -175,12 +170,14 @@ fn configured_claude_roots_add_to_automatic_discovery() {
             provider: CaptureProvider::Claude,
             path: claude_personal.clone(),
             group: Some("personal".to_owned()),
+            kind: None,
         },
         ctx_history_capture_model::ProviderRootDefinition {
             id: "work".to_owned(),
             provider: CaptureProvider::Claude,
             path: claude_work.clone(),
             group: Some("work".to_owned()),
+            kind: None,
         },
     ];
     let context = base.clone().with_configured_provider_roots(configured);
@@ -204,6 +201,34 @@ fn configured_claude_roots_add_to_automatic_discovery() {
 }
 
 #[test]
+fn distinct_configured_root_ids_cannot_share_one_physical_root() {
+    let temp = tempdir();
+    let base = context(&temp, DiscoveryPlatform::Linux);
+    let shared = temp.path().join("claude-shared");
+    fs::create_dir_all(shared.join("projects")).unwrap();
+    let definition = |id: &str| ctx_history_capture_model::ProviderRootDefinition {
+        id: id.to_owned(),
+        provider: CaptureProvider::Claude,
+        path: shared.clone(),
+        group: None,
+        kind: None,
+    };
+    let report = resolve_provider(
+        &base
+            .with_automatic_provider_discovery(false)
+            .with_configured_provider_roots(vec![definition("personal"), definition("work")]),
+        CaptureProvider::Claude,
+    );
+
+    assert!(report.sources.is_empty());
+    assert_eq!(report.issues.len(), 1);
+    assert_eq!(
+        report.issues[0].kind,
+        DiscoveryIssueKind::ConfiguredRootConflict
+    );
+}
+
+#[test]
 fn global_automatic_disable_keeps_only_named_provider_roots() {
     let temp = tempdir();
     let base = context(&temp, DiscoveryPlatform::Linux);
@@ -221,6 +246,7 @@ fn global_automatic_disable_keeps_only_named_provider_roots() {
             provider: CaptureProvider::Claude,
             path: named_claude.clone(),
             group: Some("personal".to_owned()),
+            kind: None,
         }]);
 
     assert_eq!(
@@ -251,6 +277,7 @@ fn naming_the_automatic_home_deduplicates_the_physical_source() {
             provider: CaptureProvider::Claude,
             path: home.clone(),
             group: Some("personal".to_owned()),
+            kind: None,
         },
     ]);
 
@@ -280,6 +307,7 @@ fn naming_the_automatic_home_through_a_symlink_deduplicates_the_physical_source(
             provider: CaptureProvider::Claude,
             path: alias,
             group: Some("personal".to_owned()),
+            kind: None,
         },
     ]);
 
@@ -294,7 +322,7 @@ fn naming_the_automatic_home_through_a_symlink_deduplicates_the_physical_source(
 
 #[cfg(unix)]
 #[test]
-fn configured_roots_retain_unknown_physical_routes() {
+fn configured_roots_reject_present_roots_of_the_wrong_kind() {
     let temp = tempdir();
     let base = context(&temp, DiscoveryPlatform::Linux);
     let unavailable_claude = temp.path().join("claude-unavailable");
@@ -307,12 +335,14 @@ fn configured_roots_retain_unknown_physical_routes() {
             provider: CaptureProvider::Claude,
             path: unavailable_claude.clone(),
             group: None,
+            kind: None,
         },
         ctx_history_capture_model::ProviderRootDefinition {
             id: "codex-unavailable".to_owned(),
             provider: CaptureProvider::Codex,
             path: unavailable_codex.clone(),
             group: None,
+            kind: None,
         },
     ];
     let context = base
@@ -320,28 +350,12 @@ fn configured_roots_retain_unknown_physical_routes() {
         .with_configured_provider_roots(configured);
 
     let claude = resolve_provider(&context, CaptureProvider::Claude);
-    assert_eq!(paths(&claude), vec![unavailable_claude.join("projects")]);
-    assert_eq!(claude.sources[0].status, ProviderSourceStatus::Unknown);
+    assert!(claude.sources.is_empty());
     assert_eq!(claude.issues.len(), 1);
 
     let codex = resolve_provider(&context, CaptureProvider::Codex);
-    assert_eq!(
-        paths(&codex),
-        vec![
-            unavailable_codex.join("sessions"),
-            unavailable_codex.join("archived_sessions"),
-            unavailable_codex.join("history.jsonl"),
-        ]
-    );
-    assert!(codex
-        .sources
-        .iter()
-        .all(|source| source.status == ProviderSourceStatus::Unknown));
-    assert_eq!(
-        codex.issues.len(),
-        1,
-        "equivalent configured-home selector failures are deduplicated"
-    );
+    assert!(codex.sources.is_empty());
+    assert_eq!(codex.issues.len(), 1);
 }
 
 #[test]
@@ -944,7 +958,7 @@ fn forgecode_official_root_preserves_raw_cwd_semantics_and_exists_winner() {
 }
 
 #[test]
-fn simple_lane_has_sixteen_reviewed_winner_only_policies() {
+fn simple_lane_has_seventeen_reviewed_winner_only_policies() {
     let temp = tempdir();
     let context = context(&temp, DiscoveryPlatform::Linux);
     let providers = [
@@ -964,8 +978,9 @@ fn simple_lane_has_sixteen_reviewed_winner_only_policies() {
         CaptureProvider::Junie,
         CaptureProvider::FactoryAiDroid,
         CaptureProvider::ForgeCode,
+        CaptureProvider::Fx,
     ];
-    assert_eq!(providers.len(), 16);
+    assert_eq!(providers.len(), 17);
     for provider in providers {
         let report = resolve_provider(&context, provider);
         let expected = if provider == CaptureProvider::Codex {

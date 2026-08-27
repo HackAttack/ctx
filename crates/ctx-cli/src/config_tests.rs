@@ -58,6 +58,12 @@ impl Drop for EnvGuard {
     }
 }
 
+fn load_config_error(contents: impl AsRef<[u8]>) -> String {
+    let data_root = tempfile::tempdir().unwrap();
+    fs::write(data_root.path().join(CONFIG_FILE), contents).unwrap();
+    format!("{:#}", AppConfig::load(data_root.path()).unwrap_err())
+}
+
 #[test]
 fn parses_day_one_config_values() {
     let values = parse_toml_subset(
@@ -289,14 +295,7 @@ fn indexing_mode_accepts_canonical_and_automatic_alias() {
 
 #[test]
 fn indexing_mode_rejects_unknown_values() {
-    let temp = tempfile::tempdir().unwrap();
-    fs::write(
-        temp.path().join(CONFIG_FILE),
-        "[indexing]\nmode = \"on-demand\"\n",
-    )
-    .unwrap();
-
-    let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
+    let error = load_config_error("[indexing]\nmode = \"on-demand\"\n");
 
     assert!(error.contains("indexing.mode"), "{error}");
     assert!(error.contains("\"auto\""), "{error}");
@@ -328,13 +327,7 @@ fn daemon_mode_has_documented_config_and_environment_contract() {
 
 #[test]
 fn daemon_mode_rejects_unknown_config_and_environment_values() {
-    let temp = tempfile::tempdir().unwrap();
-    fs::write(
-        temp.path().join(CONFIG_FILE),
-        "[daemon]\nmode = \"source-only-ish\"\n",
-    )
-    .unwrap();
-    let config_error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
+    let config_error = load_config_error("[daemon]\nmode = \"source-only-ish\"\n");
     assert!(config_error.contains("daemon.mode"), "{config_error}");
     assert!(
         config_error.contains("source-refresh-only"),
@@ -758,33 +751,49 @@ fn default_config_is_not_written_for_implicit_defaults() {
 }
 
 #[test]
-fn rejects_invalid_config_booleans() {
-    let temp = tempfile::tempdir().unwrap();
-    fs::write(
-        temp.path().join(CONFIG_FILE),
-        "[analytics]\nenabled = flase\n",
-    )
-    .unwrap();
-
-    let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
-
-    assert!(error.contains("analytics.enabled"), "{error}");
-    assert!(error.contains("boolean"), "{error}");
-}
-
-#[test]
-fn rejects_invalid_search_semantic_values() {
-    let temp = tempfile::tempdir().unwrap();
-    fs::write(
-        temp.path().join(CONFIG_FILE),
-        "[search]\nsemantic = maybe\n",
-    )
-    .unwrap();
-
-    let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
-
-    assert!(error.contains("search.semantic"), "{error}");
-    assert!(error.contains("boolean"), "{error}");
+fn invalid_scalar_values_and_unknown_keys_report_the_owned_field() {
+    for (name, contents, expected) in [
+        (
+            "analytics boolean",
+            "[analytics]\nenabled = flase\n",
+            ["analytics.enabled", "boolean"],
+        ),
+        (
+            "semantic boolean",
+            "[search]\nsemantic = maybe\n",
+            ["search.semantic", "boolean"],
+        ),
+        (
+            "upgrade mode",
+            "[upgrade]\nauto = \"offf\"\n",
+            ["upgrade.auto", "\"apply\" or \"off\""],
+        ),
+        (
+            "unquoted upgrade mode",
+            "[upgrade]\nauto = offf\n",
+            ["upgrade.auto", "quoted string"],
+        ),
+        (
+            "upgrade interval",
+            "[upgrade]\ninterval_hours = nope\n",
+            ["upgrade.interval_hours", "unsigned integer"],
+        ),
+        (
+            "analytics key",
+            "[analytics]\nenabld = false\n",
+            ["unknown config key", "analytics.enabld"],
+        ),
+        (
+            "search key",
+            "[search]\nsemantics = true\n",
+            ["unknown config key", "search.semantics"],
+        ),
+    ] {
+        let error = load_config_error(contents);
+        for fragment in expected {
+            assert!(error.contains(fragment), "{name}: {error}");
+        }
+    }
 }
 
 #[test]
@@ -800,11 +809,13 @@ fn env_overrides_search_semantic_config() {
     env_guard.set("CTX_SEARCH_SEMANTIC", "true");
     let config = AppConfig::load(temp.path()).unwrap();
     assert_eq!(config.search.semantic, Some(true));
+    assert_eq!(config.semantic_search_source(), "environment");
 
     fs::write(temp.path().join(CONFIG_FILE), "[search]\nsemantic = true\n").unwrap();
     env_guard.set("CTX_SEARCH_SEMANTIC", "false");
     let config = AppConfig::load(temp.path()).unwrap();
     assert_eq!(config.search.semantic, Some(false));
+    assert_eq!(config.semantic_search_source(), "environment");
 }
 
 #[test]
@@ -837,82 +848,11 @@ fn analytics_enabled_false_is_an_env_opt_out() {
 }
 
 #[test]
-fn rejects_invalid_upgrade_auto_values() {
-    let temp = tempfile::tempdir().unwrap();
-    fs::write(
-        temp.path().join(CONFIG_FILE),
-        "[upgrade]\nauto = \"offf\"\n",
-    )
-    .unwrap();
-
-    let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
-
-    assert!(error.contains("upgrade.auto"), "{error}");
-    assert!(error.contains("\"apply\" or \"off\""), "{error}");
-}
-
-#[test]
-fn rejects_unquoted_upgrade_auto_values() {
-    let temp = tempfile::tempdir().unwrap();
-    fs::write(temp.path().join(CONFIG_FILE), "[upgrade]\nauto = offf\n").unwrap();
-
-    let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
-
-    assert!(error.contains("upgrade.auto"), "{error}");
-    assert!(error.contains("quoted string"), "{error}");
-}
-
-#[test]
-fn rejects_invalid_config_numbers() {
-    let temp = tempfile::tempdir().unwrap();
-    fs::write(
-        temp.path().join(CONFIG_FILE),
-        "[upgrade]\ninterval_hours = nope\n",
-    )
-    .unwrap();
-
-    let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
-
-    assert!(error.contains("upgrade.interval_hours"), "{error}");
-    assert!(error.contains("unsigned integer"), "{error}");
-}
-
-#[test]
 fn rejects_malformed_config_lines() {
     let error = parse_toml_subset("[upgrade]\nthis is not valid\n").unwrap_err();
     let error = error.to_string();
 
     assert!(error.contains("invalid config line 2"), "{error}");
-}
-
-#[test]
-fn rejects_unknown_config_keys() {
-    let temp = tempfile::tempdir().unwrap();
-    fs::write(
-        temp.path().join(CONFIG_FILE),
-        "[analytics]\nenabld = false\n",
-    )
-    .unwrap();
-
-    let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
-
-    assert!(error.contains("unknown config key"), "{error}");
-    assert!(error.contains("analytics.enabld"), "{error}");
-}
-
-#[test]
-fn rejects_unknown_search_config_keys() {
-    let temp = tempfile::tempdir().unwrap();
-    fs::write(
-        temp.path().join(CONFIG_FILE),
-        "[search]\nsemantics = true\n",
-    )
-    .unwrap();
-
-    let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
-
-    assert!(error.contains("unknown config key"), "{error}");
-    assert!(error.contains("search.semantics"), "{error}");
 }
 
 #[test]
@@ -969,20 +909,107 @@ group = "work"
 }
 
 #[test]
+fn hand_edited_provider_roots_accept_the_cli_provider_vocabulary() {
+    use ctx_history_capture::{
+        configured_root_capabilities, ConfiguredRootPathKind, ProviderRootKind,
+    };
+
+    for capability in configured_root_capabilities()
+        .iter()
+        .filter(|capability| capability.state.is_enabled())
+    {
+        let provider_parent = tempfile::tempdir().unwrap();
+        let provider_root = provider_parent.path().join("history");
+        match capability
+            .state
+            .expected_path_kind()
+            .expect("enabled configured-root capability must declare its path kind")
+        {
+            ConfiguredRootPathKind::Directory => fs::create_dir(&provider_root).unwrap(),
+            ConfiguredRootPathKind::File => fs::write(&provider_root, b"history").unwrap(),
+        }
+        let spec = ctx_history_cli::provider_cli_spec(capability.provider)
+            .expect("configured-root provider must have a public CLI vocabulary entry");
+        let names = std::iter::once(spec.cli_name)
+            .chain(std::iter::once(spec.provider.as_str()))
+            .chain(spec.aliases.iter().copied())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        for name in names {
+            let data_root = tempfile::tempdir().unwrap();
+            let kind = (capability.provider == CaptureProvider::OpenHands)
+                .then_some(ProviderRootKind::OpenHandsCurrentConversations)
+                .map(|kind| format!("kind = {:?}\n", kind.as_str()))
+                .unwrap_or_default();
+            fs::write(
+                data_root.path().join(CONFIG_FILE),
+                format!(
+                    "[sources.roots.work]\nprovider = {name:?}\npath = {:?}\n{kind}",
+                    provider_root.display().to_string(),
+                ),
+            )
+            .unwrap();
+
+            let config = AppConfig::load(data_root.path()).unwrap_or_else(|error| {
+                panic!(
+                    "configured-root provider name {name:?} did not match the CLI vocabulary: {error:#}"
+                )
+            });
+            assert_eq!(
+                config.provider_roots["work"].provider, capability.provider,
+                "configured-root provider name {name:?} resolved differently from the CLI"
+            );
+        }
+    }
+}
+
+#[test]
+fn hand_edited_provider_roots_reject_invalid_provider_names() {
+    let provider_root = tempfile::tempdir().unwrap();
+    for name in ["grokbuild", "Grok-Build", "grok build", "not-a-provider"] {
+        let data_root = tempfile::tempdir().unwrap();
+        fs::write(
+            data_root.path().join(CONFIG_FILE),
+            format!(
+                "[sources.roots.work]\nprovider = {name:?}\npath = {:?}\n",
+                provider_root.path().display().to_string(),
+            ),
+        )
+        .unwrap();
+
+        let error = format!("{:#}", AppConfig::load(data_root.path()).unwrap_err());
+        assert!(
+            error.contains("sources.roots.work.provider at line 2 is unknown"),
+            "{name:?} produced an unexpected error: {error}"
+        );
+    }
+}
+
+#[test]
 fn rejects_invalid_provider_root_config_as_one_atomic_config() {
     let provider_home = tempfile::tempdir().unwrap();
     let provider_path = provider_home.path().display().to_string();
+    let oversized_path = provider_home
+        .path()
+        .join("x".repeat(ctx_history_capture::MAX_PROVIDER_ROOT_ENCODED_PATH_BYTES + 1));
     let cases = [
         (
             format!(
-                "[sources.roots.work]\nprovider = \"cursor\"\npath = {:?}\n",
+                "[sources.roots.work]\nprovider = \"nanoclaw\"\npath = {:?}\n",
                 provider_path
             ),
-            "currently support only claude and codex",
+            "configured history roots are not enabled for nanoclaw",
         ),
         (
             "[sources.roots.work]\nprovider = \"claude\"\npath = \"relative\"\n".to_owned(),
             "normalized absolute UTF-8 path",
+        ),
+        (
+            format!(
+                "[sources.roots.work]\nprovider = \"claude\"\npath = {:?}\n",
+                oversized_path.display().to_string()
+            ),
+            "encoded path limit",
         ),
         (
             format!(
@@ -1022,7 +1049,10 @@ fn rejects_invalid_provider_root_config_as_one_atomic_config() {
     )
     .unwrap();
     let error = format!("{:#}", AppConfig::load(temp.path()).unwrap_err());
-    assert!(error.contains("select the same claude home"), "{error}");
+    assert!(
+        error.contains("select the same claude history root"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -1109,7 +1139,59 @@ fn hand_edited_provider_roots_reject_distinct_symlinks_to_one_physical_home() {
     .unwrap();
 
     let error = format!("{:#}", AppConfig::load(data_root.path()).unwrap_err());
-    assert!(error.contains("select the same claude home"), "{error}");
+    assert!(
+        error.contains("select the same claude history root"),
+        "{error}"
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn hand_edited_file_roots_reject_hard_links_to_one_physical_database() {
+    let data_root = tempfile::tempdir().unwrap();
+    let provider_parent = tempfile::tempdir().unwrap();
+    let database = provider_parent.path().join("opencode.db");
+    let alias = provider_parent.path().join("opencode-alias.db");
+    fs::write(&database, b"provider database").unwrap();
+    fs::hard_link(&database, &alias).unwrap();
+    fs::write(
+        data_root.path().join(CONFIG_FILE),
+        format!(
+            "[sources.roots.first]\nprovider = \"opencode\"\npath = {:?}\n\n[sources.roots.second]\nprovider = \"opencode\"\npath = {:?}\n",
+            database.display().to_string(),
+            alias.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    let error = format!("{:#}", AppConfig::load(data_root.path()).unwrap_err());
+    assert!(
+        error.contains("select the same opencode history root"),
+        "{error}"
+    );
+    assert!(error.contains("`first` and `second`"), "{error}");
+}
+
+#[test]
+fn hand_edited_distinct_directory_roots_remain_independent() {
+    let data_root = tempfile::tempdir().unwrap();
+    let provider_parent = tempfile::tempdir().unwrap();
+    let first = provider_parent.path().join("claude-first");
+    let second = provider_parent.path().join("claude-second");
+    fs::create_dir(&first).unwrap();
+    fs::create_dir(&second).unwrap();
+    fs::write(
+        data_root.path().join(CONFIG_FILE),
+        format!(
+            "[sources.roots.first]\nprovider = \"claude\"\npath = {:?}\n\n[sources.roots.second]\nprovider = \"claude\"\npath = {:?}\n",
+            first.display().to_string(),
+            second.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    let config = AppConfig::load(data_root.path()).unwrap();
+    assert_eq!(config.provider_roots.len(), 2);
 }
 
 #[test]
@@ -1147,21 +1229,21 @@ fn provider_root_cli_mutations_are_durable_and_preserve_other_config() {
     )
     .unwrap();
 
-    let added = add_provider_root(
+    let added = add_claude_root(
         data_root.path(),
         "personal",
-        CaptureProvider::Claude,
         &provider_home,
         Some("personal"),
+        false,
     )
     .unwrap();
     assert!(added.changed);
-    let unchanged = add_provider_root(
+    let unchanged = add_claude_root(
         data_root.path(),
         "personal",
-        CaptureProvider::Claude,
         &provider_home,
         Some("personal"),
+        false,
     )
     .unwrap();
     assert!(!unchanged.changed);
@@ -1176,6 +1258,51 @@ fn provider_root_cli_mutations_are_durable_and_preserve_other_config() {
     assert!(!loaded.analytics.enabled);
     assert!(!loaded.automatic_source_discovery_enabled());
     assert!(loaded.provider_roots.is_empty());
+}
+
+#[test]
+fn persisted_provider_root_kind_is_openhands_only_and_exact() {
+    let data_root = tempfile::tempdir().unwrap();
+    let path = data_root.path().join("openhands-root");
+    let missing_kind = format!(
+        "[sources.roots.work]\nprovider = \"openhands\"\npath = {:?}\n",
+        path.display().to_string()
+    );
+    fs::write(data_root.path().join(CONFIG_FILE), missing_kind).unwrap();
+    let error = format!("{:#}", AppConfig::load(data_root.path()).unwrap_err());
+    assert!(error.contains("require --kind"), "{error}");
+
+    let old_provider_kind = format!(
+        "[sources.roots.work]\nprovider = \"claude\"\npath = {:?}\nkind = \"legacy-persistence\"\n",
+        path.display().to_string()
+    );
+    fs::write(data_root.path().join(CONFIG_FILE), old_provider_kind).unwrap();
+    let error = format!("{:#}", AppConfig::load(data_root.path()).unwrap_err());
+    assert!(error.contains("only supported for openhands"), "{error}");
+
+    let invalid_spelling = format!(
+        "[sources.roots.work]\nprovider = \"openhands\"\npath = {:?}\nkind = \"Current-Conversations\"\n",
+        path.display().to_string()
+    );
+    fs::write(data_root.path().join(CONFIG_FILE), invalid_spelling).unwrap();
+    let error = format!("{:#}", AppConfig::load(data_root.path()).unwrap_err());
+    assert!(error.contains("must be current-conversations"), "{error}");
+}
+
+#[test]
+fn provider_root_cli_mutation_validates_the_capability_path_kind() {
+    let data_root = tempfile::tempdir().unwrap();
+    let provider_parent = tempfile::tempdir().unwrap();
+    let provider_file = provider_parent.path().join("claude-history-file");
+    fs::write(&provider_file, b"not a provider directory").unwrap();
+
+    let error = format!(
+        "{:#}",
+        add_claude_root(data_root.path(), "personal", &provider_file, None, false).unwrap_err()
+    );
+
+    assert!(error.contains("existing non-symlink directory"), "{error}");
+    assert!(!data_root.path().join(CONFIG_FILE).exists());
 }
 
 #[test]
@@ -1197,14 +1324,7 @@ fn provider_root_cli_mutation_rejects_data_root_overlap_before_writing() {
 
         let error = format!(
             "{:#}",
-            add_provider_root(
-                &data_root,
-                "work",
-                CaptureProvider::Claude,
-                &provider_root,
-                Some("work"),
-            )
-            .unwrap_err()
+            add_claude_root(&data_root, "work", &provider_root, Some("work"), false).unwrap_err()
         );
         assert!(
             error.contains("must not overlap the ctx data root"),
@@ -1228,12 +1348,12 @@ fn provider_root_mutation_waits_for_the_shared_config_transaction_lock() {
     let provider_home_path = provider_home.clone();
     let worker = std::thread::spawn(move || {
         started_tx.send(()).unwrap();
-        let result = add_provider_root(
+        let result = add_claude_root(
             &data_root_path,
             "personal",
-            CaptureProvider::Claude,
             &provider_home_path,
             Some("personal"),
+            false,
         );
         finished_tx.send(result).unwrap();
     });

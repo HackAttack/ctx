@@ -1,9 +1,9 @@
-use std::{cmp::Ordering, collections::BTreeMap};
+use std::{cmp::Ordering, collections::HashMap};
 
 use super::*;
 
 struct SourceFusionEvidence {
-    event: EventRecord,
+    event: RankedEventRef,
     lexical_rank: Option<usize>,
     semantic_rank: Option<usize>,
 }
@@ -13,10 +13,10 @@ pub(super) fn fuse_source_candidates(
     semantic: Vec<EventSearchCandidate>,
     semantic_weight: f32,
 ) -> Vec<EventSearchCandidate> {
-    let mut evidence = BTreeMap::<Uuid, SourceFusionEvidence>::new();
+    let mut evidence = HashMap::<[u8; 32], SourceFusionEvidence>::new();
     for (rank, candidate) in lexical.into_iter().enumerate() {
         evidence.insert(
-            candidate.event.event_id.as_uuid(),
+            candidate.event.event_identity_digest,
             SourceFusionEvidence {
                 event: candidate.event,
                 lexical_rank: Some(rank.saturating_add(1)),
@@ -27,7 +27,7 @@ pub(super) fn fuse_source_candidates(
     for (rank, candidate) in semantic.into_iter().enumerate() {
         let semantic_rank = rank.saturating_add(1);
         evidence
-            .entry(candidate.event.event_id.as_uuid())
+            .entry(candidate.event.event_identity_digest)
             .and_modify(|entry| entry.semantic_rank = Some(semantic_rank))
             .or_insert(SourceFusionEvidence {
                 event: candidate.event,
@@ -45,6 +45,7 @@ pub(super) fn fuse_source_candidates(
             ),
             event: evidence.event,
         })
+        .filter(|candidate| candidate.score > 0.0)
         .collect::<Vec<_>>();
     candidates.sort_by(search_candidate_order);
     candidates
@@ -66,9 +67,8 @@ pub(super) fn search_candidate_order(
         .then_with(|| right.event.event_sequence.cmp(&left.event.event_sequence))
         .then_with(|| {
             left.event
-                .event_id
-                .as_uuid()
-                .cmp(&right.event.event_id.as_uuid())
+                .event_identity_digest
+                .cmp(&right.event.event_identity_digest)
         })
 }
 

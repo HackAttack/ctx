@@ -9,6 +9,7 @@ use crate::tool_backend::{
 };
 
 mod arguments;
+mod companion;
 mod input;
 mod query_events;
 mod response;
@@ -22,6 +23,7 @@ use arguments::{
     optional_usize, validate_argument_keys, validate_search_filter_arguments,
     SourceIdentityFilterArgs,
 };
+pub use companion::validated_companion_tool_request;
 pub use input::{read_mcp_input_line, McpInputLine};
 use query_events::query_events_operation;
 pub use response::error_response;
@@ -256,12 +258,6 @@ pub struct McpUsage {
     pub facts: ToolUsageFacts,
 }
 
-#[derive(Debug)]
-pub(super) struct ParsedToolOperation {
-    pub(super) operation: ToolOperation,
-    pub(super) usage: ToolUsageFacts,
-}
-
 pub(crate) struct McpOperationParseError {
     pub(crate) error: ToolBackendError,
     pub(crate) usage: ToolUsageFacts,
@@ -462,7 +458,11 @@ fn handle_tools_call_with_backend<B: ToolBackend>(
     };
     let mut usage = McpUsage {
         operation,
-        facts: ToolUsageFacts::default(),
+        facts: if operation == McpToolKind::Search {
+            ToolUsageFacts::search_preparation()
+        } else {
+            ToolUsageFacts::default()
+        },
     };
     let arguments = params
         .get("arguments")
@@ -482,12 +482,11 @@ fn handle_tools_call_with_backend<B: ToolBackend>(
     if let Err(error) = validate_argument_keys(&arguments, allowed_arguments) {
         return Ok(parse_failure_result(error.into(), usage));
     }
-    let parsed = match parse_operation(operation, &arguments, backend) {
-        Ok(parsed) => parsed,
+    let operation = match parse_operation(operation, &arguments, backend) {
+        Ok(operation) => operation,
         Err(failure) => return Ok(parse_failure_result(failure, usage)),
     };
-    usage.facts.merge(parsed.usage);
-    match backend.execute(parsed.operation) {
+    match backend.execute(operation) {
         Ok(ToolOutcome {
             structured,
             compact,
@@ -501,9 +500,9 @@ fn handle_tools_call_with_backend<B: ToolBackend>(
             })
         }
         Err(failure) => {
-            usage.facts.merge(failure.usage);
+            usage.facts.merge(*failure.usage);
             Ok(McpHandled {
-                value: tool_error_result(failure.error),
+                value: tool_error_result(*failure.error),
                 usage: Some(usage),
             })
         }
@@ -526,7 +525,7 @@ fn parse_operation<B: ToolBackend>(
     operation: McpToolKind,
     arguments: &Value,
     backend: &B,
-) -> Result<ParsedToolOperation, McpOperationParseError> {
+) -> Result<ToolOperation, McpOperationParseError> {
     if operation.is_companion_owned() {
         return Err(invalid_tool_request(format!("unknown tool {}", operation.tool_name())).into());
     }
@@ -543,8 +542,7 @@ fn parse_operation<B: ToolBackend>(
         ))),
     }
     .map_err(McpOperationParseError::from)?;
-    let usage = operation.invocation_usage();
-    Ok(ParsedToolOperation { operation, usage })
+    Ok(operation)
 }
 
 fn search_request<B: ToolBackend>(
@@ -801,6 +799,7 @@ mod request_id_tests {
     };
     use crate::tool_backend::{
         OpaqueMcpProxyError, ToolBackend, ToolExecutionError, ToolOperation, ToolOutcome,
+        ToolSearchBackend,
     };
 
     struct UnusedBackend;
@@ -896,18 +895,26 @@ mod request_id_tests {
     }
 
     #[test]
-    fn search_root_and_group_arrays_are_typed_and_forwarded() {
-        let request = search_request(
-            &json!({
-                "query": "fixture",
-                "source_roots": ["personal", "archive"],
-                "source_groups": ["work"]
-            }),
-            &UnusedBackend,
-        )
-        .unwrap();
-        assert_eq!(request.source_roots, ["personal", "archive"]);
-        assert_eq!(request.source_groups, ["work"]);
+    fn search_root_and_group_arrays_are_typed_and_forwarded_across_backends() {
+        for (backend, expected_backend) in [
+            ("lexical", ToolSearchBackend::Lexical),
+            ("semantic", ToolSearchBackend::Semantic),
+            ("hybrid", ToolSearchBackend::Hybrid),
+        ] {
+            let request = search_request(
+                &json!({
+                    "query": "fixture",
+                    "source_roots": ["personal", "archive"],
+                    "source_groups": ["work"],
+                    "backend": backend,
+                }),
+                &UnusedBackend,
+            )
+            .unwrap();
+            assert_eq!(request.source_roots, ["personal", "archive"]);
+            assert_eq!(request.source_groups, ["work"]);
+            assert_eq!(request.backend, Some(expected_backend));
+        }
 
         let error = search_request(
             &json!({"query": "fixture", "source_roots": ["personal", 7]}),

@@ -1,3 +1,4 @@
+use super::super::read_model::SourceBackedRefreshFailureType;
 use super::*;
 
 impl CoreRefreshEngine {
@@ -542,7 +543,7 @@ fn recover_terminal_attempt(
 fn recover_failure_outcome(
     job: &Value,
     scope: &SourceBackedRefreshScope,
-    legacy_failure_type: Option<&'static str>,
+    legacy_failure_type: Option<SourceBackedRefreshFailureType>,
 ) -> Result<Option<SourceBackedRefreshFailureOutcome>> {
     let Some(value) = job.get("structured_outcome") else {
         return Ok(
@@ -585,14 +586,9 @@ fn recover_failure_outcome(
     }
     let retry_advice = match fields.get("retry_advice") {
         None | Some(Value::Null) => None,
-        Some(Value::String(value)) => Some(
-            value
-                .parse::<RefreshRetryAdvice>()
-                .map_err(|_| {
-                    anyhow!("durable terminal source refresh outcome has invalid retry advice")
-                })?
-                .as_str(),
-        ),
+        Some(Value::String(value)) => Some(value.parse::<RefreshRetryAdvice>().map_err(|_| {
+            anyhow!("durable terminal source refresh outcome has invalid retry advice")
+        })?),
         Some(_) => bail!("durable terminal source refresh outcome has invalid retry advice"),
     };
     let retryable_routes = fields
@@ -603,6 +599,18 @@ fn recover_failure_outcome(
         .get("blocked_routes")
         .map(|_| recover_outcome_routes(fields, "blocked_routes"))
         .transpose()?;
+    if code == RefreshOutcomeCode::SourceUnclaimed
+        && (class != RefreshOutcomeClass::Coverage
+            || blocked_routes.as_ref().is_none_or(BTreeSet::is_empty)
+            || retry_advice
+                != Some(if retryable {
+                    RefreshRetryAdvice::RetryRetryableRoutesAndInspectBlocked
+                } else {
+                    RefreshRetryAdvice::InspectSources
+                }))
+    {
+        bail!("durable terminal source refresh source-unclaimed outcome is inconsistent");
+    }
     match (retryable_routes, blocked_routes) {
         (Some(retryable_routes), Some(blocked_routes)) => {
             if !retryable_routes.is_disjoint(&blocked_routes)
@@ -615,8 +623,8 @@ fn recover_failure_outcome(
             }
             Ok(Some(
                 SourceBackedRefreshFailureOutcome::with_route_dispositions(
-                    code.as_str(),
-                    class.as_str(),
+                    code,
+                    class,
                     retryable,
                     retryable_routes,
                     blocked_routes,
@@ -625,8 +633,8 @@ fn recover_failure_outcome(
             ))
         }
         (None, None) => Ok(Some(SourceBackedRefreshFailureOutcome::new(
-            code.as_str(),
-            class.as_str(),
+            code,
+            class,
             retryable,
             affected_routes,
             retry_advice,
@@ -675,22 +683,47 @@ fn required_outcome_text<'a>(
 }
 
 fn legacy_failure_outcome(
-    failure_type: &'static str,
+    failure_type: SourceBackedRefreshFailureType,
     scope: &SourceBackedRefreshScope,
 ) -> SourceBackedRefreshFailureOutcome {
     let (class, retryable, retry_advice) = match failure_type {
-        "source_unavailable" => ("unavailable", true, "retry_affected_routes"),
-        "source_changed" => ("source_changed", true, "retry_affected_routes"),
-        "malformed_source" => ("unreadable", false, "inspect_sources"),
-        "unsupported_schema" => ("incompatible", false, "upgrade_or_reconfigure"),
-        _ => ("mixed", true, "retry_affected_routes"),
+        SourceBackedRefreshFailureType::UnsupportedSchema => (
+            RefreshOutcomeClass::Incompatible,
+            false,
+            RefreshRetryAdvice::UpgradeOrReconfigure,
+        ),
+        SourceBackedRefreshFailureType::MalformedSource => (
+            RefreshOutcomeClass::Unreadable,
+            false,
+            RefreshRetryAdvice::InspectSources,
+        ),
+        SourceBackedRefreshFailureType::SourceUnavailable => (
+            RefreshOutcomeClass::Unavailable,
+            true,
+            RefreshRetryAdvice::RetryAffectedRoutes,
+        ),
+        SourceBackedRefreshFailureType::SourceChanged => (
+            RefreshOutcomeClass::SourceChanged,
+            true,
+            RefreshRetryAdvice::RetryAffectedRoutes,
+        ),
+        SourceBackedRefreshFailureType::SourceFailures => (
+            RefreshOutcomeClass::Mixed,
+            true,
+            RefreshRetryAdvice::RetryAffectedRoutes,
+        ),
+        SourceBackedRefreshFailureType::AllProviderTerminalCoverageUnavailable => (
+            RefreshOutcomeClass::Coverage,
+            true,
+            RefreshRetryAdvice::RetryRequest,
+        ),
     };
     let affected_routes = match scope {
         SourceBackedRefreshScope::All => BTreeSet::new(),
         SourceBackedRefreshScope::Exact(routes) => routes.clone(),
     };
     SourceBackedRefreshFailureOutcome::new(
-        failure_type,
+        failure_type.outcome_code(),
         class,
         retryable,
         affected_routes,
@@ -792,20 +825,13 @@ fn optional_string(job: &Value, field: &str) -> Result<Option<String>> {
     }
 }
 
-fn recover_optional_failure_type(job: &Value) -> Result<Option<&'static str>> {
+fn recover_optional_failure_type(job: &Value) -> Result<Option<SourceBackedRefreshFailureType>> {
     match job.get("failure_type") {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => [
-            "unsupported_schema",
-            "malformed_source",
-            "source_unavailable",
-            "source_changed",
-            "source_failures",
-        ]
-        .into_iter()
-        .find(|accepted| accepted == value)
-        .map(Some)
-        .ok_or_else(|| anyhow!("durable terminal source refresh has invalid failure type")),
+        Some(Value::String(value)) => value
+            .parse::<SourceBackedRefreshFailureType>()
+            .map(Some)
+            .map_err(|_| anyhow!("durable terminal source refresh has invalid failure type")),
         Some(_) => bail!("durable terminal source refresh has invalid failure type"),
     }
 }
@@ -837,58 +863,9 @@ fn recover_timings(job: &Value) -> Result<(Option<SourceBackedRefreshTimings>, u
 }
 
 #[cfg(test)]
-mod failure_outcome_scope_tests {
-    use super::*;
+#[path = "recovery/failure_type_recovery_tests.rs"]
+mod failure_type_recovery_tests;
 
-    fn route(byte: char) -> SourceRouteIdentity {
-        SourceRouteIdentity::from_sha256(byte.to_string().repeat(64)).unwrap()
-    }
-
-    fn exact_scope(route: &SourceRouteIdentity) -> SourceBackedRefreshScope {
-        SourceBackedRefreshScope::Exact(BTreeSet::from([route.clone()]))
-    }
-
-    #[test]
-    fn exact_recovery_rejects_out_of_scope_retryable_disposition() {
-        let admitted = route('a');
-        let peer = route('b');
-        let job = json!({
-            "structured_outcome": {
-                "code": "source_changed",
-                "class": "source_changed",
-                "retryable": true,
-                "affected_routes": [peer.as_str()],
-                "retryable_routes": [peer.as_str()],
-                "blocked_routes": [],
-                "retry_advice": "retry_automatically"
-            }
-        });
-
-        let error = recover_failure_outcome(&job, &exact_scope(&admitted), None)
-            .expect_err("out-of-scope retryable route must fail closed");
-
-        assert!(format!("{error:#}").contains("exceeds its exact scope"));
-    }
-
-    #[test]
-    fn exact_recovery_rejects_out_of_scope_blocked_disposition() {
-        let admitted = route('a');
-        let peer = route('b');
-        let job = json!({
-            "structured_outcome": {
-                "code": "malformed_source",
-                "class": "unreadable",
-                "retryable": false,
-                "affected_routes": [peer.as_str()],
-                "retryable_routes": [],
-                "blocked_routes": [peer.as_str()],
-                "retry_advice": "repair_source"
-            }
-        });
-
-        let error = recover_failure_outcome(&job, &exact_scope(&admitted), None)
-            .expect_err("out-of-scope blocked route must fail closed");
-
-        assert!(format!("{error:#}").contains("exceeds its exact scope"));
-    }
-}
+#[cfg(test)]
+#[path = "recovery/failure_outcome_scope_tests.rs"]
+mod failure_outcome_scope_tests;

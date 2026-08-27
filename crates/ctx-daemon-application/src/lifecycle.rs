@@ -167,6 +167,19 @@ pub fn daemon_start_is_fenced(host: &dyn DaemonApplicationHost) -> bool {
     hosted_uninstall_fences_daemon_autostart(host)
 }
 
+/// Returns whether a live daemon is already owned by this exact executable.
+///
+/// Ordinary foreground commands use this to reuse a healthy installed daemon
+/// without reconciling native supervision from the invoking shell's ambient
+/// environment. Explicit setup and binary-mismatch repair still follow the
+/// full supervisor handoff path.
+pub fn active_daemon_matches_current_executable(data_root: &Path) -> Result<bool> {
+    if !daemon_lock_is_active(data_root) {
+        return Ok(false);
+    }
+    daemon_lock_matches_executable(data_root, &daemon_autostart_exe()?)
+}
+
 fn read_daemon_owner_identity(data_root: &Path) -> Result<Option<DaemonOwnerIdentity>> {
     if !daemon_lock_is_active(data_root) {
         return Ok(None);
@@ -326,7 +339,13 @@ fn request_daemon_autostart(
     if profile == DaemonLaunchProfile::Persistent && !daemon_autostart_allowed(data_root, config) {
         return Ok(DaemonAutostartRequest::Suppressed("not_allowed"));
     }
-    if host.installation_upgrade_active().unwrap_or(false) {
+    let automatic_recovery_allowed = profile == DaemonLaunchProfile::Persistent
+        && config.enabled
+        && config.mode == DaemonMode::Full
+        && host
+            .automatic_upgrade_recovery_allowed(data_root)
+            .unwrap_or(false);
+    if host.installation_upgrade_active().unwrap_or(false) && !automatic_recovery_allowed {
         return Ok(DaemonAutostartRequest::Suppressed(
             "installation_upgrade_active",
         ));

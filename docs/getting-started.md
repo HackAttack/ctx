@@ -72,6 +72,10 @@ generation with complete policy-selected records and source identities,
 requests a provider-source refresh, starts or health-checks automatic background
 indexing, and prints next steps. It does not write `config.toml`
 for implicit defaults and does not execute history-source plugin commands. The
+human summary names only agent histories that contributed indexed content. A
+partial, excluded, or unknown provider root produces a warning while healthy
+prior history remains searchable; use `ctx doctor` for recovery and
+`ctx status --format json` for exact diagnostics. The
 default data root is `~/.ctx`. Use `ctx index mode manual` to select manual
 indexing or `ctx setup --no-daemon` for a one-run process-start opt-out. Check or
 change the mode with:
@@ -116,14 +120,18 @@ installed platform.
 Enable local semantic search with:
 
 ```bash
-ctx setup --semantic
-ctx index
+ctx semantic enable
+ctx semantic status
 ```
 
-Semantic indexing requires auto mode. If you selected manual indexing, run
-`ctx index mode auto` before `ctx setup --semantic`. Lexical search remains
-available while embeddings build; hybrid search uses lexical and semantic
-evidence automatically when coverage is ready.
+Automatic indexing is the default, so enablement starts or recovers the daemon
+that acquires the local model and builds the semantic projection. Add `--wait`
+to wait for readiness. If you selected manual indexing, plain enablement records
+the opt-in without changing modes; run `ctx index mode auto` for automatic
+catch-up or use an explicit semantic search with `--refresh wait`. Lexical
+search remains available while embeddings build; hybrid search uses lexical and
+semantic evidence automatically when coverage is ready. `ctx semantic disable`
+turns the feature off without deleting downloaded assets.
 
 ctx has no hosted-history client or `ctx cloud` subcommand. Official
 installer-managed binaries can separately run signed CLI
@@ -136,12 +144,14 @@ ctx sources
 ctx sources --format json
 ```
 
-`sources` checks known provider locations on the current machine. Today it
-reports supported Codex, Pi, Antigravity, Claude, OpenCode, Kilo Code, Gemini,
-Cursor, Zed, Copilot CLI, Factory AI Droid, Warp, and other supported local
+`sources` checks known provider locations on the current machine. Its concise
+default hides empty automatic locations while keeping configured roots visible;
+`ctx sources --all` retains the full empty and missing inventory for diagnostics. Today it
+reports supported Codex, Pi, Antigravity, Claude Code, OpenCode, Kilo Code,
+Gemini, Cursor, Zed, GitHub Copilot, Factory AI Droid, Warp, and other supported local
 history paths. JSON rows include
-`status` and `importable`; `status: "empty"` means the default location exists
-but no provider-specific transcript files were found there, and
+`status` and `importable`; `status: "empty"` means the automatic location or
+configured root exists but no provider-specific transcript files were found there, and
 `status: "unknown"` means the bounded transcript probe hit its scan budget.
 
 ## 4. Re-Run Or Target Imports
@@ -273,7 +283,8 @@ available for human shell use.
 `ctx upgrade` works for official installer-managed binaries. Source builds,
 `cargo install`, package-manager installs, and copied binaries are treated as
 unmanaged and will not self-upgrade. Automatic upgrade is on by default for a
-managed binary while automatic indexing's persistent daemon is enabled; use
-`ctx upgrade disable` for a persistent upgrade-only opt-out or
-`ctx index mode manual` to select manual indexing, which also disables automatic
-upgrade maintenance.
+managed binary. Only the enabled full automatic-indexing daemon drives
+automatic checks; ordinary foreground commands, manual indexing, and the
+source-refresh-only daemon profile do not. Explicit `ctx upgrade` remains
+available in those modes. Use `ctx upgrade disable` for a persistent
+upgrade-only opt-out.

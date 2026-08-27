@@ -1,4 +1,7 @@
+mod ownership;
 mod route;
+
+pub use ownership::*;
 pub use route::*;
 
 use std::{
@@ -194,8 +197,15 @@ where
     },
     #[error("source {source_id} was staged by more than one provider route")]
     DuplicateSourceOwner { source_id: String },
-    #[error("base source {source_id} was not claimed by any provider route in this refresh")]
-    UnclaimedBaseSource { source_id: String },
+    #[error(
+        "base source {source_id} was not claimed by provider route {route_identity:?} in this refresh"
+    )]
+    UnclaimedBaseSource {
+        source_id: String,
+        route_identity: SourceRouteIdentity,
+        route_failures: Vec<SourceBackedFailedRouteOutcome>,
+        logical_source_failures: Box<SourceBackedLogicalSourceFailures>,
+    },
     #[error("source deletion was not certified by its supplied authoritative inventory")]
     InvalidDeletionWitness,
     #[error("retained source deletion {source_id} could not be recertified: {detail}")]
@@ -232,6 +242,10 @@ pub struct SourceBackedGenerationSink<'writer, L: CaptureLifecycleSink> {
     pub applied_removals: &'writer mut Vec<SourceBackedCertifiedRemoval>,
     pub route_index: usize,
     pub route_identity: SourceRouteIdentity,
+    /// Exact predecessor routes this successor may consult during one
+    /// exhaustive, staged topology migration.  These aliases are supplied by
+    /// composition, never discovered by provider code.
+    pub base_route_aliases: BTreeSet<SourceRouteIdentity>,
     pub base_route_control: Option<Vec<u8>>,
     pub resources: SourceBackedRouteResources,
     pub logical_source_failures: &'writer mut SourceBackedLogicalSourceFailures,
@@ -288,6 +302,7 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
             applied_removals,
             route_index,
             route_identity,
+            base_route_aliases: BTreeSet::new(),
             base_route_control,
             resources,
             logical_source_failures,
@@ -330,75 +345,6 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
         self.lifecycle
             .retain_unstaged_route_members(&self.route_identity)?;
         Ok(())
-    }
-}
-
-#[derive(Clone)]
-pub struct SourceOwner {
-    pub route_index: usize,
-    pub source: SourceKey,
-    pub present: bool,
-    pub revalidation: Option<SourceBackedRouteRevalidation>,
-}
-
-impl SourceOwner {
-    pub fn new(
-        route_index: usize,
-        source: SourceKey,
-        present: bool,
-        revalidation: Option<SourceBackedRouteRevalidation>,
-    ) -> Self {
-        Self {
-            route_index,
-            source,
-            present,
-            revalidation,
-        }
-    }
-
-    pub fn route_index(&self) -> usize {
-        self.route_index
-    }
-
-    pub fn source(&self) -> &SourceKey {
-        &self.source
-    }
-
-    pub fn is_present(&self) -> bool {
-        self.present
-    }
-
-    pub fn revalidation(&self) -> Option<&SourceBackedRouteRevalidation> {
-        self.revalidation.as_ref()
-    }
-}
-
-#[derive(Clone)]
-pub enum SourceBackedRouteRevalidation {
-    Source(CertifiedSource),
-    Deletion(Box<CertifiedSourceDeletion>),
-}
-
-#[derive(Clone)]
-pub struct CompleteInventoryOwner {
-    pub route_index: usize,
-    pub inventory: CertifiedSourceInventory,
-}
-
-impl CompleteInventoryOwner {
-    pub fn new(route_index: usize, inventory: CertifiedSourceInventory) -> Self {
-        Self {
-            route_index,
-            inventory,
-        }
-    }
-
-    pub fn route_index(&self) -> usize {
-        self.route_index
-    }
-
-    pub fn inventory(&self) -> &CertifiedSourceInventory {
-        &self.inventory
     }
 }
 
@@ -483,20 +429,29 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
     /// this lookup logarithmic without materializing the rest of the route.
     pub fn base_route_source(&self, source: &SourceKey) -> Option<&CertifiedSource> {
         let snapshot = self.lifecycle.base_snapshot()?;
-        let route = snapshot.source_route(&self.route_identity)?;
         let key = source.identity().digest();
-        route
-            .sources()
-            .binary_search_by_key(&key, |candidate| candidate.identity().digest())
-            .ok()
-            .and_then(|index| route.sources().get(index))
-            .filter(|candidate| candidate.exact_descriptor_eq(source))?;
+        let owned = std::iter::once(&self.route_identity)
+            .chain(self.base_route_aliases.iter())
+            .any(|route_identity| {
+                snapshot.source_route(route_identity).is_some_and(|route| {
+                    route
+                        .sources()
+                        .binary_search_by_key(&key, |candidate| candidate.identity().digest())
+                        .ok()
+                        .and_then(|index| route.sources().get(index))
+                        .is_some_and(|candidate| candidate.exact_descriptor_eq(source))
+                })
+            });
+        if !owned {
+            return None;
+        }
         self.lifecycle.base_source(source)
     }
 
     pub fn pinned_append_base(&self, source: &SourceKey) -> Option<L::PinnedAppendBase> {
-        self.lifecycle
-            .pinned_append_base(&self.route_identity, source)
+        std::iter::once(&self.route_identity)
+            .chain(self.base_route_aliases.iter())
+            .find_map(|route_identity| self.lifecycle.pinned_append_base(route_identity, source))
     }
 
     /// Returns only the prior certified sources retained by this route. A
@@ -508,20 +463,28 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
         let Some(snapshot) = self.lifecycle.base_snapshot() else {
             return Ok(HashMap::new());
         };
-        let Some(route) = snapshot.source_route(&self.route_identity) else {
-            return Ok(HashMap::new());
-        };
-        let mut sources = HashMap::with_capacity(route.sources().len());
-        for source in route.sources() {
-            let certificate = snapshot
-                .sources()
-                .iter()
-                .find(|candidate| candidate.observation().source().exact_descriptor_eq(source))
-                .cloned()
-                .ok_or_else(|| {
-                    L::invariant_error("source-route snapshot names a missing certified source")
-                })?;
-            sources.insert(source.clone(), certificate);
+        let mut sources = HashMap::new();
+        for route_identity in
+            std::iter::once(&self.route_identity).chain(self.base_route_aliases.iter())
+        {
+            let Some(route) = snapshot.source_route(route_identity) else {
+                continue;
+            };
+            for source in route.sources() {
+                let certificate = snapshot
+                    .sources()
+                    .iter()
+                    .find(|candidate| candidate.observation().source().exact_descriptor_eq(source))
+                    .cloned()
+                    .ok_or_else(|| {
+                        L::invariant_error("source-route snapshot names a missing certified source")
+                    })?;
+                if sources.insert(source.clone(), certificate).is_some() {
+                    return Err(SourceBackedCoordinatorError::Index(L::invariant_error(
+                        "source-route migration aliases overlap on one certified source",
+                    )));
+                }
+            }
         }
         Ok(sources)
     }
@@ -537,6 +500,7 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
             || self.lifecycle.base_snapshot().is_some_and(|snapshot| {
                 snapshot.source_routes().any(|route| {
                     route.route_identity() != &self.route_identity
+                        && !self.base_route_aliases.contains(route.route_identity())
                         && route
                             .sources()
                             .iter()
@@ -676,29 +640,6 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
         failure: SourceBackedRouteError,
         carried_forward: bool,
     ) -> SourceBackedCoordinatorResult<(), L::Error> {
-        self.record_logical_source_failure_with_empty_admission(
-            source,
-            failure,
-            carried_forward,
-            false,
-        )
-    }
-
-    pub fn record_logical_source_quarantine(
-        &mut self,
-        source: SourceKey,
-        failure: SourceBackedRouteError,
-    ) -> SourceBackedCoordinatorResult<(), L::Error> {
-        self.record_logical_source_failure_with_empty_admission(source, failure, false, true)
-    }
-
-    fn record_logical_source_failure_with_empty_admission(
-        &mut self,
-        source: SourceKey,
-        failure: SourceBackedRouteError,
-        carried_forward: bool,
-        allows_empty_route: bool,
-    ) -> SourceBackedCoordinatorResult<(), L::Error> {
         if !failure.kind.is_logical_source_failure() {
             return Err(SourceBackedCoordinatorError::InvalidLogicalSourceFailure {
                 detail: "non-local failure was reported as a logical-source outcome",
@@ -720,12 +661,15 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
                     &failure.detail,
                     MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES,
                 ),
-                allows_empty_route,
             });
         Ok(())
     }
 
-    pub fn record_rejection(&mut self, rejection: SourceBackedRecordRejectionDraft) {
+    fn record_rejection_with_provenance(
+        &mut self,
+        rejection: SourceBackedRecordRejectionDraft,
+        committed: bool,
+    ) {
         self.record_rejections.record(SourceBackedRecordRejection {
             route_index: self.route_index,
             route_identity: self.route_identity.clone(),
@@ -747,13 +691,29 @@ impl<L: CaptureLifecycleSink> SourceBackedGenerationSink<'_, L> {
                 &rejection.detail,
                 MAX_SOURCE_BACKED_FAILURE_DETAIL_BYTES,
             ),
+            committed,
         });
     }
 
     pub fn record_rejections(&mut self, rejections: SourceBackedRecordRejectionDrafts) {
+        self.record_rejections_with_provenance(rejections, true);
+    }
+
+    pub fn record_failed_attempt_rejections(
+        &mut self,
+        rejections: SourceBackedRecordRejectionDrafts,
+    ) {
+        self.record_rejections_with_provenance(rejections, false);
+    }
+
+    fn record_rejections_with_provenance(
+        &mut self,
+        rejections: SourceBackedRecordRejectionDrafts,
+        committed: bool,
+    ) {
         let (rejections, omitted) = rejections.into_parts();
         for rejection in rejections {
-            self.record_rejection(rejection);
+            self.record_rejection_with_provenance(rejection, committed);
         }
         self.record_omitted_rejections(omitted);
     }

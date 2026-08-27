@@ -1,3 +1,4 @@
+pub use ctx_history_capture_model::ProviderRootConnectorBinding;
 use ctx_history_capture_model::{
     provider_source_config_digest, SourceRouteIdentity, SourceRouteIdentityError,
     MAX_CONFIGURED_PROVIDER_ROOTS,
@@ -21,12 +22,15 @@ use crate::{
 mod digest;
 mod provider_root;
 use digest::{decode_sha256_hex, is_sha256_hex};
-pub use provider_root::AppliedProviderRoot;
+pub use provider_root::{
+    AppliedProviderRoot, AppliedProviderRootSourceMembership, DetachedReleasedProviderRootAuthority,
+};
 
-pub const GENERATION_MANIFEST_VERSION: u32 = 9;
+pub const GENERATION_MANIFEST_VERSION: u32 = 10;
 pub const LEXICAL_SCHEMA_VERSION: u32 = LEXICAL_SCHEMA_REVISION;
 pub const LEXICAL_ANALYZER_VERSION: u32 = LEXICAL_TOKENIZER_REVISION;
 pub const MAX_PUBLICATION_METADATA_BYTES: usize = 48 * 1024;
+pub const MAX_DETACHED_RELEASED_PROVIDER_ROOTS: usize = MAX_CONFIGURED_PROVIDER_ROOTS;
 
 pub const COMMIT_PAYLOAD_VERSION: u32 = 2;
 pub const INDEX_MEMORY_MIN_PER_THREAD: usize = 15_000_000;
@@ -290,8 +294,26 @@ pub enum IndexError {
     },
     #[error("stored lexical document field {0} is missing, malformed, or inconsistent")]
     InvalidStoredDocumentField(&'static str),
+    #[error("session authority lookup work limit exceeded for {operation}: maximum {maximum}")]
+    SessionAuthorityWorkLimitExceeded {
+        operation: &'static str,
+        maximum: usize,
+    },
     #[error("one session has conflicting provider-native lineage claims: {0}")]
     ConflictingProviderNativeSessionClaim(&'static str),
+    #[error(
+        "session grouping batch has too many exact coordinates: requested {requested}, maximum {maximum}"
+    )]
+    InvalidSessionGroupingCoordinateCount { requested: usize, maximum: usize },
+    #[error("session grouping batch repeats exact coordinate {0}")]
+    DuplicateSessionGroupingCoordinate(String),
+    #[error("session grouping authority is missing exact coordinate {0}")]
+    MissingSessionGroupingCoordinate(String),
+    #[error("session grouping authority work limit exceeded for {operation}: maximum {maximum}")]
+    SessionGroupingAuthorityWorkLimitExceeded {
+        operation: &'static str,
+        maximum: usize,
+    },
     #[error("lexical index checksum verification failed for one or more active files")]
     ChecksumMismatch,
     #[error("ID prefix must contain 1 to 32 hexadecimal digits, with optional hyphens")]
@@ -806,6 +828,8 @@ pub struct GenerationManifest {
     automatic_provider_discovery: bool,
     provider_root_config_digest: String,
     provider_roots: Vec<AppliedProviderRoot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    detached_released_provider_roots: Vec<DetachedReleasedProviderRootAuthority>,
 }
 
 /// Incrementally composable commitment to one source's exact stored Core

@@ -131,6 +131,40 @@ impl SharedSemanticRuntime {
         }
     }
 
+    /// Loads a compatible cached model or acquires the opted-in local model
+    /// before loading it. This is the foreground counterpart to daemon model
+    /// startup and preserves the same accelerator-to-CPU fallback contract.
+    pub fn ensure_loaded_with_acquisition(
+        &self,
+        config: &SemanticModelConfig,
+        artifact_fetcher: &dyn ArtifactFetcher,
+    ) -> Result<Option<u64>> {
+        if self.is_loaded() {
+            return Ok(None);
+        }
+        let mut acquisition = self.acquire_for_daemon(config, artifact_fetcher)?;
+        let mut cpu_fallback_available = true;
+        loop {
+            match self.ensure_loaded_after_daemon_acquisition(config, acquisition) {
+                Ok(load_ms) => return Ok(load_ms),
+                Err(error)
+                    if cpu_fallback_available
+                        && error
+                            .downcast_ref::<SemanticDaemonCpuFallbackRequired>()
+                            .is_some() =>
+                {
+                    let fallback = error
+                        .downcast_ref::<SemanticDaemonCpuFallbackRequired>()
+                        .expect("matched semantic CPU fallback");
+                    acquisition =
+                        self.acquire_cpu_fallback_for_daemon(config, fallback.reason())?;
+                    cpu_fallback_available = false;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     pub fn ensure_loaded_after_daemon_acquisition(
         &self,
         config: &SemanticModelConfig,
@@ -178,51 +212,6 @@ impl SharedSemanticRuntime {
                 Err(anyhow!("semantic embedder lock is poisoned"))
             }
         }
-    }
-
-    #[cfg(ctx_semantic_fastembed)]
-    pub fn embed_documents(
-        &self,
-        config: &SemanticModelConfig,
-        texts: Vec<String>,
-        deadline: Option<Instant>,
-    ) -> Result<(Vec<Vec<f32>>, SemanticQuietPolicy)> {
-        let mut embedder = self.lock()?;
-        let started = Instant::now();
-        let first = embedder
-            .as_mut()
-            .ok_or_else(|| anyhow!("semantic embedder was not initialized"))?
-            .embed_documents(texts.clone());
-        let embeddings = match first {
-            Ok(embeddings) => embeddings,
-            Err(first_error) => {
-                let runtime = embedder
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow!("semantic embedder disappeared after inference failure")
-                    })?
-                    .runtime_info();
-                *embedder = None;
-                let mut replacement = reacquire_semantic_embedder(config, &runtime)
-                    .context("reinitialize semantic embedder after document inference failure")?;
-                let retry = replacement.embed_documents(texts).with_context(|| {
-                    format!(
-                        "semantic document inference failed twice; first failure: {first_error:#}"
-                    )
-                })?;
-                *embedder = Some(replacement);
-                retry
-            }
-        };
-        let quiet_policy = embedder
-            .as_ref()
-            .ok_or_else(|| anyhow!("semantic embedder was not initialized"))?
-            .quiet_policy();
-        drop(embedder);
-        let active = started.elapsed();
-        let remaining = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
-        throttle_semantic_batch(active, quiet_policy, remaining);
-        Ok((embeddings, quiet_policy))
     }
 
     #[cfg(ctx_semantic_fastembed)]
@@ -925,6 +914,8 @@ fn reacquire_semantic_embedder(
 }
 
 mod cpu;
+#[cfg(ctx_semantic_fastembed)]
+mod document_batches;
 #[cfg(all(test, ctx_semantic_fastembed))]
 pub(super) use cpu::acquire_cpu_backend;
 #[cfg(all(ctx_semantic_fastembed, not(target_os = "macos")))]

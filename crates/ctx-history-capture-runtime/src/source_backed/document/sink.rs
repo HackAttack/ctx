@@ -150,6 +150,10 @@ where
         self.record_rejections.merge(rejections);
     }
 
+    pub fn record_rejection(&mut self, rejection: SourceBackedRecordRejectionDraft) {
+        self.record_rejections.record(rejection);
+    }
+
     pub(super) fn take_record_rejections(&mut self) -> SourceBackedRecordRejectionDrafts {
         std::mem::take(&mut self.record_rejections)
     }
@@ -157,7 +161,7 @@ where
     pub(super) fn preserve_record_rejections_on_failure(&mut self) {
         let rejections = std::mem::take(&mut self.record_rejections);
         if let ChangedDocumentTarget::Generation(sink) = &mut self.target {
-            sink.record_rejections(rejections);
+            sink.record_failed_attempt_rejections(rejections);
         }
     }
 

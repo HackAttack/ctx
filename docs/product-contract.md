@@ -21,6 +21,9 @@ a hosted research agent.
   is ignored and does not change setup behavior.
 - `ctx sources` reports known local provider history paths, including whether a
   native source is currently importable.
+- `ctx sources add [--replace]` and `ctx sources remove` safely edit named
+  provider history roots in local configuration. Replacement retains provider
+  and stable name while atomically changing path and complete group state.
 - `ctx import` publishes supported local transcript formats and selected local
   history-source plugins as complete normalized Core records. In automatic
   mode it may start the persistent daemon. In manual mode an explicit import
@@ -70,17 +73,21 @@ a hosted research agent.
 - `ctx daemon run` is an advanced foreground, blocking maintenance command. It
   does not change the configured indexing mode. The daemon performs bounded
   native provider-history refresh and local semantic indexing/freshness work.
-- `ctx setup --semantic` enables local semantic search and requires auto mode.
-  Lexical search remains available while embeddings build; hybrid search uses
-  lexical and semantic evidence when semantic coverage is ready.
+- `ctx semantic enable|status|disable` owns the local semantic-search lifecycle.
+  Enablement is the explicit opt-in and starts daemon-owned model acquisition
+  and catch-up in auto mode; status is read-only; disablement retains downloaded
+  assets. Lexical search remains available while embeddings build; hybrid
+  search uses lexical and semantic evidence when semantic coverage is ready.
 - `ctx stats` reports bounded local usage/value aggregates from the separate
   owner-private `usage.sqlite` sidecar. This default-on product state is
   independent of remote event reporting, has no network path or identity, keeps
   only daily UTC content-free aggregates for approximately 400 days, and fails
-  open at foreground recording boundaries. The stats report is read-only,
-  uncounted, and separates measured facts from versioned estimates. Detail is
-  an option on `ctx stats`; enable, disable, and logical reset remain under
-  `ctx status --usage`.
+  open at foreground recording boundaries. Completed companion-backed Blame is
+  represented only by Core-observed calls, technical outcomes, durations, and
+  exact MCP response bytes; no private result semantics enter the store. The
+  stats report is read-only, uncounted, and separates measured facts from
+  versioned estimates. Detail is an option on `ctx stats`; enable, disable, and
+  logical reset remain under `ctx status --usage`.
 - Output format does not grant or remove refresh authority. Implicit/background
   operations remain inert in manual mode; explicit import and search
   `--refresh wait` may use a finite worker in either human or JSON output.

@@ -46,6 +46,7 @@ pub trait DaemonApplicationHost: Send + Sync {
     fn hosted_uninstall_active_for_executable(&self, executable: &Path) -> Result<bool>;
     fn managed_install_executable(&self) -> Result<Option<PathBuf>>;
     fn installation_upgrade_active(&self) -> Result<bool>;
+    fn automatic_upgrade_recovery_allowed(&self, data_root: &Path) -> Result<bool>;
     fn daemon_config(&self, data_root: &Path) -> Result<DaemonConfigSnapshot>;
     fn persisted_daemon_enabled(&self, data_root: &Path) -> Result<bool>;
     fn defer_restart_for_upgrade_handoff(
@@ -127,6 +128,7 @@ pub enum DaemonTrigger {
     Setup,
     Import,
     Search,
+    Semantic,
 }
 
 impl DaemonTrigger {
@@ -135,6 +137,7 @@ impl DaemonTrigger {
             Self::Setup => "setup",
             Self::Import => "import",
             Self::Search => "search",
+            Self::Semantic => "semantic",
         }
     }
 
@@ -143,6 +146,7 @@ impl DaemonTrigger {
             "setup" => Some(Self::Setup),
             "import" => Some(Self::Import),
             "search" => Some(Self::Search),
+            "semantic" => Some(Self::Semantic),
             _ => None,
         }
     }
@@ -233,6 +237,10 @@ impl<'a> DaemonApplication<'a> {
 
     pub fn daemon_start_is_fenced(&self) -> bool {
         lifecycle::daemon_start_is_fenced(self.host)
+    }
+
+    pub fn active_daemon_matches_current_executable(&self, data_root: &Path) -> Result<bool> {
+        lifecycle::active_daemon_matches_current_executable(data_root)
     }
 
     pub fn request_daemon_start(
@@ -342,6 +350,10 @@ impl DaemonApplicationHost for TestHost {
     }
 
     fn installation_upgrade_active(&self) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn automatic_upgrade_recovery_allowed(&self, _data_root: &Path) -> Result<bool> {
         Ok(false)
     }
 
@@ -472,6 +484,7 @@ mod dto_tests {
             (DaemonTrigger::Setup, "setup"),
             (DaemonTrigger::Import, "import"),
             (DaemonTrigger::Search, "search"),
+            (DaemonTrigger::Semantic, "semantic"),
         ] {
             assert_eq!(trigger.as_str(), name);
             assert_eq!(DaemonTrigger::parse_persisted(name), Some(trigger));

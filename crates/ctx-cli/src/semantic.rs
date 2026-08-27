@@ -15,13 +15,12 @@ pub(crate) use ctx_daemon_cli::{
     begin_daemon_upgrade_handoff, begin_legacy_daemon_upgrade_handoff,
     complete_replacement_daemon_handoff, coordinate_import_source_backed_refresh_with_progress,
     coordinate_setup_source_backed_refresh_with_progress,
-    coordinate_source_backed_refresh_with_progress, current_rejected_record_count,
-    daemon_autostart_suppression_reason, finish_replacement_daemon_handoff,
-    mark_replacement_helper_handoff, published_explicit_source_relocation_authority,
-    replacement_helper_owns_daemon_handoff, semantic_managed_model_snapshot_dir,
-    semantic_native_accelerator_target, semantic_provisioning_coreml_asset_matches,
-    semantic_provisioning_model_contract_matches, semantic_provisioning_model_path_count,
-    semantic_provisioning_model_path_matches, semantic_query_service_supported,
+    coordinate_source_backed_refresh_with_progress, daemon_autostart_suppression_reason,
+    finish_replacement_daemon_handoff, mark_replacement_helper_handoff,
+    published_explicit_source_relocation_authority, replacement_helper_owns_daemon_handoff,
+    semantic_managed_model_snapshot_dir, semantic_native_accelerator_target,
+    semantic_provisioning_coreml_asset_matches, semantic_provisioning_model_contract_matches,
+    semantic_provisioning_model_path_count, semantic_provisioning_model_path_matches,
     semantic_required_model_file_count, semantic_required_model_file_matches,
     semantic_runtime_cache_dir, semantic_worker_cache_dir, DaemonHandoff, DaemonSetupHandoff,
     DaemonUpgradeHandoff, RefreshStatus, SemanticNativeAcceleratorTarget, SemanticNotReady,
@@ -115,7 +114,7 @@ pub(crate) fn initialize() -> Result<()> {
 fn daemon_cli_config<'a>(config: &'a crate::config::AppConfig) -> DaemonCliConfig<'a> {
     DaemonCliConfig::new(
         config.analytics.enabled,
-        config.auto_upgrade_enabled(),
+        crate::upgrade::automatic_upgrade_eligible_hint(config),
         Cow::Borrowed(config.upgrade.channel.as_str()),
         config.upgrade.interval,
         DaemonConfig {
@@ -134,7 +133,7 @@ fn daemon_cli_config<'a>(config: &'a crate::config::AppConfig) -> DaemonCliConfi
 
 fn owned_daemon_cli_config(config: crate::config::AppConfig) -> DaemonCliConfig<'static> {
     let analytics_enabled = config.analytics.enabled;
-    let automatic_upgrade_enabled = config.auto_upgrade_enabled();
+    let automatic_upgrade_enabled = crate::upgrade::automatic_upgrade_eligible_hint(&config);
     let upgrade_interval = config.upgrade.interval;
     let daemon_enabled = config.automatic_indexing_enabled();
     let daemon_mode = match config.daemon.mode {
@@ -168,6 +167,9 @@ fn daemon_trigger(
         crate::DaemonTriggerCommandArg::Setup => ctx_daemon_cli::DaemonTriggerCommandArg::Setup,
         crate::DaemonTriggerCommandArg::Import => ctx_daemon_cli::DaemonTriggerCommandArg::Import,
         crate::DaemonTriggerCommandArg::Search => ctx_daemon_cli::DaemonTriggerCommandArg::Search,
+        crate::DaemonTriggerCommandArg::Semantic => {
+            ctx_daemon_cli::DaemonTriggerCommandArg::Semantic
+        }
     }
 }
 

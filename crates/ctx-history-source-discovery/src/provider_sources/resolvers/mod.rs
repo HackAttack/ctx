@@ -29,6 +29,7 @@ use super::{
 const UNSUPPORTED_SOURCE_ROOT_REASON: &str =
     "the selected provider path uses an unsupported, non-local, or unsafe source root";
 
+mod automatic_roles;
 mod config_project;
 mod manual_unsupported;
 mod platform;
@@ -36,11 +37,15 @@ mod profile_project;
 mod simple;
 
 pub use config_project::{
+    resolve_crush_released_project_inventories, resolve_crush_released_project_inventory,
     CrushDiscoveredProjectInventory, CrushProjectInventorySelector,
-    CrushProjectInventorySelectorError,
+    CrushProjectInventorySelectorError, CrushReleasedProjectInventory,
 };
 pub(super) use platform::{resolve_lingma_with_authority, resolve_warp_with_authority};
 pub use profile_project::resolve_openhands_conversations_root;
+pub(in crate::provider_sources) use profile_project::{
+    openclaw_agent_ids_for_state_root, OpenClawConfigError,
+};
 pub use simple::released_provider_home;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,15 +112,10 @@ pub fn provider_source_belongs_to_configured_root(
     if source.provider != root.provider {
         return false;
     }
-    match root.provider {
-        CaptureProvider::Claude => {
-            provider_paths_equivalent(&source.path, &root.path.join("projects"))
-        }
-        CaptureProvider::Codex => ["history.jsonl", "sessions", "archived_sessions"]
-            .into_iter()
-            .any(|child| provider_paths_equivalent(&source.path, &root.path.join(child))),
-        _ => false,
-    }
+    source
+        .route_provenance
+        .configured_root()
+        .is_some_and(|(root_id, root_path)| root_id == root.id && root_path == root.path)
 }
 
 pub(super) fn select_current_or_legacy(current: PathBuf, legacy: PathBuf) -> PathBuf {
@@ -145,7 +145,8 @@ pub(super) fn resolver_group(provider: CaptureProvider) -> Option<ResolverGroup>
         | CaptureProvider::KimiCodeCli
         | CaptureProvider::Junie
         | CaptureProvider::FactoryAiDroid
-        | CaptureProvider::ForgeCode => Some(ResolverGroup::Simple),
+        | CaptureProvider::ForgeCode
+        | CaptureProvider::Fx => Some(ResolverGroup::Simple),
         CaptureProvider::KiroCli
         | CaptureProvider::Warp
         | CaptureProvider::CodeBuddy
@@ -185,11 +186,7 @@ pub(super) fn resolve(
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
 ) -> DiscoveryReport {
-    let has_configured_roots = context
-        .configured_provider_roots()
-        .iter()
-        .any(|root| root.provider == spec.provider);
-    if !context.automatic_provider_inference_enabled() && !has_configured_roots {
+    if !context.automatic_provider_inference_enabled() {
         return DiscoveryReport::default();
     }
     match resolver_group(spec.provider) {
@@ -355,6 +352,7 @@ pub(super) fn source_from_location(
         catalog_support,
         status,
         unsupported_reason,
+        route_provenance: Default::default(),
     }
 }
 
@@ -377,22 +375,28 @@ pub(super) fn unsupported_source(
         } else {
             "detected provider history uses an unsupported format"
         }),
+        route_provenance: Default::default(),
     }
 }
 
 pub(super) fn dedupe_report(mut report: DiscoveryReport) -> DiscoveryReport {
-    let mut seen = Vec::<(CaptureProvider, &'static str, PathBuf)>::new();
-    report.sources.retain(|source| {
-        if seen.iter().any(|(provider, source_format, path)| {
-            *provider == source.provider
-                && *source_format == source.source_format
-                && provider_paths_equivalent(path, &source.path)
+    let mut deduplicated = Vec::<ProviderSource>::new();
+    for source in report.sources {
+        if let Some(existing) = deduplicated.iter_mut().find(|existing| {
+            existing.provider == source.provider
+                && existing.source_format == source.source_format
+                && provider_paths_equivalent(&existing.path, &source.path)
         }) {
-            return false;
+            if existing.route_provenance.configured_root().is_none()
+                && source.route_provenance.configured_root().is_some()
+            {
+                *existing = source;
+            }
+        } else {
+            deduplicated.push(source);
         }
-        seen.push((source.provider, source.source_format, source.path.clone()));
-        true
-    });
+    }
+    report.sources = deduplicated;
     report
 }
 
@@ -573,12 +577,12 @@ mod tests {
     #[test]
     fn every_registered_provider_has_exactly_one_grouped_dispatch_lane() {
         let specs = provider_source_specs();
-        assert_eq!(specs.len(), 41);
+        assert_eq!(specs.len(), 42);
         assert!(specs
             .iter()
             .all(|spec| resolver_group(spec.provider).is_some()));
         for (group, expected) in [
-            (ResolverGroup::Simple, 16),
+            (ResolverGroup::Simple, 17),
             (ResolverGroup::Platform, 7),
             (ResolverGroup::ConfigProject, 6),
             (ResolverGroup::ProfileProject, 6),

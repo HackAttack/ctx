@@ -9,9 +9,12 @@ homepage.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+test-support = ["ctx-history-jsonl/test-support"]
+
 [dependencies]
 chrono.workspace = true
-ctx-history-capture-model = { path = "../ctx-history-capture-model" }
 ctx-history-core = { path = "../ctx-history-core" }
 ctx-history-jsonl = { path = "../ctx-history-jsonl" }
 ctx-history-source-io = { path = "../ctx-history-source-io" }
@@ -21,5 +24,6 @@ sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+ctx-history-jsonl = { path = "../ctx-history-jsonl", features = ["test-support"] }
 ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }
 tempfile.workspace = true

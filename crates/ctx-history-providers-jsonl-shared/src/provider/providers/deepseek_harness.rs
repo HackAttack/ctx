@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     fs, io,
     marker::PhantomData,
     path::{Path, PathBuf},
@@ -9,12 +9,12 @@ use std::{
 use ctx_history_core::{
     derive_event_id, AgentScope, CaptureProvider, CoreActivity, CoreContentPolicyStatus,
     CoreRecord, EventIdentityInput, LiteralFactKind, NativeItemKey, ProviderDeclaredFact,
-    SourceKey, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
+    SourceAnchorScope, SourceKey, StableEntityId, TypedKey, CORE_ACTIVITY_REVISION,
 };
 use ctx_history_native_jsonl_parsers::deepseek_harness::{
     agent_scope, exact_file_references, is_session_leaf, is_zstd_session_leaf, parse_row,
-    sequence_span, session_identity, source_key, visit_storage_rows, ParsedRow, SemanticEvent,
-    SequenceSpan, SessionHeader, StorageRowsError, SOURCE_SCHEMA_VARIANT,
+    sequence_span, session_identity, source_key_scoped, visit_storage_rows, ParsedRow,
+    SemanticEvent, SequenceSpan, SessionHeader, StorageRowsError, SOURCE_SCHEMA_VARIANT,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -50,17 +50,31 @@ const PARSER_REVISION: &str = "deepseek-harness-native-jsonl-v3-selected-core-ac
 const EVENT_IDENTITY_REVISION: &str = "deepseek-harness-sequence-v1";
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct DeepSeekHarnessJsonlAdapter<R>(PhantomData<fn() -> R>);
+pub(crate) struct DeepSeekHarnessJsonlAdapter<R> {
+    source_anchor_scope: SourceAnchorScope,
+    runtime: PhantomData<fn() -> R>,
+}
 
 pub(crate) fn jsonl_adapter<R: JsonlProviderRuntime>(
     source_format: &'static str,
+) -> Result<Arc<dyn JsonlFamilyAdapter<Runtime = R>>> {
+    jsonl_adapter_with_source_root_lineage(source_format, None)
+}
+
+pub(crate) fn jsonl_adapter_with_source_root_lineage<R: JsonlProviderRuntime>(
+    source_format: &'static str,
+    source_root_lineage: Option<[u8; 32]>,
 ) -> Result<Arc<dyn JsonlFamilyAdapter<Runtime = R>>> {
     if !matches!(source_format, TREE_SOURCE_FORMAT | EXPLICIT_SOURCE_FORMAT) {
         return Err(CaptureError::InvalidPayload(format!(
             "unknown DeepSeek Harness source format {source_format:?}"
         )));
     }
-    Ok(Arc::new(DeepSeekHarnessJsonlAdapter(PhantomData)))
+    Ok(Arc::new(DeepSeekHarnessJsonlAdapter {
+        source_anchor_scope: source_root_lineage
+            .map_or(SourceAnchorScope::Unqualified, SourceAnchorScope::Lineage),
+        runtime: PhantomData,
+    }))
 }
 
 impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for DeepSeekHarnessJsonlAdapter<R> {
@@ -156,7 +170,12 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for DeepSeekHarnessJsonlAdapter
                     "DeepSeek Harness inventory repeats a native session identity".to_owned(),
                 ));
             }
-            let source = source_key(EXPLICIT_SOURCE_FORMAT, &binding.id).map_err(contract)?;
+            let source = source_key_scoped(
+                EXPLICIT_SOURCE_FORMAT,
+                &binding.id,
+                self.source_anchor_scope,
+            )
+            .map_err(contract)?;
             leaves.push(JsonlFamilyLeaf::observe(
                 source,
                 path,
@@ -187,6 +206,7 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for DeepSeekHarnessJsonlAdapter
         let binding = decode_binding(leaf)?;
         Ok(Some(Box::new(DeepSeekHarnessSemanticExecutor::<R>::new(
             leaf.source().clone(),
+            self.source_anchor_scope,
             leaf.source_path().to_path_buf(),
             binding,
             encoding_for_path(leaf.source_path()),
@@ -197,6 +217,7 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for DeepSeekHarnessJsonlAdapter
 
 struct DeepSeekHarnessSemanticExecutor<R> {
     source: SourceKey,
+    source_anchor_scope: SourceAnchorScope,
     source_selector: PathBuf,
     binding: SessionHeader,
     encoding: JsonlPhysicalEncoding,
@@ -208,6 +229,7 @@ struct DeepSeekHarnessSemanticExecutor<R> {
     logical_complete_rows: u64,
     rejected_rows: u64,
     record_rejections: SourceBackedRecordRejectionDrafts,
+    pending_pages: VecDeque<JsonlFamilySemanticPage>,
     runtime: PhantomData<fn() -> R>,
 }
 
@@ -218,9 +240,10 @@ struct FrameProjection {
     represented: bool,
 }
 
-impl<R: JsonlProviderRuntime> DeepSeekHarnessSemanticExecutor<R> {
+impl<R> DeepSeekHarnessSemanticExecutor<R> {
     fn new(
         source: SourceKey,
+        source_anchor_scope: SourceAnchorScope,
         source_selector: PathBuf,
         binding: SessionHeader,
         encoding: JsonlPhysicalEncoding,
@@ -230,6 +253,7 @@ impl<R: JsonlProviderRuntime> DeepSeekHarnessSemanticExecutor<R> {
         let agent_scope = Some(agent_scope(&binding));
         Ok(Self {
             source,
+            source_anchor_scope,
             source_selector,
             binding,
             encoding,
@@ -241,6 +265,7 @@ impl<R: JsonlProviderRuntime> DeepSeekHarnessSemanticExecutor<R> {
             logical_complete_rows: 0,
             rejected_rows: 0,
             record_rejections: Default::default(),
+            pending_pages: VecDeque::new(),
             runtime: PhantomData,
         })
     }
@@ -395,8 +420,10 @@ impl<R: JsonlProviderRuntime> DeepSeekHarnessSemanticExecutor<R> {
         record.role = Some(event.role.as_str().to_owned());
         record.agent_scope = self.agent_scope;
         if let Some(parent) = self.binding.parent_session.as_deref() {
-            record.parent_session_id =
-                Some(session_identity(&self.source, parent).map_err(contract)?);
+            record.parent_session_id = Some(session_identity_for_native(
+                parent,
+                self.source_anchor_scope,
+            )?);
         }
         if let Some(reason) = event.content_omission_reason {
             record.content.policy_status = CoreContentPolicyStatus::Omitted {
@@ -431,6 +458,52 @@ impl<R: JsonlProviderRuntime> DeepSeekHarnessSemanticExecutor<R> {
         record.validate_contract().map_err(contract)?;
         Ok(Some(record))
     }
+
+    fn queue_projection(&mut self, projection: FrameProjection) -> Result<()> {
+        if !self.pending_pages.is_empty() {
+            return Err(CaptureError::SystemInvariant(
+                "DeepSeek Harness replaced pending semantic pages",
+            ));
+        }
+        let pages = JsonlFamilySemanticPage::split_bounded::<CaptureError>(projection.records)?;
+        let represented_frames = if projection.represented
+            || self.encoding == JsonlPhysicalEncoding::ChecksummedZstdFrames
+        {
+            self.represented_frames
+                .checked_add(1)
+                .ok_or(CaptureError::SystemInvariant(
+                    "DeepSeek Harness represented-frame count overflowed",
+                ))?
+        } else {
+            self.represented_frames
+        };
+        let rejected_physical_frames = if projection.represented
+            || self.encoding == JsonlPhysicalEncoding::ChecksummedZstdFrames
+        {
+            self.rejected_physical_frames
+        } else {
+            self.rejected_physical_frames
+                .checked_add(1)
+                .ok_or(CaptureError::SystemInvariant(
+                    "DeepSeek Harness rejected-frame count overflowed",
+                ))?
+        };
+        let logical_complete_rows =
+            checked_add_rows(self.logical_complete_rows, projection.logical_complete_rows)?;
+        let rejected_rows = self
+            .rejected_rows
+            .checked_add(projection.rejected_rows)
+            .ok_or(CaptureError::SystemInvariant(
+                "DeepSeek Harness rejected-row count overflowed",
+            ))?;
+
+        self.represented_frames = represented_frames;
+        self.rejected_physical_frames = rejected_physical_frames;
+        self.logical_complete_rows = logical_complete_rows;
+        self.rejected_rows = rejected_rows;
+        self.pending_pages.extend(pages);
+        Ok(())
+    }
 }
 
 impl<R: JsonlProviderRuntime> JsonlFamilySemanticExecutor for DeepSeekHarnessSemanticExecutor<R> {
@@ -464,6 +537,9 @@ impl<R: JsonlProviderRuntime> JsonlFamilySemanticExecutor for DeepSeekHarnessSem
         input: &mut JsonlFamilyExecutionIo<R>,
         _worker: &mut JsonlFamilyWorkerContext<R>,
     ) -> Result<Option<JsonlFamilySemanticPage>> {
+        if let Some(page) = self.pending_pages.pop_front() {
+            return Ok(Some(page));
+        }
         let Some(frame) = input.next_record()? else {
             return Ok(None);
         };
@@ -472,27 +548,13 @@ impl<R: JsonlProviderRuntime> JsonlFamilySemanticExecutor for DeepSeekHarnessSem
         }
         let projection =
             self.validate_frame(input.record_bytes(frame)?, frame.physical_ordinal(), true)?;
-        if projection.represented || self.encoding == JsonlPhysicalEncoding::ChecksummedZstdFrames {
-            self.represented_frames =
-                self.represented_frames
-                    .checked_add(1)
-                    .ok_or(CaptureError::SystemInvariant(
-                        "DeepSeek Harness represented-frame count overflowed",
-                    ))?;
-        } else {
-            self.rejected_physical_frames = self.rejected_physical_frames.checked_add(1).ok_or(
-                CaptureError::SystemInvariant("DeepSeek Harness rejected-frame count overflowed"),
-            )?;
-        }
-        self.logical_complete_rows =
-            checked_add_rows(self.logical_complete_rows, projection.logical_complete_rows)?;
-        self.rejected_rows = self
-            .rejected_rows
-            .checked_add(projection.rejected_rows)
+        self.queue_projection(projection)?;
+        self.pending_pages
+            .pop_front()
+            .map(Some)
             .ok_or(CaptureError::SystemInvariant(
-                "DeepSeek Harness rejected-row count overflowed",
-            ))?;
-        Ok(Some(JsonlFamilySemanticPage::new(projection.records)))
+                "DeepSeek Harness frame produced no semantic page",
+            ))
     }
 
     fn finish(self: Box<Self>) -> Result<JsonlFamilySemanticSummary> {
@@ -655,6 +717,270 @@ fn decode_binding(leaf: &JsonlFamilyLeaf) -> Result<SessionHeader> {
     serde_json::from_slice(bytes).map_err(Into::into)
 }
 
+fn session_identity_for_native(
+    native_session_id: &str,
+    source_anchor_scope: SourceAnchorScope,
+) -> Result<StableEntityId> {
+    let source = source_key_scoped(
+        EXPLICIT_SOURCE_FORMAT,
+        native_session_id,
+        source_anchor_scope,
+    )
+    .map_err(contract)?;
+    session_identity(&source, native_session_id).map_err(contract)
+}
+
 fn contract(error: impl std::fmt::Display) -> CaptureError {
     CaptureError::InvalidPayload(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PARENT_NATIVE_ID: &str = "11111111-2222-4333-8444-555555555555";
+    const CHILD_NATIVE_ID: &str = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+
+    fn session_header(native_session_id: &str, parent_session: Option<&str>) -> SessionHeader {
+        let mut header = serde_json::json!({
+            "type": "session",
+            "version": 0,
+            "id": native_session_id,
+            "createdAt": 1,
+            "delegationDepth": u64::from(parent_session.is_some()),
+        });
+        if let Some(parent_session) = parent_session {
+            header["parentSession"] = Value::String(parent_session.to_owned());
+            header["origin"] = Value::String("subagent".to_owned());
+        }
+        let encoded = serde_json::to_vec(&header).unwrap();
+        let ParsedRow::Header(header) = parse_row(&encoded).unwrap() else {
+            panic!("test session row did not parse as a header");
+        };
+        header
+    }
+
+    fn semantic_event(native_session_id: &str) -> SemanticEvent {
+        let encoded = serde_json::to_vec(&serde_json::json!({
+            "type": "user/message",
+            "seq": 0,
+            "time": 2,
+            "data": {
+                "content": [{"type": "text", "text": native_session_id}],
+                "source": {"kind": "user"},
+                "role": "user",
+                "id": format!("{native_session_id}-event"),
+            },
+        }))
+        .unwrap();
+        let ParsedRow::Semantic(event) = parse_row(&encoded).unwrap() else {
+            panic!("test event row did not parse as a semantic event");
+        };
+        event
+    }
+
+    fn semantic_frame(start_sequence: u64, bodies: impl IntoIterator<Item = String>) -> Vec<u8> {
+        let mut frame = Vec::new();
+        for (offset, body) in bodies.into_iter().enumerate() {
+            let sequence = start_sequence + u64::try_from(offset).unwrap();
+            serde_json::to_writer(
+                &mut frame,
+                &serde_json::json!({
+                    "type": "user/message",
+                    "seq": sequence,
+                    "time": 2 + sequence,
+                    "data": {
+                        "content": [{"type": "text", "text": body}],
+                        "source": {"kind": "user"},
+                        "role": "user",
+                        "id": format!("{PARENT_NATIVE_ID}-{sequence}"),
+                    },
+                }),
+            )
+            .unwrap();
+            frame.push(b'\n');
+        }
+        frame
+    }
+
+    fn framed_executor(expected_sequence: u64) -> DeepSeekHarnessSemanticExecutor<()> {
+        let source = source_key_scoped(
+            EXPLICIT_SOURCE_FORMAT,
+            PARENT_NATIVE_ID,
+            SourceAnchorScope::Unqualified,
+        )
+        .unwrap();
+        DeepSeekHarnessSemanticExecutor::new(
+            source,
+            SourceAnchorScope::Unqualified,
+            PathBuf::from("session.jsonl.zstd"),
+            session_header(PARENT_NATIVE_ID, None),
+            JsonlPhysicalEncoding::ChecksummedZstdFrames,
+            expected_sequence,
+        )
+        .unwrap()
+    }
+
+    fn assert_pending_pages(
+        executor: &DeepSeekHarnessSemanticExecutor<()>,
+        expected_sequences: std::ops::Range<u64>,
+    ) {
+        const PAGE_MAX_RECORDS: usize = 64;
+        const PAGE_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+        let mut sequences = Vec::new();
+        for page in &executor.pending_pages {
+            assert!(page.records().len() <= PAGE_MAX_RECORDS);
+            let encoded_bytes = page
+                .records()
+                .iter()
+                .map(|record| record.encode_stored().unwrap().len())
+                .sum::<usize>();
+            assert!(encoded_bytes <= PAGE_MAX_BYTES, "{encoded_bytes}");
+            sequences.extend(page.records().iter().map(|record| record.event_sequence));
+        }
+        assert_eq!(sequences, expected_sequences.collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn accepted_frame_over_record_cap_splits_without_recounting_or_reordering() {
+        let mut executor = framed_executor(0);
+        let frame = semantic_frame(0, (0..65).map(|sequence| format!("small-{sequence}")));
+        let projection = executor.validate_frame(&frame, 1, true).unwrap();
+        assert_eq!(projection.records.len(), 65);
+        executor.queue_projection(projection).unwrap();
+
+        assert_eq!(executor.pending_pages.len(), 2);
+        assert_pending_pages(&executor, 0..65);
+        assert_eq!(executor.expected_sequence, 65);
+        assert_eq!(executor.represented_frames, 1);
+        assert_eq!(executor.rejected_physical_frames, 0);
+        assert_eq!(executor.logical_complete_rows, 65);
+        assert_eq!(executor.rejected_rows, 0);
+
+        let mut resumed = framed_executor(executor.expected_sequence);
+        let resumed_frame = semantic_frame(65, ["resumed".to_owned()]);
+        let resumed_projection = resumed.validate_frame(&resumed_frame, 2, true).unwrap();
+        resumed.queue_projection(resumed_projection).unwrap();
+        assert_pending_pages(&resumed, 65..66);
+        assert_eq!(resumed.expected_sequence, 66);
+        assert_eq!(resumed.represented_frames, 1);
+        assert_eq!(resumed.logical_complete_rows, 1);
+    }
+
+    #[test]
+    fn accepted_frame_over_encoded_byte_cap_splits_into_exact_bounded_pages() {
+        let mut executor = framed_executor(0);
+        let body = "large-frame-body".repeat(100_000);
+        let frame = semantic_frame(0, [body.clone(), body.clone(), body]);
+        let projection = executor.validate_frame(&frame, 1, true).unwrap();
+        let total_encoded_bytes = projection
+            .records
+            .iter()
+            .map(|record| record.encode_stored().unwrap().len())
+            .sum::<usize>();
+        assert!(
+            total_encoded_bytes > 8 * 1024 * 1024,
+            "{total_encoded_bytes}"
+        );
+        assert!(projection
+            .records
+            .iter()
+            .all(|record| { record.encode_stored().unwrap().len() <= 8 * 1024 * 1024 }));
+        executor.queue_projection(projection).unwrap();
+
+        assert!(executor.pending_pages.len() > 1);
+        assert_pending_pages(&executor, 0..3);
+        assert_eq!(executor.expected_sequence, 3);
+        assert_eq!(executor.represented_frames, 1);
+        assert_eq!(executor.logical_complete_rows, 3);
+    }
+
+    fn project_session(
+        native_session_id: &str,
+        parent_session: Option<&str>,
+        source_anchor_scope: SourceAnchorScope,
+        source_root: &Path,
+    ) -> CoreRecord {
+        let source = source_key_scoped(
+            EXPLICIT_SOURCE_FORMAT,
+            native_session_id,
+            source_anchor_scope,
+        )
+        .unwrap();
+        DeepSeekHarnessSemanticExecutor::<()>::new(
+            source,
+            source_anchor_scope,
+            source_root.join(native_session_id).join("session.jsonl"),
+            session_header(native_session_id, parent_session),
+            JsonlPhysicalEncoding::RawJsonl,
+            0,
+        )
+        .unwrap()
+        .project_event(semantic_event(native_session_id))
+        .unwrap()
+        .unwrap()
+    }
+
+    fn project_pair(
+        source_anchor_scope: SourceAnchorScope,
+        source_root: &Path,
+    ) -> (CoreRecord, CoreRecord) {
+        (
+            project_session(PARENT_NATIVE_ID, None, source_anchor_scope, source_root),
+            project_session(
+                CHILD_NATIVE_ID,
+                Some(PARENT_NATIVE_ID),
+                source_anchor_scope,
+                source_root,
+            ),
+        )
+    }
+
+    #[test]
+    fn scoped_parent_child_projection_is_distinct_and_coherent_across_lineages() {
+        let first = project_pair(SourceAnchorScope::Lineage([1; 32]), Path::new("first-root"));
+        let second = project_pair(
+            SourceAnchorScope::Lineage([2; 32]),
+            Path::new("second-root"),
+        );
+
+        assert_eq!(first.0.parent_session_id, None);
+        assert_eq!(first.1.parent_session_id, Some(first.0.session_id));
+        assert_eq!(second.0.parent_session_id, None);
+        assert_eq!(second.1.parent_session_id, Some(second.0.session_id));
+        assert_ne!(first.0.session_id, second.0.session_id);
+        assert_ne!(first.1.session_id, second.1.session_id);
+        assert_ne!(
+            first.1.parent_session_id,
+            Some(session_identity(&first.1.source, PARENT_NATIVE_ID).unwrap())
+        );
+    }
+
+    #[test]
+    fn unqualified_projection_preserves_released_and_path_independent_identity() {
+        let original = project_pair(SourceAnchorScope::Unqualified, Path::new("original-root"));
+        let relocated = project_pair(SourceAnchorScope::Unqualified, Path::new("relocated-root"));
+        let released_parent_source =
+            ctx_history_native_jsonl_parsers::deepseek_harness::source_key(
+                EXPLICIT_SOURCE_FORMAT,
+                PARENT_NATIVE_ID,
+            )
+            .unwrap();
+        let released_parent_session_id =
+            session_identity(&released_parent_source, PARENT_NATIVE_ID).unwrap();
+
+        assert!(original
+            .0
+            .source
+            .exact_descriptor_eq(&released_parent_source));
+        assert_eq!(original.0.session_id, released_parent_session_id);
+        assert_eq!(
+            original.1.parent_session_id,
+            Some(released_parent_session_id)
+        );
+        assert_eq!(relocated.0.session_id, original.0.session_id);
+        assert_eq!(relocated.1.session_id, original.1.session_id);
+        assert_eq!(relocated.1.parent_session_id, original.1.parent_session_id);
+    }
 }

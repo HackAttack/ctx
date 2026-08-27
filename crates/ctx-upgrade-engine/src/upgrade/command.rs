@@ -13,10 +13,12 @@ use ctx_history_platform::platform_security::{
 };
 
 use super::download::DownloadedArtifact;
+use super::install::managed_install_marker_for_current_exe;
 use super::install::{
-    apply_artifact, capture_install_snapshot, current_install_path, pending_recovery,
-    recover_interrupted_install, remove_terminal_recovery, semantic_install_required, ApplyResult,
-    InstallRecovery, PendingRecovery, TerminalRecovery,
+    absent_install_marker_error, apply_artifact, capture_install_snapshot,
+    classify_repair_requirements, current_exe_is_unmanaged, current_install_path, pending_recovery,
+    recover_interrupted_install, remove_terminal_recovery, ApplyResult, InstallRecovery,
+    ManagedInstallMarker, PendingRecovery, TerminalRecovery,
 };
 #[cfg(unix)]
 use super::install::{
@@ -27,12 +29,13 @@ use super::metadata::{
     verify_metadata_signature,
 };
 use super::state::{
-    begin_manual_attempt_locked, begin_recovery_attempt_locked, claim_daemon_auto_upgrade,
-    reconcile_replacement_terminal_locked, write_state_checked_locked, write_state_error_locked,
-    write_state_phase_locked, AutoUpgradeClaim, UpgradeAttempt, UpgradeLock,
+    automatic_recovery_channel_locked, begin_automatic_attempt_locked, begin_manual_attempt_locked,
+    begin_recovery_attempt_locked, reconcile_replacement_terminal_locked,
+    try_acquire_automatic_upgrade, write_state_checked_locked, write_state_error_locked,
+    write_state_phase_locked, AutomaticUpgradeLease, UpgradeAttempt, UpgradeLock,
 };
 use super::{
-    env_flag, platform_key, version_gt, AutomaticUpgradeObservation,
+    automatic_upgrade_check_due, env_flag, platform_key, version_gt, AutomaticUpgradeObservation,
     AutomaticUpgradePolicyProvider, AutomaticUpgradePolicySnapshot, DaemonUpgradeLease,
     DaemonUpgradePort, SemanticAccelerator, SemanticLayoutPort, UpgradeEngine, UpgradeFailureKind,
     UpgradeObserver, UpgradePlan, UpgradePolicy, UpgradeTerminalStatus,
@@ -41,8 +44,8 @@ use super::{
 use super::{is_valid_upgrade_attempt_id, ReleaseProcessPort};
 
 mod daemon;
-pub use daemon::PreparedDaemonUpgrade;
-use daemon::{finish_daemon_auto_upgrade, prepare_daemon_auto_upgrade};
+pub use daemon::PreparedAutomaticUpgrade;
+use daemon::{finish_automatic_upgrade, prepare_automatic_upgrade};
 
 const RELEASE_METADATA_MAX_BYTES: usize = 1024 * 1024;
 const RELEASE_METADATA_SIGNATURE_MAX_BYTES: usize = 64 * 1024;
@@ -181,26 +184,26 @@ impl<D: DaemonUpgradePort + ?Sized> UpgradeEngine<'_, D> {
         observer: &O,
         data_root: &Path,
         startup_policy: &P::Snapshot,
-    ) -> Result<Option<PreparedDaemonUpgrade>>
+    ) -> Result<Option<PreparedAutomaticUpgrade>>
     where
         P: AutomaticUpgradePolicyProvider,
         O: UpgradeObserver<P::Snapshot>,
     {
-        prepare_daemon_auto_upgrade(self, policy_provider, observer, data_root, startup_policy)
+        prepare_automatic_upgrade(self, policy_provider, observer, data_root, startup_policy)
     }
 
     pub fn finish_automatic<P, O>(
         &self,
         policy_provider: &P,
         observer: &O,
-        prepared: PreparedDaemonUpgrade,
+        prepared: PreparedAutomaticUpgrade,
         handoff: Option<D::Lease>,
     ) -> Result<()>
     where
         P: AutomaticUpgradePolicyProvider,
         O: UpgradeObserver<P::Snapshot>,
     {
-        finish_daemon_auto_upgrade(self, policy_provider, observer, prepared, handoff)
+        finish_automatic_upgrade(self, policy_provider, observer, prepared, handoff)
     }
 }
 
@@ -349,9 +352,16 @@ fn check_upgrade<D: DaemonUpgradePort + ?Sized>(
             }
         }
     }
+    // Unmanaged installations have no installation lock or scheduler state
+    // beside the executable: the check is lock-free and stateless so
+    // read-only package-manager directories keep working.
+    if current_exe_is_unmanaged() {
+        let plan = build_upgrade_plan(engine, policy, channel_override, false)?;
+        return Ok(check_outcome(command, plan, None));
+    }
     let lock = UpgradeLock::acquire(data_root)?;
     let attempt = begin_manual_attempt_locked(data_root, &lock, command)?;
-    let plan = match build_upgrade_plan(engine, &lock, policy, channel_override, false) {
+    let plan = match build_upgrade_plan(engine, policy, channel_override, false) {
         Ok(plan) => plan,
         Err(error) => {
             let _ = write_state_error_locked(
@@ -370,6 +380,19 @@ fn check_upgrade<D: DaemonUpgradePort + ?Sized>(
         "up_to_date"
     };
     write_state_checked_locked(data_root, &lock, &attempt, &plan, status, policy.interval)?;
+    Ok(check_outcome(command, plan, Some(attempt.id().to_owned())))
+}
+
+fn check_outcome(
+    command: &'static str,
+    plan: UpgradePlan,
+    attempt_id: Option<String>,
+) -> UpgradeOutcome {
+    let status = if plan.update_available {
+        "available"
+    } else {
+        "up_to_date"
+    };
     let message = if plan.update_available {
         format!(
             "ctx {} is available (current {}, channel {}).",
@@ -379,7 +402,7 @@ fn check_upgrade<D: DaemonUpgradePort + ?Sized>(
         format!("ctx {} is up to date.", plan.current_version)
     };
     let warnings = plan.warnings.clone();
-    Ok(UpgradeOutcome {
+    UpgradeOutcome {
         command,
         status,
         message,
@@ -387,8 +410,8 @@ fn check_upgrade<D: DaemonUpgradePort + ?Sized>(
         applied: false,
         dry_run: false,
         warnings,
-        attempt_id: Some(attempt.id().to_owned()),
-    })
+        attempt_id,
+    }
 }
 
 fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
@@ -513,13 +536,23 @@ fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
     {
         env::remove_var(RECOVERY_REEXEC_ENV);
     }
+    // Unmanaged installations cannot self-upgrade. Fail with the conversion
+    // guidance before acquiring any installation-scoped state so read-only
+    // package-manager directories report the same actionable error.
+    if current_exe_is_unmanaged() {
+        return Err(absent_install_marker_error());
+    }
     let upgrade_lock = UpgradeLock::acquire(data_root)?;
     let attempt = begin_manual_attempt_locked(data_root, &upgrade_lock, "manual_apply")?;
     let result = (|| -> Result<UpgradeOutcome> {
-        let plan = build_upgrade_plan(engine, &upgrade_lock, policy, channel_override, true)?;
-        let semantic_repair_required =
-            semantic_install_required(engine.semantic_layout, &plan, data_root)?;
-        if !plan.update_available && !semantic_repair_required {
+        let plan = build_upgrade_plan(engine, policy, channel_override, true)?;
+        let repairs = classify_repair_requirements(
+            engine.semantic_layout,
+            &plan,
+            data_root,
+            policy.semantic_enabled,
+        )?;
+        if !plan.update_available && !repairs.any() {
             write_state_checked_locked(
                 data_root,
                 &upgrade_lock,
@@ -573,6 +606,11 @@ fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
                         "ctx {} would upgrade to {}.",
                         plan.current_version, plan.latest_version
                     )
+                } else if repairs.legacy_runtime {
+                    format!(
+                        "ctx {} would repair its signed legacy ONNX Runtime installation.",
+                        plan.current_version
+                    )
                 } else {
                     format!(
                         "ctx {} would provision signed Semantic model and runtime assets.",
@@ -601,7 +639,8 @@ fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
         } else {
             None
         };
-        let mut runtime_artifact = if plan.update_available && plan.semantic_provisioning.is_none()
+        let mut runtime_artifact = if (plan.update_available || repairs.legacy_runtime)
+            && plan.semantic_provisioning.is_none()
         {
             match (
                 plan.metadata.onnxruntime.as_ref(),
@@ -625,7 +664,7 @@ fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
             None
         };
         let mut semantic_artifacts = Vec::new();
-        if semantic_repair_required {
+        if repairs.catalog {
             let provisioning = plan
                 .semantic_provisioning
                 .as_ref()
@@ -696,6 +735,9 @@ fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
                     plan.latest_version,
                     plan.install_path.display()
                 )
+            } else if repairs.legacy_runtime {
+                "scheduled signed legacy ONNX Runtime repair; replacement will finish after this process exits"
+                    .to_owned()
             } else {
                 "scheduled signed Semantic asset repair; replacement will finish after this process exits"
                     .to_owned()
@@ -737,6 +779,11 @@ fn apply_upgrade<D: DaemonUpgradePort + ?Sized>(
                 plan.current_version,
                 plan.latest_version,
                 plan.install_path.display()
+            )
+        } else if repairs.legacy_runtime {
+            format!(
+                "repaired signed legacy ONNX Runtime installation for ctx {}",
+                plan.current_version
             )
         } else {
             format!(
@@ -786,7 +833,6 @@ fn record_post_apply_state(
 
 fn build_upgrade_plan<D: DaemonUpgradePort + ?Sized>(
     engine: &UpgradeEngine<'_, D>,
-    lock: &UpgradeLock,
     policy: UpgradePolicy<'_>,
     channel_override: Option<&str>,
     require_managed: bool,
@@ -799,7 +845,6 @@ fn build_upgrade_plan<D: DaemonUpgradePort + ?Sized>(
         .to_owned();
     let mut warnings = Vec::new();
     let snapshot = capture_install_snapshot(
-        lock.installation(),
         require_managed,
         &platform,
         &channel,

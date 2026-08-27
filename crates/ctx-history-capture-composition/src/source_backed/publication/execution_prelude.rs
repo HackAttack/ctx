@@ -90,8 +90,10 @@ pub(super) fn prepare_refresh(
         .filter(|route| {
             route.driver.is_some()
                 || !route.certified_missing_paths.is_empty()
-                || (route.metadata.source.status == ProviderSourceStatus::Unknown
-                    && route.metadata.route_identity.is_some())
+                || (matches!(
+                    route.metadata.source.status,
+                    ProviderSourceStatus::Missing | ProviderSourceStatus::Unknown
+                ) && route.metadata.route_identity.is_some())
         })
         .filter_map(|route| route.metadata.route_identity.clone())
         .collect::<BTreeSet<_>>();

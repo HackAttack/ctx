@@ -171,7 +171,7 @@ const TOPICS: &[DocTopic] = &[
         id: "upgrade",
         title: "Upgrade",
         audience: "human-agent",
-        summary: "Managed upgrades, daemon-owned automatic upgrades, and installation state.",
+        summary: "Managed upgrades, automatic checks, and installation state.",
         tags: &["upgrade", "auto-upgrade", "install"],
         source_path: "docs/upgrade.md",
         body: include_str!("../../../docs/upgrade.md"),

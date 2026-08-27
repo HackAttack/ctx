@@ -103,6 +103,7 @@ where
             ctx_daemon_application::DaemonTrigger::Setup => DaemonTrigger::Setup,
             ctx_daemon_application::DaemonTrigger::Import => DaemonTrigger::Import,
             ctx_daemon_application::DaemonTrigger::Search => DaemonTrigger::Search,
+            ctx_daemon_application::DaemonTrigger::Semantic => DaemonTrigger::Semantic,
         }),
         supervisor: if matches!(
             request.start_mode,
@@ -194,10 +195,17 @@ impl DaemonInstallationLease for CliDaemonInstallationLease {
 impl DaemonInstallationPort for CliDaemonInstallationPort {
     type Lease = CliDaemonInstallationLease;
 
-    fn lifecycle_blocks_current_process(&self, data_root: &Path) -> bool {
+    fn lifecycle_blocks_current_process(
+        &self,
+        data_root: &Path,
+        allow_automatic_recovery: bool,
+    ) -> bool {
         ctx_upgrade_engine::installation_hosted_uninstall_is_active().unwrap_or(true)
             || (!super::daemon_autostart::current_process_owns_daemon_upgrade_handoff(data_root)
-                && ctx_upgrade_engine::installation_upgrade_is_active().unwrap_or(false))
+                && ctx_upgrade_engine::installation_upgrade_is_active().unwrap_or(false)
+                && !(allow_automatic_recovery
+                    && ctx_upgrade_engine::installation_interrupted_automatic_upgrade_is_recoverable()
+                        .unwrap_or(false)))
     }
 
     fn upgrade_handoff_blocks_current_process(&self, data_root: &Path) -> bool {
@@ -214,8 +222,13 @@ impl DaemonInstallationPort for CliDaemonInstallationPort {
         trigger: DaemonTrigger,
         loop_interval_seconds: Option<u64>,
         allow_active_upgrade: bool,
+        allow_automatic_recovery: bool,
         persistent: bool,
     ) -> Result<Option<Self::Lease>> {
+        let allow_active_upgrade = allow_active_upgrade
+            || (allow_automatic_recovery
+                && ctx_upgrade_engine::installation_interrupted_automatic_upgrade_is_recoverable(
+                )?);
         super::daemon_autostart::InstallationDaemonLease::acquire(
             data_root,
             cli_trigger(trigger),
@@ -288,5 +301,6 @@ fn cli_trigger(trigger: DaemonTrigger) -> DaemonTriggerCommandArg {
         DaemonTrigger::Setup => DaemonTriggerCommandArg::Setup,
         DaemonTrigger::Import => DaemonTriggerCommandArg::Import,
         DaemonTrigger::Search => DaemonTriggerCommandArg::Search,
+        DaemonTrigger::Semantic => DaemonTriggerCommandArg::Semantic,
     }
 }

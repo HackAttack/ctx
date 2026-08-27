@@ -51,6 +51,7 @@ enum RouteTargetSample {
 pub struct SourceBackedWatchCatalog {
     routes: BTreeMap<SourceRouteIdentity, RouteWatchTargets>,
     provider_root_config_digest: Option<String>,
+    automatic_split_legacy_routes: BTreeSet<SourceRouteIdentity>,
 }
 
 impl SourceBackedWatchCatalog {
@@ -63,6 +64,14 @@ impl SourceBackedWatchCatalog {
 
     pub fn route_ids(&self) -> impl ExactSizeIterator<Item = &SourceRouteIdentity> {
         self.routes.keys()
+    }
+
+    /// Whether a retained route identity is the released predecessor of a
+    /// current role-specific automatic cohort.  This is topology metadata,
+    /// not authority to publish the migration; the executor still validates
+    /// the complete cohort and its witness before changing generations.
+    pub fn has_automatic_split_legacy_route(&self, route: &SourceRouteIdentity) -> bool {
+        self.automatic_split_legacy_routes.contains(route)
     }
 
     pub fn route_ids_for_provider(
@@ -347,12 +356,18 @@ impl SourceBackedProviderRegistry {
             .flat_map(|root| root.routes().iter().cloned())
             .collect::<BTreeSet<_>>();
         for route in &self.routes {
-            if route.driver.is_none() && route.certified_missing_paths.is_empty() {
+            if route.driver.is_none()
+                && route.certified_missing_paths.is_empty()
+                && route.metadata.source.status != ProviderSourceStatus::Missing
+            {
                 continue;
             }
             let Some(identity) = route.metadata.route_identity.clone() else {
                 continue;
             };
+            if let Some(legacy) = automatic_route_split_legacy_route(route) {
+                catalog.automatic_split_legacy_routes.insert(legacy);
+            }
             let catalog_coverage_eligible = configured_route_ids.contains(&identity);
             let targets = catalog
                 .routes
@@ -620,6 +635,7 @@ mod tests {
             catalog_support: crate::ProviderCatalogSupport::None,
             status: ProviderSourceStatus::Available,
             unsupported_reason: None,
+            route_provenance: Default::default(),
         }
     }
 

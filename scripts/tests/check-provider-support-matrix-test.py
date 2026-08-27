@@ -45,6 +45,89 @@ class ProviderSupportMatrixTest(unittest.TestCase):
         self.assertEqual({provider["status"] for provider in providers}, {"supported"})
         self.assertNotIn("windsurf", {provider["id"] for provider in providers})
 
+    def test_fx_public_contract_covers_legacy_and_v3_without_overclaiming(self) -> None:
+        fx = next(provider for provider in self.providers() if provider["id"] == "fx")
+        self.assertEqual(fx["capture_provider"], "fx")
+        self.assertEqual(
+            fx["implemented_paths"][0]["source_format"],
+            "fx_sessions_tree",
+        )
+        self.assertEqual(
+            fx["configured_root"]["expander"],
+            {
+                "kind": "exact_source",
+                "source_format": "fx_sessions_tree",
+                "route_role": "fx-sessions",
+            },
+        )
+        public_text = " ".join(
+            fx["history_locations"]
+            + fx["limitations"]
+            + fx["implemented_paths"][0]["notes"]
+        )
+        self.assertIn("v0.0.6", public_text)
+        self.assertIn("accepted by current fx v0.0.6", public_text)
+        self.assertIn("schema-v1/v2", public_text)
+        self.assertIn("schema-v3", public_text)
+        self.assertIn("events.jsonl is canonical history", public_text)
+        self.assertIn("session.json is only a projection", public_text)
+        self.assertIn("commit.<generation>.json", public_text)
+        self.assertIn("16 MiB", public_text)
+        self.assertIn("Marker-less schema-v3 snapshots", public_text)
+        self.assertIn("migration alone does not duplicate history", public_text)
+        for field in (
+            "tool_calls",
+            "tool_output",
+            "command_output",
+            "files_touched",
+            "model_identity",
+            "token_usage",
+        ):
+            self.assertFalse(fx["fidelity"][field], field)
+
+    def test_configured_root_capability_is_required_for_every_provider(self) -> None:
+        providers = self.providers()
+        for provider in providers:
+            matrix.validate_configured_root(provider["configured_root"], str(provider["id"]))
+        states = {provider["configured_root"]["state"] for provider in providers}
+        self.assertEqual(states, matrix.ALLOWED_CONFIGURED_ROOT_STATES)
+
+        missing = copy.deepcopy(providers[0])
+        missing.pop("configured_root")
+        with self.assertRaisesRegex(matrix.MatrixError, r"configured_root must be dict"):
+            matrix.validate_provider(missing, 0, set())
+
+    def test_configured_root_capability_rejects_incoherent_shapes(self) -> None:
+        with self.assertRaisesRegex(matrix.MatrixError, r"intentional state.*exactly state"):
+            matrix.validate_configured_root(
+                {
+                    "state": "intentional_automatic_exact",
+                    "expected_path_kind": "directory",
+                },
+                "deferred",
+            )
+        with self.assertRaisesRegex(matrix.MatrixError, r"expander.kind has unsupported value"):
+            matrix.validate_configured_root(
+                {
+                    "state": "enabled",
+                    "expected_path_kind": "directory",
+                    "expander": {"kind": "guessed_home"},
+                },
+                "enabled",
+            )
+        with self.assertRaisesRegex(matrix.MatrixError, r"exact OpenHands root kinds"):
+            matrix.validate_configured_root(
+                {
+                    "state": "enabled",
+                    "expected_path_kind": "directory",
+                    "expander": {
+                        "kind": "openhands_kind_v1",
+                        "root_kinds": ["current-conversations"],
+                    },
+                },
+                "openhands",
+            )
+
     def test_codex_copy_claim_stays_deferred(self) -> None:
         providers = copy.deepcopy(self.providers())
         codex = next(provider for provider in providers if provider["id"] == "codex")

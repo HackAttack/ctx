@@ -6,6 +6,7 @@ mod lock_fs;
 #[cfg(test)]
 mod lock_tests;
 mod marker;
+mod path_identity;
 mod runtime;
 mod transaction;
 
@@ -24,16 +25,20 @@ pub use hosted_transaction::{
 pub use hosted_transaction::{
     run as run_hosted_transaction, HostedTransactionAction, HostedTransactionArgs,
 };
+pub(in crate::upgrade) use lock_fs::{read_stable_file, StableFileKind};
+pub(in crate::upgrade) use marker::absent_install_marker_error;
 #[cfg(any(unix, test))]
 pub(in crate::upgrade) use marker::classify_install_marker_at;
+pub(in crate::upgrade) use marker::install_marker_path;
+pub(in crate::upgrade) use marker::installation_is_unmanaged_at;
 pub use marker::is_valid_install_attempt_id;
 pub(super) use marker::InstallFingerprint;
 pub use marker::{
-    current_install_path, invalid_install_marker_recovery_guidance,
-    unmanaged_install_conversion_guidance, InstallMarker,
+    current_exe_has_managed_install_marker_hint, current_exe_is_unmanaged, current_install_path,
+    invalid_install_marker_recovery_guidance, unmanaged_install_conversion_guidance, InstallMarker,
 };
 pub use marker::{managed_install_marker_for_current_exe, ManagedInstallMarker};
-pub(super) use runtime::semantic_install_required;
+pub use path_identity::managed_install_path_identity_matches;
 pub(super) use transaction::ApplyResult;
 #[cfg(windows)]
 pub(in crate::upgrade) use transaction::HelperOutcome;
@@ -44,6 +49,42 @@ pub(super) use transaction::{PendingRecovery, TerminalRecovery};
 use self::lock::canonical_executable;
 pub(in crate::upgrade) use self::lock::InstallationLock;
 use super::{ReleaseProcessPort, SemanticLayoutPort, UpgradePlan};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RepairRequirements {
+    pub(super) catalog: bool,
+    pub(super) legacy_runtime: bool,
+}
+
+impl RepairRequirements {
+    pub(super) fn any(self) -> bool {
+        self.catalog || self.legacy_runtime
+    }
+}
+
+pub(super) fn classify_repair_requirements(
+    layout: &dyn SemanticLayoutPort,
+    plan: &UpgradePlan,
+    data_root: &Path,
+    semantic_enabled: bool,
+) -> Result<RepairRequirements> {
+    let catalog = runtime::semantic_install_required(layout, plan, data_root)?;
+    let legacy_runtime = if !plan.update_available
+        && plan.latest_version == plan.current_version
+        && semantic_enabled
+        && plan.semantic_provisioning.is_none()
+        && plan.metadata.onnxruntime.is_some()
+    {
+        runtime::legacy_runtime_install_required(plan, data_root)?
+    } else {
+        false
+    };
+    debug_assert!(!(catalog && legacy_runtime));
+    Ok(RepairRequirements {
+        catalog,
+        legacy_runtime,
+    })
+}
 
 #[cfg(unix)]
 pub(in crate::upgrade) fn discard_legacy_previous_binary(install_path: &Path) -> Result<()> {
@@ -60,7 +101,6 @@ pub(in crate::upgrade) struct InstallSnapshot {
 }
 
 pub(in crate::upgrade) fn capture_install_snapshot(
-    _installation_lock: &InstallationLock,
     require_managed: bool,
     platform: &str,
     channel: &str,
@@ -201,6 +241,13 @@ pub(in crate::upgrade) fn pending_recovery(
     semantic_layout: &dyn SemanticLayoutPort,
 ) -> Result<Option<transaction::PendingRecovery>> {
     transaction::pending_recovery(data_root, semantic_layout)
+}
+
+pub(in crate::upgrade) fn interrupted_recovery_admission_matches(
+    install_path: &Path,
+    attempt_id: &str,
+) -> Result<bool> {
+    transaction::interrupted_recovery_admission_matches(install_path, attempt_id)
 }
 
 pub(in crate::upgrade) fn remove_terminal_recovery(
@@ -421,9 +468,14 @@ try {
   if ($versionText -cne ($ExpectedVersion + [char]10)) {
     throw "runtime VERSION_NUMBER is not exactly $ExpectedVersion"
   }
-  New-Item -ItemType Directory -Path (Join-Path $Destination 'lib') -Force | Out-Null
+  [void][System.IO.Directory]::CreateDirectory(
+    [System.IO.Path]::Combine($Destination, 'lib')
+  )
   foreach ($name in $expectedFiles) {
-    $target = Join-Path $Destination ($name.Replace('/', '\'))
+    $target = [System.IO.Path]::Combine(
+      $Destination,
+      $name.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+    )
     $sourceStream = $entries[$name].Open()
     try {
       $targetStream = [System.IO.File]::Open($target, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)

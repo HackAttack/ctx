@@ -32,6 +32,25 @@ pub fn reject_blocking_automatic_registry_issues(
     let mut blocker_count = 0usize;
     let mut blocker_details = Vec::new();
     for issue in issues {
+        if let SourceBackedAutomaticRegistryIssue::Discovery(issue) = issue {
+            if issue.kind != DiscoveryIssueKind::ConfiguredRootConflict {
+                continue;
+            }
+            blocker_count = blocker_count.saturating_add(1);
+            if blocker_details.len() < SOURCE_REFRESH_BUILD_ISSUE_LIMIT {
+                blocker_details.push(format!(
+                    "{} {}: {}",
+                    issue.provider.as_str(),
+                    issue
+                        .path
+                        .as_deref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "configured root".to_owned()),
+                    issue.reason,
+                ));
+            }
+            continue;
+        }
         let SourceBackedAutomaticRegistryIssue::Unavailable { source, reason } = issue else {
             continue;
         };
@@ -211,6 +230,7 @@ pub(super) fn automatic_registry_route_less_blockers(
                     issue.kind,
                     DiscoveryIssueKind::NoDiskHistory
                         | DiscoveryIssueKind::InsufficientOfficialEvidence
+                        | DiscoveryIssueKind::ConfiguredRootMissing
                 ) =>
             {
                 continue;

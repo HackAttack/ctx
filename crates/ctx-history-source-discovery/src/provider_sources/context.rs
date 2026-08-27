@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ctx_history_capture_model::ProviderRootDefinition;
+use ctx_history_capture_model::{ProviderRootDefinition, ProviderRootSet, ProviderRootSetError};
 use directories::BaseDirs;
 
 /// Process environment keys that discovery may inherit.
@@ -138,7 +138,7 @@ pub struct DiscoveryContext {
     platform_dirs: DiscoveryPlatformDirs,
     inherited_env: BTreeMap<&'static str, OsString>,
     automatic_provider_discovery: bool,
-    configured_provider_roots: Vec<ProviderRootDefinition>,
+    configured_provider_roots: ProviderRootSet,
 }
 
 impl DiscoveryContext {
@@ -157,7 +157,7 @@ impl DiscoveryContext {
             platform_dirs: DiscoveryPlatformDirs::from_process(),
             inherited_env,
             automatic_provider_discovery: true,
-            configured_provider_roots: Vec::new(),
+            configured_provider_roots: ProviderRootSet::default(),
         }
     }
 
@@ -177,7 +177,7 @@ impl DiscoveryContext {
             platform_dirs,
             inherited_env: BTreeMap::new(),
             automatic_provider_discovery: true,
-            configured_provider_roots: Vec::new(),
+            configured_provider_roots: ProviderRootSet::default(),
         }
     }
 
@@ -196,7 +196,7 @@ impl DiscoveryContext {
             platform_dirs,
             inherited_env: BTreeMap::new(),
             automatic_provider_discovery: true,
-            configured_provider_roots: Vec::new(),
+            configured_provider_roots: ProviderRootSet::default(),
         }
     }
 
@@ -276,17 +276,28 @@ impl DiscoveryContext {
         self
     }
 
-    pub fn with_configured_provider_roots(
+    pub fn with_configured_provider_roots(mut self, roots: Vec<ProviderRootDefinition>) -> Self {
+        self.configured_provider_roots = ProviderRootSet::from_untrusted_lossy(roots);
+        self
+    }
+
+    /// Supplies roots through the strict bounded model used by typed config
+    /// and other callers that must reject, rather than omit, invalid input.
+    pub fn try_with_configured_provider_roots(
         mut self,
-        mut roots: Vec<ProviderRootDefinition>,
-    ) -> Self {
-        roots.sort_by(|left, right| left.id.cmp(&right.id));
+        roots: Vec<ProviderRootDefinition>,
+    ) -> Result<Self, ProviderRootSetError> {
+        self.configured_provider_roots = ProviderRootSet::try_new(roots)?;
+        Ok(self)
+    }
+
+    pub fn with_provider_root_set(mut self, roots: ProviderRootSet) -> Self {
         self.configured_provider_roots = roots;
         self
     }
 
     pub fn configured_provider_roots(&self) -> &[ProviderRootDefinition] {
-        &self.configured_provider_roots
+        self.configured_provider_roots.as_slice()
     }
 
     pub fn with_automatic_provider_discovery(mut self, enabled: bool) -> Self {
@@ -317,6 +328,34 @@ fn process_effective_uid() -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_roots_over_the_shared_path_bound_never_enter_the_context() {
+        let root = ProviderRootDefinition {
+            id: "oversized".to_owned(),
+            provider: ctx_history_core::CaptureProvider::Claude,
+            path: PathBuf::from(
+                "x".repeat(ctx_history_capture_model::MAX_PROVIDER_ROOT_ENCODED_PATH_BYTES + 1),
+            ),
+            group: None,
+            kind: None,
+        };
+        assert!(!root.has_bounded_path());
+
+        let base = DiscoveryContext::new(
+            "/home/test",
+            "/work/test",
+            DiscoveryPlatform::Linux,
+            DiscoveryPlatformDirs::default(),
+        );
+        assert!(matches!(
+            base.clone().try_with_configured_provider_roots(vec![root.clone()]),
+            Err(ProviderRootSetError::PathTooLong { root_id }) if root_id == "oversized"
+        ));
+        let context = base.with_configured_provider_roots(vec![root]);
+
+        assert!(context.configured_provider_roots().is_empty());
+    }
 
     #[test]
     fn injected_environment_accepts_only_frozen_discovery_keys() {

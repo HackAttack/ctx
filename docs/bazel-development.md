@@ -136,21 +136,6 @@ or an explicitly empty governor path fails with status 125. A governed host
 defaults Bazel jobs and local CPU resources to 16 while preserving explicit
 resource overrides.
 
-## Optional remote execution
-
-The repository defines one opt-in REAPI profile: `--config=ctx-reapi`. It sends
-every remotely eligible spawn action to the configured executor and disables
-local fallback. Connection and authentication settings remain external to the
-repository and must be supplied by the Bazel invocation or machine
-configuration.
-
-After those external settings are available, use the profile with an ordinary
-wrapper command:
-
-```bash
-scripts/bazelw test //crates/ctx-cli:unit_tests --config=ctx-reapi
-```
-
 ## Focused, affected, and complete checks
 
 ```bash
@@ -216,6 +201,18 @@ at eight, caps default Rust test threads at four, uses
 `target/cargo-diagnostic`, and disables development/test debug information
 unless `CTX_CARGO_DIAGNOSTIC_DEBUG=1`. A Cargo result diagnoses parity; it does
 not replace the owning Bazel test.
+
+For mutating compiler repairs, `scripts/cargo-fixit.sh` is the sole supported
+route. It runs the Bazel-pinned cargo-fixit 0.1.15 with
+`--clippy --workspace --all-targets --locked` by default. Do not use
+`cargo fix` or `cargo clippy --fix` directly. The strict Bazel Clippy aspect
+remains the non-mutating merge authority, and edition migrations remain outside
+cargo-fixit's scope.
+
+Dependency hygiene is enforced by the offline `//:cargo_shear_check` Bazel
+test, backed by cargo-shear 1.13.4. Run it directly with
+`scripts/cargo-shear.sh`. Any ignore must identify a dependency or source file
+that Cargo cannot see but the Bazel graph genuinely owns.
 
 Do not revive a parallel Rust development wrapper or enable `sccache` by
 default. Either change would require separate measured evidence and an explicit

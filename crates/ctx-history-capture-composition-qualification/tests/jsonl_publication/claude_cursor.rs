@@ -4,8 +4,11 @@ use std::{
     path::Path,
 };
 
-use ctx_history_core::{CaptureProvider, CoreRecord};
-use ctx_history_index::{VerifiedIndex, WriterOptions};
+use ctx_history_core::{CaptureProvider, CertifiedSource, CoreRecord, ScannedSourceCounts};
+use ctx_history_index::{
+    CompiledSearchFilter, EventSearchFilters, GenerationWriter, LexicalExecution, LexicalMode,
+    VerifiedIndex, WriterOptions,
+};
 use serde_json::{json, Value};
 
 use super::*;
@@ -15,6 +18,10 @@ use crate::{
     ProviderImportSupport, ProviderSource, ProviderSourceKind, ProviderSourceStatus,
     SourceBackedProviderRegistry, SourceBackedRouteSelection, SourceBackedSourceFailureClass,
 };
+
+const CURSOR_SOURCE_FORMAT: &str = "cursor_agent_transcript_jsonl_tree";
+const CURSOR_PARSER_REVISION: &str = "cursor-shared-jsonl-core-activity-v2-top-level-role";
+const PRIOR_CURSOR_PARSER_REVISION: &str = "cursor-shared-jsonl-core-activity-v2-record-rejections";
 
 fn writer_options() -> WriterOptions {
     WriterOptions {
@@ -43,8 +50,19 @@ fn registry(
     root: &Path,
 ) -> SourceBackedProviderRegistry {
     let mut registry = SourceBackedProviderRegistry::new();
+    register_source(&mut registry, provider, source_format, root);
+    assert_eq!(registry.routes().len(), 1);
+    registry
+}
+
+fn register_source(
+    registry: &mut SourceBackedProviderRegistry,
+    provider: CaptureProvider,
+    source_format: &'static str,
+    root: &Path,
+) {
     register_landed_source_backed_route(
-        &mut registry,
+        registry,
         ProviderSource {
             provider,
             path: root.to_path_buf(),
@@ -55,12 +73,11 @@ fn registry(
             catalog_support: ProviderCatalogSupport::None,
             status: ProviderSourceStatus::Available,
             unsupported_reason: None,
+            route_provenance: Default::default(),
         },
         SourceBackedRouteSelection::Automatic,
     )
     .unwrap();
-    assert_eq!(registry.routes().len(), 1);
-    registry
 }
 
 fn write_transcript(path: &Path, rows: &[Value]) {
@@ -105,6 +122,21 @@ fn indexed_records(
     records
 }
 
+fn lexical_match_count(index: &VerifiedIndex, text: &str) -> usize {
+    let filter = CompiledSearchFilter::compile(EventSearchFilters::default()).unwrap();
+    let queries = [text];
+    let batch = index
+        .execute_lexical(LexicalExecution::new(
+            LexicalMode::Search(&queries),
+            &filter,
+            8,
+        ))
+        .unwrap()
+        .batch;
+    assert!(batch.complete, "lexical test query did not complete");
+    batch.candidates.len()
+}
+
 fn certified_prefix_bytes(index: &Path, provider: CaptureProvider) -> u64 {
     let verified = VerifiedIndex::open(index).unwrap();
     verified
@@ -142,19 +174,26 @@ fn exercise_lifecycle(
 ) {
     write_transcript(transcript, &[first]);
     let registry = registry(provider, source_format, source_root);
+    let records = || indexed_records(index, provider, native_session_id);
 
     let cold = refresh_source_backed_generation(index, &registry, writer_options()).unwrap();
     assert!(cold.failed_routes.is_empty());
     assert_eq!(cold.successful_route_ids.len(), 1);
-    let cold_records = indexed_records(index, provider, native_session_id);
+    let cold_records = records();
     assert_literal_bodies(&cold_records, &["literal first"]);
     let cold_checkpoint = certified_prefix_bytes(index, provider);
     assert_eq!(cold_checkpoint, fs::metadata(transcript).unwrap().len());
 
+    let noop = refresh_source_backed_generation(index, &registry, writer_options()).unwrap();
+    assert!(noop.failed_routes.is_empty());
+    assert_eq!(noop.commit.generation_id, cold.commit.generation_id);
+    assert_eq!(records(), cold_records);
+    assert_eq!(certified_prefix_bytes(index, provider), cold_checkpoint);
+
     append_transcript(transcript, &second);
     let appended = refresh_source_backed_generation(index, &registry, writer_options()).unwrap();
     assert!(appended.failed_routes.is_empty());
-    let appended_records = indexed_records(index, provider, native_session_id);
+    let appended_records = records();
     assert_literal_bodies(&appended_records, &["literal first", "literal second"]);
     assert_eq!(appended_records[0].event_id, cold_records[0].event_id);
     let appended_checkpoint = certified_prefix_bytes(index, provider);
@@ -179,14 +218,11 @@ fn exercise_lifecycle(
                 && failure.carried_forward
     ));
     assert_eq!(certified_prefix_bytes(index, provider), appended_checkpoint);
-    assert_eq!(
-        indexed_records(index, provider, native_session_id),
-        appended_records
-    );
+    assert_eq!(records(), appended_records);
 
     let recovered = refresh_source_backed_generation(index, &registry, writer_options()).unwrap();
     assert!(recovered.failed_routes.is_empty());
-    let recovered_records = indexed_records(index, provider, native_session_id);
+    let recovered_records = records();
     assert_literal_bodies(
         &recovered_records,
         &["literal first", "literal second", "race-after!"],
@@ -203,7 +239,6 @@ fn cursor_message(role: &str, timestamp: &str, text: &str) -> Value {
         "timestamp": timestamp,
         "role": role,
         "message": {
-            "role": role,
             "content": [{"type": "text", "text": text}]
         }
     })
@@ -220,7 +255,7 @@ fn cursor_route_publishes_cold_append_and_recovers_from_carried_checkpoint() {
         .join(format!("{native_session_id}.jsonl"));
     exercise_lifecycle(
         CaptureProvider::Cursor,
-        "cursor_agent_transcript_jsonl_tree",
+        CURSOR_SOURCE_FORMAT,
         &root,
         &transcript,
         &temp.path().join("cursor-index"),
@@ -229,6 +264,251 @@ fn cursor_route_publishes_cold_append_and_recovers_from_carried_checkpoint() {
         cursor_message("assistant", "2026-08-16T00:00:01Z", "literal second"),
         cursor_message("assistant", "2026-08-16T00:00:02Z", "race-before"),
     );
+}
+
+#[test]
+fn cursor_malformed_nested_role_rejects_only_that_record() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("cursor-data");
+    let index = temp.path().join("cursor-index");
+    let native_session_id = "cursor-record-isolation-session";
+    let transcript = root
+        .join("projects/project/agent-transcripts")
+        .join(native_session_id)
+        .join(format!("{native_session_id}.jsonl"));
+    let malformed_nested_role = json!({
+        "timestamp": "2026-08-26T00:00:01Z",
+        "role": "assistant",
+        "message": {
+            "role": {"unexpected": "assistant"},
+            "content": [{"type": "text", "text": "cursornestedroleinvalidmarker"}]
+        }
+    });
+    write_transcript(
+        &transcript,
+        &[
+            cursor_message(
+                "user",
+                "2026-08-26T00:00:00Z",
+                "cursorisolationbeforemarker",
+            ),
+            malformed_nested_role,
+            cursor_message(
+                "assistant",
+                "2026-08-26T00:00:02Z",
+                "cursorisolationaftermarker",
+            ),
+        ],
+    );
+
+    let receipt = refresh_source_backed_generation(
+        &index,
+        &registry(CaptureProvider::Cursor, CURSOR_SOURCE_FORMAT, &root),
+        writer_options(),
+    )
+    .unwrap();
+
+    assert!(receipt.failed_routes.is_empty());
+    assert!(receipt.logical_source_failures.is_empty());
+    assert_eq!(receipt.successful_route_ids.len(), 1);
+    assert_eq!(
+        receipt.record_completion(),
+        SourceBackedRecordCompletion::CompletedWithRejections
+    );
+    assert_eq!(receipt.record_rejections.total(), 1);
+    assert_eq!(receipt.sources.len(), 1);
+    assert_eq!(
+        receipt.sources[0].counts(),
+        ScannedSourceCounts {
+            complete_records: 3,
+            retained_records: 2,
+            rejected_records: 1,
+            ignored_records: 0,
+            indexed_documents: 2,
+            certified_bytes: fs::metadata(&transcript).unwrap().len(),
+        }
+    );
+    let [rejection] = receipt.record_rejections.rejections() else {
+        panic!("one malformed nested-role rejection expected");
+    };
+    assert!(rejection.is_committed());
+    assert_eq!(rejection.provider, CaptureProvider::Cursor);
+    assert_eq!(rejection.source_selector, transcript.display().to_string());
+    assert_eq!(rejection.line_number, 2);
+    assert_eq!(
+        rejection.class,
+        SourceBackedRecordRejectionClass::UnsupportedRecord
+    );
+    assert_eq!(
+        rejection.detail,
+        "Cursor record has a well-formed but unsupported shape"
+    );
+
+    assert_literal_bodies(
+        &indexed_records(&index, CaptureProvider::Cursor, native_session_id),
+        &["cursorisolationbeforemarker", "cursorisolationaftermarker"],
+    );
+    let published = VerifiedIndex::open(&index).unwrap();
+    for marker in ["cursorisolationbeforemarker", "cursorisolationaftermarker"] {
+        assert_eq!(
+            lexical_match_count(&published, marker),
+            1,
+            "valid Cursor sibling was not searchable: {marker}"
+        );
+    }
+    assert_eq!(
+        lexical_match_count(&published, "cursornestedroleinvalidmarker"),
+        0
+    );
+}
+
+#[test]
+fn cursor_top_level_role_revision_reparses_unchanged_prior_rejection_state() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("cursor-data");
+    let index = temp.path().join("cursor-index");
+    let native_session_id = "cursor-parser-migration-session";
+    let marker = "cursortoplevelrolemigrationmarker";
+    let transcript = root
+        .join("projects/project/agent-transcripts")
+        .join(native_session_id)
+        .join(format!("{native_session_id}.jsonl"));
+    write_transcript(
+        &transcript,
+        &[cursor_message("user", "2026-08-26T00:00:00Z", marker)],
+    );
+    let source_bytes = fs::read(&transcript).unwrap();
+    let registry = registry(CaptureProvider::Cursor, CURSOR_SOURCE_FORMAT, &root);
+    refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+
+    let current = VerifiedIndex::open(&index).unwrap();
+    let current_certificate = current
+        .manifest()
+        .sources
+        .iter()
+        .find(|source| source.observation().source().provider() == CaptureProvider::Cursor.as_str())
+        .unwrap()
+        .clone();
+    let source = current_certificate.observation().source().clone();
+    let source_routes = current.manifest().source_routes().to_vec();
+    let current_counts = current_certificate.counts();
+    assert_eq!(current_counts.complete_records, 1);
+    assert_eq!(current_counts.certified_bytes, source_bytes.len() as u64);
+    let prior_certificate = CertifiedSource::certify_with_frontier(
+        current_certificate.observation().clone(),
+        current_certificate.observation().clone(),
+        PRIOR_CURSOR_PARSER_REVISION,
+        *current_certificate.content_digest(),
+        ScannedSourceCounts {
+            complete_records: 1,
+            retained_records: 0,
+            rejected_records: 1,
+            ignored_records: 0,
+            indexed_documents: 0,
+            certified_bytes: current_counts.certified_bytes,
+        },
+        current_certificate.frontier().cloned(),
+    )
+    .unwrap();
+    drop(current);
+
+    let mut writer = GenerationWriter::open(&index, writer_options())
+        .unwrap()
+        .into_writer()
+        .unwrap();
+    writer.begin_source(source.clone()).unwrap();
+    writer.certify_source(prior_certificate).unwrap();
+    writer.set_present_source_routes(source_routes).unwrap();
+    let prior_generation = writer.commit(|_| true).unwrap().generation_id;
+
+    let prior = VerifiedIndex::open(&index).unwrap();
+    let prior_source = prior
+        .manifest()
+        .sources
+        .iter()
+        .find(|certificate| certificate.observation().source() == &source)
+        .unwrap();
+    assert_eq!(prior_source.parser_revision(), PRIOR_CURSOR_PARSER_REVISION);
+    assert_eq!(prior_source.counts().rejected_records, 1);
+    assert_eq!(lexical_match_count(&prior, marker), 0);
+    drop(prior);
+    assert_eq!(fs::read(&transcript).unwrap(), source_bytes);
+
+    let migrated = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+
+    assert!(migrated.failed_routes.is_empty());
+    assert!(migrated.logical_source_failures.is_empty());
+    assert!(migrated.record_rejections.is_empty());
+    assert_eq!(migrated.successful_route_ids.len(), 1);
+    assert_eq!(
+        migrated.record_completion(),
+        SourceBackedRecordCompletion::Completed
+    );
+    assert_ne!(migrated.commit.generation_id, prior_generation);
+    let migrated_source = migrated
+        .sources
+        .iter()
+        .find(|certificate| certificate.observation().source() == &source)
+        .unwrap();
+    assert_eq!(migrated_source.parser_revision(), CURSOR_PARSER_REVISION);
+    assert_eq!(
+        migrated_source.counts(),
+        ScannedSourceCounts {
+            complete_records: 1,
+            retained_records: 1,
+            rejected_records: 0,
+            ignored_records: 0,
+            indexed_documents: 1,
+            certified_bytes: source_bytes.len() as u64,
+        }
+    );
+    assert_eq!(fs::read(&transcript).unwrap(), source_bytes);
+    assert_literal_bodies(
+        &indexed_records(&index, CaptureProvider::Cursor, native_session_id),
+        &[marker],
+    );
+    assert_eq!(
+        lexical_match_count(&VerifiedIndex::open(&index).unwrap(), marker),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cursor_incomplete_canonical_inventory_retains_last_good_generation() {
+    use std::os::unix::fs::symlink;
+
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let root = temp.path().join("cursor-data");
+    let native_session_id = "retained-cursor-session";
+    let transcript = root
+        .join("projects/project/agent-transcripts")
+        .join(native_session_id)
+        .join(format!("{native_session_id}.jsonl"));
+    let retained = cursor_message("user", "2026-08-16T00:00:00Z", "retained literal");
+    write_transcript(&transcript, &[retained]);
+    let index = temp.path().join("cursor-index");
+    let registry = registry(CaptureProvider::Cursor, CURSOR_SOURCE_FORMAT, &root);
+    let records = || indexed_records(&index, CaptureProvider::Cursor, native_session_id);
+    let checkpoint = || certified_prefix_bytes(&index, CaptureProvider::Cursor);
+    let cold = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(cold.failed_routes.is_empty());
+    let cold_records = records();
+    let cold_checkpoint = checkpoint();
+
+    let linked_target = temp.path().join("linked-project-target");
+    fs::create_dir_all(&linked_target).unwrap();
+    symlink(&linked_target, root.join("projects/a-linked-project")).unwrap();
+
+    let failed = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+
+    assert!(matches!(
+        failed.failed_routes.as_slice(),
+        [failure] if failure.carried_forward
+    ));
+    assert_eq!(failed.commit.generation_id, cold.commit.generation_id);
+    assert_eq!(records(), cold_records);
+    assert_eq!(checkpoint(), cold_checkpoint);
 }
 
 fn claude_message(kind: &str, uuid: &str, session_id: &str, text: &str) -> Value {
@@ -272,6 +552,98 @@ fn claude_route_publishes_cold_append_and_recovers_from_carried_checkpoint() {
 }
 
 #[test]
+fn automatic_claude_root_replacement_retires_sources_absent_from_strict_subset() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let first_home = temp.path().join("first");
+    let first_projects = first_home.join("projects");
+    let replacement_projects = temp.path().join("replacement/projects");
+    let retained_session = "retained-session";
+    let retired_session = "retired-session";
+    let retired_transcript = first_projects.join(format!("project/{retired_session}.jsonl"));
+    write_transcript(
+        &first_projects.join(format!("project/{retained_session}.jsonl")),
+        &[claude_message(
+            "user",
+            "first-retained-event",
+            retained_session,
+            "first root retained content",
+        )],
+    );
+    write_transcript(
+        &retired_transcript,
+        &[claude_message(
+            "user",
+            "first-retired-event",
+            retired_session,
+            "first root retired content",
+        )],
+    );
+    write_transcript(
+        &replacement_projects.join(format!("project/{retained_session}.jsonl")),
+        &[claude_message(
+            "user",
+            "replacement-retained-event",
+            retained_session,
+            "replacement root retained content",
+        )],
+    );
+
+    let index = temp.path().join("index");
+    let initial_context = DiscoveryContext::new(
+        temp.path(),
+        temp.path(),
+        DiscoveryPlatform::Linux,
+        crate::DiscoveryPlatformDirs::default(),
+    )
+    .with_env("CLAUDE_CONFIG_DIR", &first_home);
+    let data_root = temp.path().join("data");
+    let initial =
+        build_discovered_provider_registry(&initial_context, &data_root, CaptureProvider::Claude);
+    assert!(initial.issues.is_empty(), "{:?}", initial.issues);
+    refresh_source_backed_generation(&index, &initial.registry, writer_options()).unwrap();
+
+    let replacement_home = temp.path().join("replacement");
+    let replacement_context = DiscoveryContext::new(
+        temp.path(),
+        temp.path(),
+        DiscoveryPlatform::Linux,
+        crate::DiscoveryPlatformDirs::default(),
+    )
+    .with_env("CLAUDE_CONFIG_DIR", &replacement_home);
+    let replacement = build_discovered_provider_registry(
+        &replacement_context,
+        &data_root,
+        CaptureProvider::Claude,
+    );
+    assert!(replacement.issues.is_empty(), "{:?}", replacement.issues);
+    let receipt =
+        refresh_source_backed_generation(&index, &replacement.registry, writer_options()).unwrap();
+    assert!(receipt.failed_routes.is_empty());
+    assert_eq!(receipt.complete_inventory_route_ids.len(), 1);
+    assert_eq!(receipt.removals.len(), 1);
+
+    let verified = VerifiedIndex::open(&index).unwrap();
+    assert_eq!(
+        verified
+            .manifest()
+            .sources
+            .iter()
+            .filter(|source| source.observation().source().provider() == "claude")
+            .count(),
+        1
+    );
+    assert_literal_bodies(
+        &indexed_records(&index, CaptureProvider::Claude, retained_session),
+        &["replacement root retained content"],
+    );
+    assert!(indexed_records(&index, CaptureProvider::Claude, retired_session).is_empty());
+    assert!(retired_transcript.exists());
+    assert!(fs::read_to_string(retired_transcript)
+        .unwrap()
+        .contains("first root retired content"));
+}
+
+#[test]
 fn claude_roots_with_the_same_relative_session_path_publish_independent_sources() {
     let temp = crate::test_support_paths::tempdir().unwrap();
     let personal = temp.path().join("personal/projects");
@@ -306,6 +678,7 @@ fn claude_roots_with_the_same_relative_session_path_publish_independent_sources(
             provider: CaptureProvider::Claude,
             path: path.to_path_buf(),
             group: None,
+            kind: None,
         },
     )
     .collect::<Vec<_>>();
@@ -317,9 +690,9 @@ fn claude_roots_with_the_same_relative_session_path_publish_independent_sources(
     )
     .with_configured_provider_roots(definitions);
     let report = DiscoveryReport {
-        sources: [&personal, &work]
+        sources: [("personal", &personal), ("work", &work)]
             .into_iter()
-            .map(|root| ProviderSource {
+            .map(|(root_id, root)| ProviderSource {
                 provider: CaptureProvider::Claude,
                 path: root.to_path_buf(),
                 exists: true,
@@ -329,11 +702,20 @@ fn claude_roots_with_the_same_relative_session_path_publish_independent_sources(
                 catalog_support: ProviderCatalogSupport::None,
                 status: ProviderSourceStatus::Available,
                 unsupported_reason: None,
+                route_provenance:
+                    ctx_history_capture_model::ProviderSourceRouteProvenance::ConfiguredRoot {
+                        root_id: root_id.to_owned(),
+                        root_path: root.parent().unwrap().to_path_buf(),
+                        route_role: ctx_history_capture_model::ProviderRouteRole::from_static(
+                            "claude-projects",
+                        ),
+                        automatic_route_role: None,
+                    },
             })
             .collect(),
         issues: Vec::new(),
     };
-    let build = build_automatic_source_backed_registry_from_report_with_probes_and_root_identities(
+    let build = build_automatic_source_backed_registry_from_report_with_probes_and_retained_roots(
         &crate::test_provider_probes(),
         &context,
         &temp.path().join("data"),
@@ -414,12 +796,14 @@ fn unavailable_configured_claude_home_carries_only_itself_while_peer_refreshes()
             provider: CaptureProvider::Claude,
             path: personal_home.clone(),
             group: Some("personal".to_owned()),
+            kind: None,
         },
         ctx_history_capture_model::ProviderRootDefinition {
             id: "work".to_owned(),
             provider: CaptureProvider::Claude,
             path: work_home.clone(),
             group: Some("work".to_owned()),
+            kind: None,
         },
     ];
     let context = DiscoveryContext::new(
@@ -446,23 +830,33 @@ fn unavailable_configured_claude_home_carries_only_itself_while_peer_refreshes()
     );
     let displaced_work_home = temp.path().join("work-displaced");
     fs::rename(&work_home, &displaced_work_home).unwrap();
-    fs::write(&work_home, b"temporarily not a directory").unwrap();
     let current = build_discovered_provider_registry(&context, &data_root, CaptureProvider::Claude);
-    assert!(current.issues.iter().any(|issue| matches!(
-        issue,
-        SourceBackedAutomaticRegistryIssue::Discovery(issue)
-            if issue.path.as_deref() == Some(work.as_path())
-    )));
-    fs::remove_file(&work_home).unwrap();
+    assert!(
+        current.issues.iter().any(|issue| matches!(
+            issue,
+            SourceBackedAutomaticRegistryIssue::Unavailable {
+                source,
+                reason: SourceBackedAutomaticUnavailableReason::SourceStatus(
+                    ProviderSourceStatus::Missing
+                ),
+            } if source.path == work
+        )),
+        "{:?}",
+        current.issues
+    );
     fs::rename(&displaced_work_home, &work_home).unwrap();
     let receipt =
         refresh_source_backed_generation(&index, &current.registry, writer_options()).unwrap();
-    assert!(matches!(
-        receipt.failed_routes.as_slice(),
-        [failure]
-            if failure.class == SourceBackedSourceFailureClass::Unavailable
-                && failure.carried_forward
-    ));
+    assert!(
+        matches!(
+            receipt.failed_routes.as_slice(),
+            [failure]
+                if failure.class == SourceBackedSourceFailureClass::Unavailable
+                    && failure.carried_forward
+        ),
+        "{:?}",
+        receipt.failed_routes
+    );
     let personal_records = indexed_records(&index, CaptureProvider::Claude, "personal-session");
     assert_literal_bodies(
         &personal_records,
@@ -494,19 +888,20 @@ fn cold_unavailable_configured_claude_home_does_not_block_healthy_peer() {
             "personal cold marker",
         )],
     );
-    fs::write(&work_home, b"temporarily not a directory").unwrap();
     let definitions = vec![
         ctx_history_capture_model::ProviderRootDefinition {
             id: "personal".to_owned(),
             provider: CaptureProvider::Claude,
             path: personal_home.clone(),
             group: Some("personal".to_owned()),
+            kind: None,
         },
         ctx_history_capture_model::ProviderRootDefinition {
             id: "work".to_owned(),
             provider: CaptureProvider::Claude,
             path: work_home.clone(),
             group: Some("work".to_owned()),
+            kind: None,
         },
     ];
     let context = DiscoveryContext::new(
@@ -521,20 +916,32 @@ fn cold_unavailable_configured_claude_home_does_not_block_healthy_peer() {
         &temp.path().join("data"),
         CaptureProvider::Claude,
     );
-    assert!(build.issues.iter().any(|issue| matches!(
-        issue,
-        SourceBackedAutomaticRegistryIssue::Discovery(issue)
-            if issue.path.as_deref() == Some(work_home.join("projects").as_path())
-    )));
+    assert!(
+        build.issues.iter().any(|issue| matches!(
+            issue,
+            SourceBackedAutomaticRegistryIssue::Unavailable {
+                source,
+                reason: SourceBackedAutomaticUnavailableReason::SourceStatus(
+                    ProviderSourceStatus::Missing
+                ),
+            } if source.path == work_home.join("projects")
+        )),
+        "{:?}",
+        build.issues
+    );
     let index = temp.path().join("index");
     let receipt =
         refresh_source_backed_generation(&index, &build.registry, writer_options()).unwrap();
-    assert!(matches!(
-        receipt.failed_routes.as_slice(),
-        [failure]
-            if failure.class == SourceBackedSourceFailureClass::Unavailable
-                && !failure.carried_forward
-    ));
+    assert!(
+        matches!(
+            receipt.failed_routes.as_slice(),
+            [failure]
+                if failure.class == SourceBackedSourceFailureClass::Unavailable
+                    && !failure.carried_forward
+        ),
+        "{:?}",
+        receipt.failed_routes
+    );
     assert_eq!(
         receipt.successful_route_ids.len(),
         2,
@@ -559,4 +966,230 @@ fn cold_unavailable_configured_claude_home_does_not_block_healthy_peer() {
         .unwrap();
     assert_eq!(personal_root.routes().len(), 1);
     assert!(work_root.routes().is_empty());
+}
+
+#[test]
+fn claude_compatible_duplicate_identity_keeps_last_observation_cold_and_after_append() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let projects = temp.path().join("projects");
+    let index = temp.path().join("index");
+    let session = "last-observation-claude-session";
+    let transcript = projects.join("project").join(format!("{session}.jsonl"));
+    write_transcript(
+        &transcript,
+        &[
+            claude_message("user", "repeated-event", session, "stale cold observation"),
+            claude_message("user", "repeated-event", session, "fresh cold observation"),
+        ],
+    );
+    let registry = registry(
+        CaptureProvider::Claude,
+        "claude_projects_jsonl_tree",
+        &projects,
+    );
+
+    let cold = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(cold.failed_routes.is_empty());
+    assert!(cold.logical_source_failures.is_empty());
+    let cold_records = indexed_records(&index, CaptureProvider::Claude, session);
+    assert_literal_bodies(&cold_records, &["fresh cold observation"]);
+    let stable_event_id = cold_records[0].event_id;
+
+    append_transcript(
+        &transcript,
+        &claude_message(
+            "user",
+            "repeated-event",
+            session,
+            "fresh append observation",
+        ),
+    );
+    let appended = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(appended.failed_routes.is_empty());
+    assert!(appended.logical_source_failures.is_empty());
+    let appended_records = indexed_records(&index, CaptureProvider::Claude, session);
+    assert_literal_bodies(&appended_records, &["fresh append observation"]);
+    assert_eq!(appended_records[0].event_id, stable_event_id);
+    assert_eq!(
+        certified_prefix_bytes(&index, CaptureProvider::Claude),
+        fs::metadata(&transcript).unwrap().len()
+    );
+}
+
+#[test]
+fn claude_incompatible_duplicate_kind_quarantines_only_its_source_and_repairs() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let projects = temp.path().join("projects");
+    let index = temp.path().join("index");
+    let retained_session = "retained-claude-session";
+    let sibling_session = "advancing-claude-session";
+    let retained_transcript = projects
+        .join("project")
+        .join(format!("{retained_session}.jsonl"));
+    let sibling_transcript = projects
+        .join("project")
+        .join(format!("{sibling_session}.jsonl"));
+    write_transcript(
+        &retained_transcript,
+        &[claude_message(
+            "user",
+            "retained-event",
+            retained_session,
+            "retained before failure",
+        )],
+    );
+    write_transcript(
+        &sibling_transcript,
+        &[claude_message(
+            "user",
+            "sibling-first",
+            sibling_session,
+            "sibling first",
+        )],
+    );
+    let registry = registry(
+        CaptureProvider::Claude,
+        "claude_projects_jsonl_tree",
+        &projects,
+    );
+
+    let initial = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(initial.failed_routes.is_empty());
+    let initial_generation = VerifiedIndex::open(&index)
+        .unwrap()
+        .generation_id()
+        .to_owned();
+    let retained_before = indexed_records(&index, CaptureProvider::Claude, retained_session);
+    assert_literal_bodies(&retained_before, &["retained before failure"]);
+
+    append_transcript(
+        &retained_transcript,
+        &claude_message(
+            "summary",
+            "retained-event",
+            retained_session,
+            "must never publish partially",
+        ),
+    );
+    append_transcript(
+        &sibling_transcript,
+        &claude_message(
+            "assistant",
+            "sibling-second",
+            sibling_session,
+            "sibling second",
+        ),
+    );
+
+    let quarantined =
+        refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(quarantined.failed_routes.is_empty());
+    assert_eq!(quarantined.logical_source_failures.total(), 1);
+    let [failure] = quarantined.logical_source_failures.failures() else {
+        panic!("one Claude source failure expected");
+    };
+    assert!(failure.carried_forward);
+    assert_eq!(failure.source.provider(), CaptureProvider::Claude.as_str());
+    assert!(failure
+        .detail
+        .contains("repeats a stable event identity with incompatible event kinds"));
+    assert_ne!(
+        VerifiedIndex::open(&index).unwrap().generation_id(),
+        initial_generation
+    );
+    assert_eq!(
+        indexed_records(&index, CaptureProvider::Claude, retained_session),
+        retained_before
+    );
+    assert_literal_bodies(
+        &indexed_records(&index, CaptureProvider::Claude, sibling_session),
+        &["sibling first", "sibling second"],
+    );
+
+    write_transcript(
+        &retained_transcript,
+        &[claude_message(
+            "assistant",
+            "repaired-event",
+            retained_session,
+            "repaired replacement",
+        )],
+    );
+    let repaired = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(repaired.failed_routes.is_empty());
+    assert!(repaired.logical_source_failures.is_empty());
+    assert_literal_bodies(
+        &indexed_records(&index, CaptureProvider::Claude, retained_session),
+        &["repaired replacement"],
+    );
+}
+
+#[test]
+fn cold_bad_claude_leaf_does_not_block_sibling_or_cursor_provider() {
+    let temp = crate::test_support_paths::tempdir().unwrap();
+    let projects = temp.path().join("projects");
+    let cursor_root = temp.path().join("cursor-data");
+    let index = temp.path().join("index");
+    let bad_session = "cold-bad-claude-session";
+    let sibling_session = "cold-good-claude-session";
+    let cursor_session = "cold-good-cursor-session";
+    write_transcript(
+        &projects
+            .join("bad-project")
+            .join(format!("{bad_session}.jsonl")),
+        &[
+            claude_message("user", "duplicate", bad_session, "bad first"),
+            claude_message("summary", "duplicate", bad_session, "bad second"),
+        ],
+    );
+    write_transcript(
+        &projects
+            .join("good-project")
+            .join(format!("{sibling_session}.jsonl")),
+        &[claude_message(
+            "user",
+            "good-claude",
+            sibling_session,
+            "good Claude sibling",
+        )],
+    );
+    write_transcript(
+        &cursor_root
+            .join("projects/project/agent-transcripts")
+            .join(cursor_session)
+            .join(format!("{cursor_session}.jsonl")),
+        &[cursor_message(
+            "user",
+            "2026-08-23T00:00:00Z",
+            "good Cursor provider",
+        )],
+    );
+    let mut registry = SourceBackedProviderRegistry::new();
+    register_source(
+        &mut registry,
+        CaptureProvider::Claude,
+        "claude_projects_jsonl_tree",
+        &projects,
+    );
+    register_source(
+        &mut registry,
+        CaptureProvider::Cursor,
+        "cursor_agent_transcript_jsonl_tree",
+        &cursor_root,
+    );
+
+    let receipt = refresh_source_backed_generation(&index, &registry, writer_options()).unwrap();
+    assert!(receipt.failed_routes.is_empty());
+    assert_eq!(receipt.successful_route_ids.len(), 2);
+    assert_eq!(receipt.logical_source_failures.total(), 1);
+    assert!(!receipt.logical_source_failures.failures()[0].carried_forward);
+    assert!(indexed_records(&index, CaptureProvider::Claude, bad_session).is_empty());
+    assert_literal_bodies(
+        &indexed_records(&index, CaptureProvider::Claude, sibling_session),
+        &["good Claude sibling"],
+    );
+    assert_literal_bodies(
+        &indexed_records(&index, CaptureProvider::Cursor, cursor_session),
+        &["good Cursor provider"],
+    );
 }

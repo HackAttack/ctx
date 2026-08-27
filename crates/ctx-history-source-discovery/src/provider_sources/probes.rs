@@ -15,18 +15,31 @@ use rusqlite::{limits::Limit as SqliteLimit, Connection};
 use serde_json::Value;
 
 use ctx_history_source_io::{
-    provider_metadata_is_link_like, provider_safe_path_segment,
-    read_provider_jsonl_line_or_skip_oversized, ProviderJsonlLineRead, ProviderSourceRoot,
+    open_provider_source_path, provider_metadata_is_link_like, provider_safe_path_segment,
+    read_provider_jsonl_line_or_skip_oversized, OpenedProviderSourcePath, ProviderJsonlLineRead,
+    ProviderSourceDirectory, ProviderSourceRoot, SourceIoError,
+    PROVIDER_JSONL_INVENTORY_MAX_ELIGIBLE_PATHS, PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
 };
+
+#[cfg(test)]
+use ctx_history_source_io::MAX_PROVIDER_JSONL_LINE_BYTES;
 
 #[cfg(test)]
 use super::SqliteSourceDirectoryAuthority;
 use super::{
     open_ordinary_file_without_following, open_root_handle_sqlite_source_snapshot_with_limits,
-    retain_sqlite_source_directory_authority, selectors::sort_paths,
-    types::ProviderDefaultLocation, CursorTranscriptProbeOutcome, SqliteSourceAccessError,
-    SqliteSourceReadSnapshot, SqliteSourceSnapshotLimits, StaticProviderProbeCatalog,
+    retain_sqlite_source_directory_authority,
+    selectors::{sort_paths, MAX_DIRECT_DIRECTORY_ENTRIES},
+    types::ProviderDefaultLocation,
+    CursorTranscriptProbeOutcome, SqliteSourceAccessError, SqliteSourceReadSnapshot,
+    SqliteSourceSnapshotLimits, StaticProviderProbeCatalog,
 };
+
+mod fx;
+
+use fx::has_fx_session_under_immediate_child;
+#[cfg(test)]
+use fx::{is_fx_session_candidate, FX_LEGACY_SUMMARY_PREFIX_MAX_BYTES};
 
 const SQLITE_PROBE_MAX_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 const SQLITE_PROBE_DEADLINE: Duration = Duration::from_millis(500);
@@ -52,12 +65,7 @@ pub(super) fn default_location_import_probe(
         CaptureProvider::Codex if location.source_format == "codex_history_jsonl" => {
             path_is_file_probe(path)
         }
-        CaptureProvider::Codex => has_file_under_matching(path, 10_000, |candidate| {
-            candidate
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
-        }),
+        CaptureProvider::Codex => has_codex_session_file(path),
         CaptureProvider::GrokBuild => has_jsonl_file_under_matching(path, 10_000, |candidate| {
             candidate.file_name().and_then(|name| name.to_str()) == Some("updates.jsonl")
         }),
@@ -93,9 +101,9 @@ pub(super) fn default_location_import_probe(
         }),
         CaptureProvider::Gemini | CaptureProvider::Tabnine => has_gemini_chat_jsonl(path, 10_000),
         CaptureProvider::Cursor => has_cursor_agent_transcript(probes, path),
-        CaptureProvider::Qoder => {
-            has_jsonl_file_under_matching(path, 10_000, qoder_jsonl_path_is_supported)
-        }
+        CaptureProvider::Qoder => has_file_under_matching(path, 10_000, |candidate| {
+            qoder_jsonl_path_is_supported(path, candidate)
+        }),
         CaptureProvider::Zed => path_is_file_probe(path),
         CaptureProvider::CopilotCli => has_jsonl_file_under_matching(path, 10_000, |candidate| {
             candidate.file_name().and_then(|name| name.to_str()) == Some("events.jsonl")
@@ -108,9 +116,7 @@ pub(super) fn default_location_import_probe(
             candidate.file_name().and_then(|name| name.to_str()) == Some("wire.jsonl")
                 && path_has_component(candidate, "agents")
         }),
-        CaptureProvider::Auggie => has_json_file_under_matching(path, 10_000, |candidate| {
-            candidate.extension().and_then(|ext| ext.to_str()) == Some("json")
-        }),
+        CaptureProvider::Auggie => has_auggie_session_json(path),
         CaptureProvider::Junie => has_junie_session_events(path, 10_000),
         CaptureProvider::Firebender => has_firebender_chat_sessions_table(data_root, path),
         CaptureProvider::ForgeCode => has_forgecode_conversations_table(data_root, path),
@@ -150,6 +156,7 @@ pub(super) fn default_location_import_probe(
         CaptureProvider::Lingma => has_lingma_chat_record_table(data_root, path),
         CaptureProvider::Warp => path_is_file_probe(path),
         CaptureProvider::CodeBuddy => has_codebuddy_history_json(path, 10_000),
+        CaptureProvider::Fx => has_fx_session_under_immediate_child(path, 10_000),
         CaptureProvider::Shell
         | CaptureProvider::Git
         | CaptureProvider::Jj
@@ -157,6 +164,97 @@ pub(super) fn default_location_import_probe(
         | CaptureProvider::Custom
         | CaptureProvider::Unknown => BoundedProbe::NotFound,
     }
+}
+
+fn has_auggie_session_json(root: &Path) -> BoundedProbe {
+    let opened = match open_provider_source_path(root) {
+        Ok(opened) => opened,
+        Err(_) => return BoundedProbe::IoError,
+    };
+    let OpenedProviderSourcePath::Directory(directory) = opened else {
+        return BoundedProbe::NotFound;
+    };
+
+    match directory.open_child(std::ffi::OsStr::new("sessions")) {
+        Ok(OpenedProviderSourcePath::Directory(sessions)) => {
+            has_direct_auggie_session_json(&sessions)
+        }
+        Ok(OpenedProviderSourcePath::File(_)) => BoundedProbe::IoError,
+        Err(SourceIoError::Io(error)) if error.kind() == ErrorKind::NotFound => {
+            let outcome = has_direct_auggie_session_json(&directory);
+            if matches!(outcome, BoundedProbe::Found | BoundedProbe::NotFound) {
+                match directory.open_child(std::ffi::OsStr::new("sessions")) {
+                    Err(SourceIoError::Io(error)) if error.kind() == ErrorKind::NotFound => outcome,
+                    _ => BoundedProbe::IoError,
+                }
+            } else {
+                outcome
+            }
+        }
+        Err(_) => BoundedProbe::IoError,
+    }
+}
+
+fn has_direct_auggie_session_json(directory: &ProviderSourceDirectory) -> BoundedProbe {
+    let names = match bounded_auggie_directory_entries(directory) {
+        Ok(names) => names,
+        Err(outcome) => return outcome,
+    };
+    let authority = directory.authority_root();
+    let mut opened_entries = Vec::with_capacity(names.len());
+    let mut found = false;
+    for name in &names {
+        let child = match directory.open_child(name) {
+            Ok(child) => child,
+            Err(_) => return BoundedProbe::IoError,
+        };
+        let is_file = matches!(&child, OpenedProviderSourcePath::File(_));
+        found |=
+            is_file && Path::new(name).extension().and_then(|ext| ext.to_str()) == Some("json");
+        opened_entries.push((name.clone(), child.authority_fingerprint(), is_file));
+    }
+    if directory.revalidate().is_err() || authority.revalidate().is_err() {
+        return BoundedProbe::IoError;
+    }
+
+    let closing_names = match bounded_auggie_directory_entries(directory) {
+        Ok(names) => names,
+        Err(outcome) => return outcome,
+    };
+    if closing_names != names {
+        return BoundedProbe::IoError;
+    }
+    for (name, fingerprint, is_file) in opened_entries {
+        let child = match directory.open_child(&name) {
+            Ok(child) => child,
+            Err(_) => return BoundedProbe::IoError,
+        };
+        if child.authority_fingerprint() != fingerprint
+            || matches!(&child, OpenedProviderSourcePath::File(_)) != is_file
+        {
+            return BoundedProbe::IoError;
+        }
+    }
+    if directory.revalidate().is_err() || authority.revalidate().is_err() {
+        return BoundedProbe::IoError;
+    }
+    BoundedProbe::from_bool(found)
+}
+
+fn bounded_auggie_directory_entries(
+    directory: &ProviderSourceDirectory,
+) -> std::result::Result<Vec<std::ffi::OsString>, BoundedProbe> {
+    let names = match directory.entries(MAX_DIRECT_DIRECTORY_ENTRIES.saturating_add(1)) {
+        Ok(names) => names,
+        Err(SourceIoError::InvalidProviderTranscriptPath { .. }) => {
+            return Err(BoundedProbe::BudgetExhausted);
+        }
+        Err(_) => return Err(BoundedProbe::IoError),
+    };
+    if names.len() > MAX_DIRECT_DIRECTORY_ENTRIES {
+        return Err(BoundedProbe::BudgetExhausted);
+    }
+    Ok(names)
 }
 
 fn has_cline_sdk_catalog(root: &Path) -> BoundedProbe {
@@ -493,15 +591,48 @@ pub(super) fn has_openhands_v1_event_json(root: &Path, max_entries: usize) -> Bo
     })
 }
 
-fn qoder_jsonl_path_is_supported(path: &Path) -> bool {
-    if path_has_component(path, "transcript") {
-        return true;
+fn qoder_jsonl_path_is_supported(root: &Path, path: &Path) -> bool {
+    if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
+        return false;
     }
-    path.parent()
-        .and_then(Path::parent)
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        == Some("projects")
+
+    // An explicitly selected Qoder file retains its released path admission.
+    // Directory sources instead name the projects transcript tree itself, so
+    // classify its two native layouts relative to that selected authority.
+    if root == path {
+        return path_has_component(path, "transcript")
+            || path
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                == Some("projects");
+    }
+
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    let mut components = relative.components();
+    match (
+        components.next(),
+        components.next(),
+        components.next(),
+        components.next(),
+    ) {
+        (
+            Some(std::path::Component::Normal(_project)),
+            Some(std::path::Component::Normal(_session)),
+            None,
+            None,
+        ) => true,
+        (
+            Some(std::path::Component::Normal(_project)),
+            Some(std::path::Component::Normal(transcript)),
+            Some(std::path::Component::Normal(_session)),
+            None,
+        ) => transcript == "transcript",
+        _ => false,
+    }
 }
 
 pub(super) fn is_openhands_current_event_json(path: &Path) -> bool {
@@ -615,6 +746,94 @@ fn path_is_dir_probe(path: &Path) -> BoundedProbe {
         PathProbe::IoError => BoundedProbe::IoError,
         _ => BoundedProbe::NotFound,
     }
+}
+
+fn has_codex_session_file(root: &Path) -> BoundedProbe {
+    // Codex archives are legitimately flat and can exceed the generic recursive
+    // probe's sorting budget. Scan that one directory as a constant-memory
+    // stream under the downstream inventory's exact bounds, consuming the
+    // complete bounded stream so filesystem enumeration order cannot decide the
+    // result. Nested layouts retain the existing sorted recursive probe.
+    match has_direct_codex_session_file(root) {
+        BoundedProbe::NotFound => has_file_under_matching(root, 10_000, is_codex_session_file),
+        outcome => outcome,
+    }
+}
+
+fn has_direct_codex_session_file(root: &Path) -> BoundedProbe {
+    match path_metadata_probe(root) {
+        PathProbe::File => return BoundedProbe::from_bool(is_codex_session_file(root)),
+        PathProbe::Dir => {}
+        PathProbe::Missing | PathProbe::Other => return BoundedProbe::NotFound,
+        PathProbe::IoError => return BoundedProbe::IoError,
+    }
+
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return BoundedProbe::IoError,
+    };
+    bounded_direct_match_probe(
+        entries.map(|entry| {
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(_) => return DirectMatchEntry::IoError,
+            };
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(_) => return DirectMatchEntry::Other,
+            };
+            if !provider_metadata_is_link_like(&metadata)
+                && metadata.file_type().is_file()
+                && is_codex_session_file(&path)
+            {
+                DirectMatchEntry::Match
+            } else {
+                DirectMatchEntry::Other
+            }
+        }),
+        PROVIDER_JSONL_INVENTORY_MAX_METADATA_ENTRIES,
+        PROVIDER_JSONL_INVENTORY_MAX_ELIGIBLE_PATHS,
+    )
+}
+
+enum DirectMatchEntry {
+    Match,
+    Other,
+    IoError,
+}
+
+fn bounded_direct_match_probe(
+    entries: impl Iterator<Item = DirectMatchEntry>,
+    max_entries: usize,
+    max_matches: usize,
+) -> BoundedProbe {
+    let mut visited = 0usize;
+    let mut matches = 0usize;
+    let mut found = false;
+    for entry in entries {
+        if visited >= max_entries {
+            return BoundedProbe::BudgetExhausted;
+        }
+        visited = visited.saturating_add(1);
+        match entry {
+            DirectMatchEntry::Match => {
+                if matches >= max_matches {
+                    return BoundedProbe::BudgetExhausted;
+                }
+                matches = matches.saturating_add(1);
+                found = true;
+            }
+            DirectMatchEntry::Other => {}
+            DirectMatchEntry::IoError => return BoundedProbe::IoError,
+        }
+    }
+    BoundedProbe::from_bool(found)
+}
+
+fn is_codex_session_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
 }
 
 fn has_jsonl_file_under_matching(

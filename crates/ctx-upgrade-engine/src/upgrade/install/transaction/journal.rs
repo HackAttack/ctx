@@ -24,6 +24,7 @@ use std::path::Component;
 mod semantic;
 
 const INSTALL_TRANSACTION_FILE: &str = "upgrade-install-transaction.json";
+const INSTALL_TRANSACTION_MAX_BYTES: u64 = 256 * 1024;
 pub(super) const INSTALL_TRANSACTION_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -206,6 +207,27 @@ pub(super) fn read(install_path: &Path) -> Result<Option<InstallTransactionJourn
     Ok(Some(journal))
 }
 
+pub(super) fn interrupted_recovery_admission_matches(
+    install_path: &Path,
+    attempt_id: &str,
+) -> Result<bool> {
+    let path = install_transaction_path(install_path);
+    let Some(bytes) = super::super::read_stable_file(
+        &path,
+        "ctx interrupted install transaction",
+        INSTALL_TRANSACTION_MAX_BYTES,
+        super::super::StableFileKind::Data,
+    )?
+    else {
+        return Ok(false);
+    };
+    let journal: InstallTransactionJournal = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse interrupted install transaction {}", path.display()))?;
+    validate_identity(&journal)?;
+    validate_phase_state(&journal)?;
+    Ok(journal.attempt_id == attempt_id && journal.install_path == install_path)
+}
+
 pub(super) fn write(journal: &InstallTransactionJournal) -> Result<()> {
     #[cfg(unix)]
     {
@@ -323,6 +345,18 @@ pub(super) fn validate(
     validate_paths(journal, semantic_layout)
 }
 
+/// Validate the complete bounded publication shape before it becomes durable
+/// transaction authority. Recovery and the Windows helper apply the same
+/// policy to the journal they later consume.
+pub(super) fn validate_for_publication(
+    journal: &InstallTransactionJournal,
+    semantic_layout: &dyn SemanticLayoutPort,
+) -> Result<()> {
+    validate_identity(journal)?;
+    validate_phase_state(journal)?;
+    validate_paths(journal, semantic_layout)
+}
+
 /// A copied Windows helper cannot use `current_exe()` as an install identity.
 /// It instead authenticates the explicit journal target and every invariant
 /// shared with ordinary recovery.
@@ -332,23 +366,13 @@ pub(super) fn validate_for_helper(
     install_path: &Path,
     semantic_layout: &dyn SemanticLayoutPort,
 ) -> Result<()> {
-    validate_without_current_executable(journal, semantic_layout)?;
+    validate_for_publication(journal, semantic_layout)?;
     if journal.install_path != install_path {
         return Err(anyhow!(
             "Windows replacement helper targets a different executable"
         ));
     }
     Ok(())
-}
-
-#[cfg(windows)]
-fn validate_without_current_executable(
-    journal: &InstallTransactionJournal,
-    semantic_layout: &dyn SemanticLayoutPort,
-) -> Result<()> {
-    validate_identity(journal)?;
-    validate_phase_state(journal)?;
-    validate_paths(journal, semantic_layout)
 }
 
 fn validate_paths(
@@ -367,7 +391,7 @@ fn validate_paths_for_platform(
     platform: &str,
     semantic_layout: &dyn SemanticLayoutPort,
 ) -> Result<()> {
-    if !(2..=6).contains(&journal.paths.len()) {
+    if !(1..=6).contains(&journal.paths.len()) {
         return Err(anyhow!("install transaction has an unexpected path count"));
     }
     let binary = optional_one_path(journal, "ctx binary")?;
@@ -386,7 +410,7 @@ fn validate_paths_for_platform(
         .iter()
         .filter(|path| path.label == "ONNX Runtime sidecar")
         .collect::<Vec<_>>();
-    if runtimes.len() > 1 || (!runtimes.is_empty() && binary.is_none()) {
+    if runtimes.len() > 1 {
         return Err(anyhow!("install transaction has invalid runtime paths"));
     }
     if let Some(runtime) = runtimes.first() {
@@ -403,7 +427,7 @@ fn validate_paths_for_platform(
         ));
     }
     if semantic.is_empty() {
-        if binary.is_none() {
+        if binary.is_none() && runtimes.is_empty() {
             return Err(anyhow!("install transaction has no publishable paths"));
         }
     } else {
@@ -480,10 +504,12 @@ fn validate_windows_helper(journal: &InstallTransactionJournal) -> Result<()> {
         || !valid_sha256(&helper.expected_binary_sha256)
         || !valid_sha256(&helper.expected_marker_sha256)
         || helper.daemon_restart.as_ref().is_some_and(|restart| {
-            !matches!(restart.trigger.as_str(), "setup" | "import" | "search")
-                || restart
-                    .loop_interval_seconds
-                    .is_some_and(|value| value == 0 || value > 3_600)
+            !matches!(
+                restart.trigger.as_str(),
+                "setup" | "import" | "search" | "semantic"
+            ) || restart
+                .loop_interval_seconds
+                .is_some_and(|value| value == 0 || value > 3_600)
         })
         || helper
             .failure

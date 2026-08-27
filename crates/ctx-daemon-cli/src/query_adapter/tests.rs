@@ -1,20 +1,30 @@
-use std::cell::Cell;
+use std::{
+    cell::Cell,
+    fs::{self, OpenOptions},
+    time::{Duration, Instant},
+};
 
 use ctx_history_core::{
     derive_event_id, derive_session_id, CertifiedSource, CoreRecord, EventIdentityInput,
     NativeItemKey, NativeSessionKey, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
     SourceKey, SourceObservation, TypedKey,
 };
-use ctx_history_index::{CoreEventRecord, GenerationWriter, WriterOptions};
+use ctx_history_index::{CoreEventRecord, EventSearchFilters, GenerationWriter, WriterOptions};
 use ctx_semantic_index::{
     source_backed_semantic_vector_path,
     test_support::{pinned_flat_generation, publish_chunk_replacements, semantic_chunk_document},
     SemanticBatchEmbedder, SemanticChunkDocument, SemanticDocumentBuilder, SemanticEventDocument,
     SemanticQueryPin, SemanticVectorStore, SourceBackedGenerationPin,
+    SourceBackedSemanticDocumentBuilder,
 };
+use fs2::FileExt as _;
 use uuid::Uuid;
 
 use super::*;
+
+fn default_compiled_filter() -> CompiledSearchFilter {
+    CompiledSearchFilter::compile(EventSearchFilters::default()).unwrap()
+}
 
 fn semantic_index(root: &Path) -> Result<(VerifiedIndex, Uuid)> {
     semantic_index_revision(root, 1, true)
@@ -139,6 +149,99 @@ fn request_adapter_borrows_the_exact_data_root() {
     assert!(std::ptr::eq(adapter.data_root, data_root.as_path()));
 }
 
+#[test]
+fn foreground_adapter_is_lazy_and_borrows_the_exact_data_root() {
+    let data_root = std::path::PathBuf::from("foreground-query-root");
+    let adapter = SemanticQueryAdapter::foreground(&data_root);
+
+    assert!(std::ptr::eq(adapter.data_root, data_root.as_path()));
+    let SemanticQueryExecution::Foreground { runtime, .. } = &adapter.execution else {
+        panic!("manual wait must select foreground semantic execution");
+    };
+    assert!(
+        !runtime.is_loaded(),
+        "constructing the adapter must not load the model before semantic retrieval begins"
+    );
+}
+
+#[test]
+fn foreground_empty_generation_converges_without_loading_a_model() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let (index, _) = semantic_index_revision(temp.path(), 1, false)?;
+    let adapter = SemanticQueryAdapter::foreground(temp.path());
+
+    let mut session = adapter
+        .begin_query(&index)
+        .map_err(|error| anyhow!(error.to_string()))?;
+    assert_eq!(
+        session.prepare_alternative("empty generation")?,
+        compact_json(json!({"query_embed_ms": null}))
+    );
+    let SemanticQueryExecution::Foreground { runtime, .. } = &adapter.execution else {
+        unreachable!("foreground constructor selected daemon execution")
+    };
+    assert!(!runtime.is_loaded());
+    Ok(())
+}
+
+struct FixtureSemanticEmbedder;
+
+impl SemanticBatchEmbedder for FixtureSemanticEmbedder {
+    fn embed_chunks(&mut self, chunks: &[SemanticChunkDocument]) -> Result<Vec<Vec<f32>>> {
+        Ok(chunks.iter().map(|_| embedding()).collect())
+    }
+}
+
+fn reconcile_ready_nonempty_generation(index: &VerifiedIndex, data_root: &Path) -> Result<()> {
+    let mut store = SemanticVectorStore::open(&source_backed_semantic_vector_path(data_root))?;
+    let mut builder = SourceBackedSemanticDocumentBuilder::new(index);
+    let mut embedder = FixtureSemanticEmbedder;
+    for _ in 0..32 {
+        if store
+            .reconcile_source_backed_index(index, &mut builder, &mut embedder)?
+            .ready()
+        {
+            return Ok(());
+        }
+    }
+    Err(anyhow!("nonempty semantic fixture did not converge"))
+}
+
+#[test]
+fn foreground_ready_nonempty_generation_skips_model_and_writable_reconciliation() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let (index, _) = semantic_index(temp.path())?;
+    reconcile_ready_nonempty_generation(&index, temp.path())?;
+    let semantic_path = source_backed_semantic_vector_path(temp.path());
+    let transaction_lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(semantic_path.join("flat_transaction.lock"))?;
+    transaction_lock.lock_exclusive()?;
+    let state_path = semantic_path.join("state.sqlite");
+    let mut state_permissions = fs::metadata(&state_path)?.permissions();
+    state_permissions.set_readonly(true);
+    fs::set_permissions(&state_path, state_permissions)?;
+
+    let adapter = SemanticQueryAdapter::foreground(temp.path());
+    let started = Instant::now();
+    let _session = adapter
+        .begin_query(&index)
+        .map_err(|error| anyhow!(error.to_string()))?;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "a ready foreground query must not wait on the Flat write transaction lock"
+    );
+    let SemanticQueryExecution::Foreground { runtime, .. } = &adapter.execution else {
+        unreachable!("foreground constructor selected daemon execution")
+    };
+    assert!(
+        !runtime.is_loaded(),
+        "a ready foreground query must not acquire or load the semantic model"
+    );
+    Ok(())
+}
+
 fn ready_adapter<'a>(
     index: &'a VerifiedIndex,
     data_root: &'a Path,
@@ -231,13 +334,14 @@ fn adapter_never_embeds_for_mismatched_or_ready_empty_pins() -> Result<()> {
         )?;
         let mut adapter = SemanticQuerySession::from_pin(&index, temp.path(), pin);
         let calls = Cell::new(0_u8);
-        let result = adapter.search_with("query", &EventSearchFilters::default(), 1, |_, _| {
+        let result = adapter.prepare_alternative_with("query", |_, _| {
             calls.set(calls.get() + 1);
             Ok(Some((embedding(), 1)))
         });
 
         if generation == index.generation_id() {
-            let (candidates, diagnostics) = result?;
+            assert_eq!(result?, compact_json(json!({"query_embed_ms": null})));
+            let (candidates, diagnostics) = adapter.search(&default_compiled_filter(), 1)?;
             assert!(candidates.is_empty());
             assert_eq!(
                 diagnostics,
@@ -246,11 +350,13 @@ fn adapter_never_embeds_for_mismatched_or_ready_empty_pins() -> Result<()> {
                     "core_generation_id": index.generation_id(),
                     "flat_generation": null,
                     "flat_generation_hash": null,
-                    "query_embed_ms": null,
                     "vector_scan_ms": null,
+                    "query_vectors": null,
+                    "vector_passes": 0,
                     "chunks_scanned": null,
                     "vector_bytes_read": null,
                     "events_scored": null,
+                    "dot_products": null,
                     "initial_k": 1,
                     "final_k": 1,
                     "iterations": 0,
@@ -258,6 +364,8 @@ fn adapter_never_embeds_for_mismatched_or_ready_empty_pins() -> Result<()> {
                     "eligible_candidates": 0,
                     "filtered_candidates": 0,
                     "non_positive_candidates": 0,
+                    "metadata_records_loaded": 0,
+                    "core_records_decoded": 0,
                     "exhausted": true,
                     "cap_reached": false,
                 }))
@@ -279,35 +387,32 @@ fn adapter_never_embeds_for_mismatched_or_ready_empty_pins() -> Result<()> {
 }
 
 #[test]
-fn adapter_embeds_ready_queries_once_and_reuses_one_pin_filter_cache() -> Result<()> {
+fn adapter_embeds_ordered_queries_then_runs_one_scan_with_one_filter_projection() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let (index, event_id) = semantic_index(temp.path())?;
     let mut adapter = ready_adapter(&index, temp.path(), event_id, &temp.path().join("vectors"))?;
     let calls = Cell::new(0_u8);
-    let filters = EventSearchFilters::default();
+    let filters = default_compiled_filter();
 
-    let (first, first_diagnostics) =
-        adapter.search_with("first normalized query", &filters, 1, |_, _| {
+    let first_diagnostics =
+        adapter.prepare_alternative_with("first normalized query", |_, _| {
             calls.set(calls.get() + 1);
             Ok(Some((embedding(), 17)))
         })?;
-    assert_eq!(first.len(), 1);
     assert_eq!(first_diagnostics["query_embed_ms"], 17);
-    let first_projection = adapter
-        .pin
-        .filter_projection_identity_for_test()
-        .expect("first query must cache its filter projection");
-    let (second, _) = adapter.search_with("second normalized query", &filters, 1, |_, _| {
-        calls.set(calls.get() + 1);
-        Ok(Some((embedding(), 17)))
-    })?;
-    assert_eq!(second.len(), 1);
+    let second_diagnostics =
+        adapter.prepare_alternative_with("second normalized query", |_, _| {
+            calls.set(calls.get() + 1);
+            Ok(Some((embedding(), 17)))
+        })?;
+    assert_eq!(second_diagnostics["query_embed_ms"], 17);
+    assert_eq!(adapter.pin.filter_projection_identity_for_test(), None);
+    let (candidates, scan_diagnostics) = adapter.search(&filters, 1)?;
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(scan_diagnostics["query_vectors"], 2);
+    assert_eq!(scan_diagnostics["vector_passes"], 1);
     assert_eq!(calls.get(), 2, "each ready query must embed exactly once");
-    assert_eq!(
-        adapter.pin.filter_projection_identity_for_test(),
-        Some(first_projection),
-        "normalized queries must reuse one pin and filter cache"
-    );
+    assert!(adapter.pin.filter_projection_identity_for_test().is_some());
     Ok(())
 }
 
@@ -319,7 +424,7 @@ fn adapter_preserves_daemon_query_service_unavailable_contract() -> Result<()> {
     let calls = Cell::new(0_u8);
 
     let error = adapter
-        .search_with("query", &EventSearchFilters::default(), 1, |_, _| {
+        .prepare_alternative_with("query", |_, _| {
             calls.set(calls.get() + 1);
             Ok(None)
         })
@@ -347,10 +452,8 @@ fn adapter_scores_only_the_active_flat_core_intersection() -> Result<()> {
         &temp.path().join("vectors"),
     )?;
 
-    let (candidates, diagnostics) =
-        adapter.search_with("query", &EventSearchFilters::default(), 1, |_, _| {
-            Ok(Some((embedding(), 1)))
-        })?;
+    adapter.prepare_alternative_with("query", |_, _| Ok(Some((embedding(), 1))))?;
+    let (candidates, diagnostics) = adapter.search(&default_compiled_filter(), 1)?;
 
     assert!(candidates.is_empty());
     assert_eq!(diagnostics["events_scored"], 0);

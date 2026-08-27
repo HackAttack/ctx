@@ -444,6 +444,34 @@ fn done_progress_json_forces_complete_bytes_with_incomplete_bytes() {
 }
 
 #[test]
+fn pre_refresh_failure_is_one_terminal_progress_event() {
+    let stdout = SharedWriter::default();
+    let stderr = SharedWriter::default();
+    let stderr_capture = stderr.clone();
+    let mut ui = Ui::with_writers(
+        stdout,
+        crate::ui::RenderContext::for_test(crate::ui::TestContext::pipe(
+            crate::ui::StreamKind::Stdout,
+        )),
+        stderr,
+        crate::ui::RenderContext::for_test(crate::ui::TestContext::pipe(
+            crate::ui::StreamKind::Stderr,
+        )),
+    );
+
+    ProgressReporter::new(&mut ui, ProgressMode::Json, false, "import", 0)
+        .failure("failed", "Import path does not exist: /missing")
+        .unwrap();
+
+    let event: serde_json::Value = serde_json::from_str(stderr_capture.text().trim()).unwrap();
+    assert_eq!(event["type"], "ctx_progress");
+    assert_eq!(event["operation"], "import");
+    assert_eq!(event["phase"], "failed");
+    assert_eq!(event["message"], "Import path does not exist: /missing");
+    assert_eq!(event["done"], true);
+}
+
+#[test]
 fn progress_json_remains_exact_and_ansi_free() {
     let line = ProgressLine {
         phase: "cataloging".to_owned(),
@@ -597,4 +625,11 @@ fn progress_text_is_control_safe_utf8_and_bounded() {
     assert!(bounded.len() <= MAX_PROGRESS_MESSAGE_BYTES);
     assert!(!bounded.contains('\n'));
     assert!(bounded.ends_with("..."));
+}
+
+#[test]
+fn count_formatting_groups_the_full_u64_domain() {
+    assert_eq!(format_count(999), "999");
+    assert_eq!(format_count(1_000), "1,000");
+    assert_eq!(format_count(u64::MAX), "18,446,744,073,709,551,615");
 }

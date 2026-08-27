@@ -71,34 +71,32 @@ structured-content channel.
 
 ## Provider and format capability
 
-General provider support remains the 41-provider local-history contract in
+General provider support remains the 42-provider local-history contract in
 [`provider-support-matrix.json`](provider-support-matrix.json). Exact MCP
 activity attribution has a separate provider + route + source format + format
 version contract in
 [`mcp-tool-call-attribution-capabilities.json`](mcp-tool-call-attribution-capabilities.json).
 
-Capability revision 4 evaluates all 41 providers across 46 base routes and 49
-capability lanes: three `exact`, 45 `not-qualified`, and one `excluded`.
+Capability revision 4 evaluates all 42 providers across 47 base routes and 51
+capability lanes: three `exact`, 47 `not-qualified`, and one `excluded`.
 Codex contributes separate session-tree and legacy prompt-history routes; Deep
 Agents contributes its local SQLite import plus a separately excluded hosted
 trace. Capability revision 4 exact providers are Codex, Warp, and Copilot CLI.
 The exact full tuples are:
 
-- Codex `codex_session_jsonl_tree` / `codex-nativepath-jsonl-v0`, parser
-  `codex-nativepath-core-activity-v8-inherited-session-lineage`, for unversioned producer
-  generation 1 only. Codex producer versions 0.200.0, 0.201.0, and 0.202.0 are
+- Codex `codex_session_jsonl_tree` / `codex-nativepath-jsonl-v0`, for
+  unversioned producer generation 1 only. Codex producer versions 0.200.0,
+  0.201.0, and 0.202.0 are
   separate explicit `not-qualified` lanes and never inherit exact status.
-- Warp `warp_sqlite` / `warp-agent-task-protobuf-v1`, parser
-  `warp-source-backed-logical-v7-neutral-activity-agent-scope`, for strict unversioned
+- Warp `warp_sqlite` / `warp-agent-task-protobuf-v1`, for strict unversioned
   generation 1. The pinned source commits are evidence for that shape, not
   runtime writer-version selectors.
 - Copilot CLI `copilot_cli_session_events_jsonl` /
-  `copilot-cli-direct-native-jsonl-v1`, parser
-  `copilot-cli-direct-native-jsonl-v8-optional-activity-admission`, for strict unversioned
-  generation 1. Observed versions and the pinned source commit are evidence,
-  not runtime admission selectors.
+  `copilot-cli-direct-native-jsonl-v1`, for strict unversioned generation 1.
+  Observed versions and the pinned source commit are evidence, not runtime
+  admission selectors.
 
-The 45 `not-qualified` rows do not mean their providers are unsupported. They
+The 47 `not-qualified` rows do not mean their providers are unsupported. They
 mean only that ctx does not claim exact MCP server/tool activity for those
 tuples. New source variants or versions require their own non-overlapping row;
 unknown generations fail closed. The public

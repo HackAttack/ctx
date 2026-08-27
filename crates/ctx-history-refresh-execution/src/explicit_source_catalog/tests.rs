@@ -258,6 +258,7 @@ mod tests {
                 provider,
                 path: home.to_path_buf(),
                 group: Some("work".to_owned()),
+                kind: None,
             },
         ]);
         ctx_history_capture::build_automatic_source_backed_registry_from_report(

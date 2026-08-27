@@ -579,11 +579,18 @@ fn analytics_payloads_omit_sensitive_command_data() {
     assert_eq!(search_properties["query_length_bucket"], "101-500");
     assert_eq!(search_properties["query_term_count_bucket"], "6-20");
     assert_eq!(search_properties["search_refresh_mode"], "off");
-    assert_eq!(search_properties["search_refresh_status"], "unknown");
+    assert_eq!(
+        search_properties["search_refresh_status"],
+        "existing_generation"
+    );
     assert_eq!(search_properties["zero_result"], true);
     assert_eq!(search_properties["has_indexed_content_after_search"], false);
     assert!(search_properties.get("query_duration_bucket").is_some());
     assert!(search_properties.get("render_duration_bucket").is_some());
+    assert!(search_properties
+        .get("search_output_duration_bucket")
+        .is_some());
+    assert_eq!(search_properties["search_output_served"], true);
     assert_eq!(events[3]["events"][0]["outcome"], "failure");
 
     for event in &events {
@@ -655,7 +662,7 @@ fn search_analytics_reports_empty_source_backed_generation() {
     assert_operation_event(&events[0], "search", "success");
     let properties = analytics_event_properties(&events[0]);
     assert_eq!(properties["search_refresh_mode"], "off");
-    assert_eq!(properties["search_refresh_status"], "unknown");
+    assert_eq!(properties["search_refresh_status"], "existing_generation");
     assert_eq!(properties["zero_result"], true);
     assert_eq!(properties["has_indexed_content_after_search"], false);
     assert!(data_root.join("search/lexical").is_dir());
@@ -1171,40 +1178,14 @@ fn foreground_provider_refreshes_batch_once_per_source_backed_import() {
         let refresh = provider_events[0]["properties"].as_object().unwrap();
         assert_eq!(refresh["provider"], "codex");
         assert_eq!(refresh["trigger"], "import");
-        assert_eq!(refresh["source_mode"], "explicit_path");
         assert_eq!(refresh["change"], expected_change);
-        assert_eq!(refresh["content_evidence"], "none");
         assert_eq!(refresh["refresh_result"], "complete");
         assert_eq!(refresh["core_result"], expected_core_result);
         assert_eq!(refresh["failure_scope"], "none");
         assert_eq!(refresh["failure_type"], "none");
-        if expected_change == "changed" {
-            assert!(refresh.get("work_kind").is_none());
-            assert!(refresh.get("retired_records_bucket").is_none());
-        } else {
-            assert_eq!(refresh["work_kind"], "no_op");
-            assert_eq!(refresh["retired_records_bucket"], "0");
-        }
         assert_eq!(refresh["work_remaining"], false);
-        for bucket in [
-            "sources_bucket",
-            "source_files_bucket",
-            "sessions_bucket",
-            "events_bucket",
-            "edges_bucket",
-            "skips_bucket",
-            "rejections_bucket",
-            "failures_bucket",
-            "bytes_bucket",
-        ] {
+        for bucket in ["records_bucket", "logical_bytes_bucket"] {
             assert!(refresh[bucket].as_str().is_some(), "missing {bucket}");
-        }
-        for optional_performance_bucket in
-            ["cpu_duration_bucket", "observed_process_peak_rss_bucket"]
-        {
-            if let Some(bucket) = refresh.get(optional_performance_bucket) {
-                assert!(bucket.as_str().is_some());
-            }
         }
         for forbidden in [
             "content",
@@ -1235,31 +1216,12 @@ fn foreground_provider_refreshes_batch_once_per_source_backed_import() {
         let global = global_events[0]["properties"].as_object().unwrap();
         assert_eq!(global["trigger"], "import");
         assert_eq!(global["change"], expected_change);
-        assert_eq!(global["content_evidence"], "unknown");
         assert_eq!(global["refresh_result"], "complete");
         assert_eq!(global["core_result"], expected_core_result);
         assert_eq!(global["failure_scope"], "none");
         assert_eq!(global["failure_type"], "none");
         assert_eq!(global["work_remaining"], false);
-        if expected_change == "changed" {
-            assert!(global.get("work_kind").is_none());
-        } else {
-            assert_eq!(global["work_kind"], "no_op");
-        }
-        for provider_only in [
-            "provider",
-            "source_mode",
-            "sources_bucket",
-            "source_files_bucket",
-            "sessions_bucket",
-            "events_bucket",
-            "edges_bucket",
-            "skips_bucket",
-            "rejections_bucket",
-            "failures_bucket",
-            "bytes_bucket",
-            "retired_records_bucket",
-        ] {
+        for provider_only in ["provider", "records_bucket", "logical_bytes_bucket"] {
             assert!(
                 !global.contains_key(provider_only),
                 "global publication receipt exposed provider detail {provider_only}: {global:#?}"
@@ -1313,6 +1275,7 @@ fn setup_analytics_emits_one_failure_event() {
     let state = temp.path().join("state");
     let events_path = temp.path().join("analytics.jsonl");
     fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(data_root.join(".config.mutation.lock")).unwrap();
 
     ctx(&temp)
         .args(["setup", "--semantic", "--no-daemon", "--progress", "none"])

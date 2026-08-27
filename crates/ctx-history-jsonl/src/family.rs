@@ -8,6 +8,10 @@ use std::{
 use sha2::{Digest, Sha256};
 
 use ctx_history_capture_runtime::{CaptureLifecycleSink, SourceBackedRouteDriver};
+pub use ctx_history_capture_runtime::{
+    SourceBackedRecordRejectionClass, SourceBackedRecordRejectionDraft,
+    SourceBackedRecordRejectionDrafts,
+};
 use ctx_history_source_io::{
     MappedOpenedProviderSourceFile, MappedOpenedProviderSourcePath, MappedProviderSourceDirectory,
     MappedProviderSourceRoot, SourceIoError, MAX_PROVIDER_JSONL_LINE_BYTES,
@@ -17,6 +21,7 @@ mod checkpoint;
 mod framing;
 mod identity;
 mod physical;
+mod rejections;
 mod revalidation;
 mod route;
 mod single_file;
@@ -155,6 +160,7 @@ pub use physical::{
     MAX_STANDARD_ZSTD_DECOMPRESSED_BYTES, MAX_STANDARD_ZSTD_PARALLEL_STREAMS,
     MAX_STANDARD_ZSTD_TEMP_BYTES_PER_LEAF,
 };
+pub use rejections::JsonlRecordRejections;
 use revalidation::hash_prefix;
 pub use revalidation::revalidate_frozen_prefix;
 pub(crate) use revalidation::{
@@ -174,14 +180,15 @@ pub use route::{
 };
 pub use route::{
     jsonl_family_driver, JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyAppendTrustContract,
-    JsonlFamilyBaseScope, JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition,
-    JsonlFamilyInventory, JsonlFamilyInventoryMember, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
+    JsonlFamilyExecutionIo, JsonlFamilyExecutionPosition, JsonlFamilyInventory,
+    JsonlFamilyInventoryMember, JsonlFamilyInventoryMode, JsonlFamilyLeaf,
     JsonlFamilyLeafDisposition, JsonlFamilyMembershipObservation, JsonlFamilyOpenedMember,
     JsonlFamilyOptimizedLeafOutcome, JsonlFamilyPendingLeaf, JsonlFamilyPhysicalSourceIdentity,
-    JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyPublication,
-    JsonlFamilyRejectedLeaf, JsonlFamilyRootMissingMode, JsonlFamilySemanticExecutor,
-    JsonlFamilySemanticPage, JsonlFamilySemanticPreflight, JsonlFamilySemanticSummary,
-    JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
+    JsonlFamilyProjectionMode, JsonlFamilyProjector, JsonlFamilyProjectorPreflightError,
+    JsonlFamilyPublication, JsonlFamilyRejectedLeaf, JsonlFamilyRootMissingMode,
+    JsonlFamilySemanticExecutor, JsonlFamilySemanticPage, JsonlFamilySemanticPreflight,
+    JsonlFamilySemanticSummary, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
+    JSONL_FAMILY_MAX_LEAF_TERMINAL_DEPENDENCIES, JSONL_FAMILY_MAX_LEAF_TERMINAL_PRESENT_BYTES,
 };
 pub use single_file::jsonl_single_file_inventory;
 const PAGE_MAX_RECORDS: usize = 64;
@@ -223,6 +230,7 @@ pub struct JsonlReader<E: JsonlFamilyError> {
     whole_record: bool,
     append_log: bool,
     bind_admitted_eof: bool,
+    logical_eof: Option<u64>,
     complete_prefix_ends_with_terminal_nul_padding: bool,
     semantic_append_resume: Option<JsonlSemanticAppendResume>,
     direct_append_resume: bool,
@@ -241,6 +249,7 @@ struct JsonlReaderFramingOptions<'a> {
     record_framing: JsonlRecordFraming,
     whole_record: bool,
     bind_admitted_eof: bool,
+    logical_eof: Option<u64>,
     deferred_append_eof_sha256: Option<Option<[u8; 32]>>,
     frozen_observation: Option<&'a JsonlFileObservation>,
     direct_append: bool,

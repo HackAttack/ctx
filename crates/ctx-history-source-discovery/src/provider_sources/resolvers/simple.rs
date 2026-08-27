@@ -54,6 +54,7 @@ pub(super) fn resolve(
         CaptureProvider::Junie => resolve_junie(probes, context, spec),
         CaptureProvider::FactoryAiDroid => resolve_factory(probes, context, spec),
         CaptureProvider::ForgeCode => resolve_forgecode(probes, context, spec),
+        CaptureProvider::Fx => resolve_fx(probes, context, spec),
         _ => DiscoveryReport::default(),
     }
 }
@@ -117,25 +118,7 @@ fn resolve_codex(
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
 ) -> DiscoveryReport {
-    let mut report = if context.automatic_provider_inference_enabled() {
-        resolve_inferred_codex(probes, context, spec)
-    } else {
-        DiscoveryReport::default()
-    };
-    for configured in context
-        .configured_provider_roots()
-        .iter()
-        .filter(|root| root.provider == CaptureProvider::Codex)
-    {
-        add_codex_root_sources(
-            probes,
-            &mut report,
-            spec,
-            &configured.path,
-            SourceSelectionAuthority::Configured,
-        );
-    }
-    report
+    resolve_inferred_codex(probes, context, spec)
 }
 
 fn resolve_inferred_codex(
@@ -166,13 +149,7 @@ fn resolve_inferred_codex(
     };
 
     let mut report = DiscoveryReport::default();
-    add_codex_root_sources(
-        probes,
-        &mut report,
-        spec,
-        &root,
-        SourceSelectionAuthority::Inferred,
-    );
+    add_codex_root_sources(probes, &mut report, spec, &root);
     report
 }
 
@@ -208,36 +185,21 @@ pub fn released_provider_home(
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SourceSelectionAuthority {
-    Inferred,
-    Configured,
-}
-
 fn add_codex_root_sources(
     probes: &StaticProviderProbeCatalog,
     report: &mut DiscoveryReport,
     spec: &ProviderSourceSpec,
     root: &Path,
-    authority: SourceSelectionAuthority,
 ) {
     for tree in [root.join("sessions"), root.join("archived_sessions")] {
-        add_source_with_authority(
-            probes,
-            report,
-            spec,
-            tree,
-            "codex_session_jsonl_tree",
-            authority,
-        );
+        add_source(probes, report, spec, tree, "codex_session_jsonl_tree");
     }
-    add_source_with_authority(
+    add_source(
         probes,
         report,
         spec,
         root.join("history.jsonl"),
         "codex_history_jsonl",
-        authority,
     );
 }
 
@@ -246,26 +208,7 @@ fn resolve_claude(
     context: &DiscoveryContext,
     spec: &ProviderSourceSpec,
 ) -> DiscoveryReport {
-    let mut report = if context.automatic_provider_inference_enabled() {
-        resolve_inferred_claude(probes, context, spec)
-    } else {
-        DiscoveryReport::default()
-    };
-    for configured in context
-        .configured_provider_roots()
-        .iter()
-        .filter(|root| root.provider == CaptureProvider::Claude)
-    {
-        add_source_with_authority(
-            probes,
-            &mut report,
-            spec,
-            configured.path.join("projects"),
-            "claude_projects_jsonl_tree",
-            SourceSelectionAuthority::Configured,
-        );
-    }
-    report
+    resolve_inferred_claude(probes, context, spec)
 }
 
 fn resolve_inferred_claude(
@@ -594,6 +537,22 @@ fn resolve_factory(
     )
 }
 
+fn resolve_fx(
+    probes: &StaticProviderProbeCatalog,
+    context: &DiscoveryContext,
+    spec: &ProviderSourceSpec,
+) -> DiscoveryReport {
+    if let Err(report) = supported_default(context, spec) {
+        return report;
+    }
+    one_source(
+        probes,
+        spec,
+        context.home().join(".fx").join("sessions"),
+        "fx_sessions_tree",
+    )
+}
+
 fn resolve_forgecode(
     probes: &StaticProviderProbeCatalog,
     context: &DiscoveryContext,
@@ -753,25 +712,7 @@ fn add_source(
     path: PathBuf,
     source_format: &'static str,
 ) {
-    add_source_with_authority(
-        probes,
-        report,
-        spec,
-        path,
-        source_format,
-        SourceSelectionAuthority::Inferred,
-    );
-}
-
-fn add_source_with_authority(
-    probes: &StaticProviderProbeCatalog,
-    report: &mut DiscoveryReport,
-    spec: &ProviderSourceSpec,
-    path: PathBuf,
-    source_format: &'static str,
-    authority: SourceSelectionAuthority,
-) {
-    add_source_inner(probes, report, None, spec, path, source_format, authority);
+    add_source_inner(probes, report, None, spec, path, source_format);
 }
 
 fn add_source_with_data_root(
@@ -789,7 +730,6 @@ fn add_source_with_data_root(
         spec,
         path,
         source_format,
-        SourceSelectionAuthority::Inferred,
     );
 }
 
@@ -800,7 +740,6 @@ fn add_source_inner(
     spec: &ProviderSourceSpec,
     path: PathBuf,
     source_format: &'static str,
-    authority: SourceSelectionAuthority,
 ) {
     if !encoded_path_within_limit(&path) {
         push_issue_once(
@@ -821,9 +760,7 @@ fn add_source_inner(
                 DiscoveryIssueKind::SelectorUnreconstructible,
                 path_presence_unknown_reason(kind),
             );
-            if authority != SourceSelectionAuthority::Configured {
-                return;
-            }
+            return;
         }
         PathPresence::Unsupported => {
             push_issue_once(

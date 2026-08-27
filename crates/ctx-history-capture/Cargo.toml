@@ -10,7 +10,6 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-serde_json.workspace = true
 ctx-history-capture-model = { path = "../ctx-history-capture-model" }
 ctx-history-capture-composition = { path = "../ctx-history-capture-composition" }
 ctx-history-core = { path = "../ctx-history-core" }
@@ -20,6 +19,4 @@ ctx-history-source-io = { path = "../ctx-history-source-io" }
 ctx-history-source-discovery = { path = "../ctx-history-source-discovery" }
 
 [dev-dependencies]
-ctx-history-index = { path = "../ctx-history-index" }
-rusqlite.workspace = true
 tempfile.workspace = true

@@ -1,22 +1,22 @@
 use super::*;
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(super) struct SourceBackedRefreshFailureOutcome {
-    pub(super) code: &'static str,
-    pub(super) class: &'static str,
+    pub(super) code: RefreshOutcomeCode,
+    pub(super) class: RefreshOutcomeClass,
     pub(super) retryable: bool,
     pub(super) affected_routes: BTreeSet<SourceRouteIdentity>,
     pub(super) retryable_routes: BTreeSet<SourceRouteIdentity>,
     pub(super) blocked_routes: BTreeSet<SourceRouteIdentity>,
-    pub(super) retry_advice: Option<&'static str>,
+    pub(super) retry_advice: Option<RefreshRetryAdvice>,
 }
 
 impl SourceBackedRefreshFailureOutcome {
     pub(super) fn new(
-        code: &'static str,
-        class: &'static str,
+        code: RefreshOutcomeCode,
+        class: RefreshOutcomeClass,
         retryable: bool,
         affected_routes: BTreeSet<SourceRouteIdentity>,
-        retry_advice: Option<&'static str>,
+        retry_advice: Option<RefreshRetryAdvice>,
     ) -> Self {
         let (retryable_routes, blocked_routes) = if retryable {
             (affected_routes.clone(), BTreeSet::new())
@@ -34,12 +34,12 @@ impl SourceBackedRefreshFailureOutcome {
     }
 
     pub(super) fn with_route_dispositions(
-        code: &'static str,
-        class: &'static str,
+        code: RefreshOutcomeCode,
+        class: RefreshOutcomeClass,
         retryable: bool,
         retryable_routes: BTreeSet<SourceRouteIdentity>,
         blocked_routes: BTreeSet<SourceRouteIdentity>,
-        retry_advice: Option<&'static str>,
+        retry_advice: Option<RefreshRetryAdvice>,
     ) -> Self {
         let affected_routes = retryable_routes.union(&blocked_routes).cloned().collect();
         Self {
@@ -60,8 +60,8 @@ impl SourceBackedRefreshFailureOutcome {
         detail: Option<&str>,
     ) -> Value {
         compact_json(json!({
-            "code": self.code,
-            "class": self.class,
+            "code": self.code.as_str(),
+            "class": self.class.as_str(),
             "retryable": self.retryable,
             "affected_routes": self.affected_routes
                 .iter()
@@ -77,9 +77,60 @@ impl SourceBackedRefreshFailureOutcome {
                 .collect::<Vec<_>>(),
             "physical_attempt_id": physical_attempt_id,
             "retained_generation": retained_generation,
-            "retry_advice": self.retry_advice,
+            "retry_advice": self.retry_advice.map(RefreshRetryAdvice::as_str),
             "detail": detail,
         }))
+    }
+}
+
+/// Exact vocabulary of the durable legacy `failure_type` field.
+///
+/// Structured outcomes use the broader `RefreshOutcomeCode`; keeping this
+/// field narrow makes values its writer cannot produce fail closed on recovery.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(super) enum SourceBackedRefreshFailureType {
+    UnsupportedSchema,
+    MalformedSource,
+    SourceUnavailable,
+    SourceChanged,
+    SourceFailures,
+    AllProviderTerminalCoverageUnavailable,
+}
+
+impl SourceBackedRefreshFailureType {
+    pub(super) const fn outcome_code(self) -> RefreshOutcomeCode {
+        match self {
+            Self::UnsupportedSchema => RefreshOutcomeCode::UnsupportedSchema,
+            Self::MalformedSource => RefreshOutcomeCode::MalformedSource,
+            Self::SourceUnavailable => RefreshOutcomeCode::SourceUnavailable,
+            Self::SourceChanged => RefreshOutcomeCode::SourceChanged,
+            Self::SourceFailures => RefreshOutcomeCode::SourceFailures,
+            Self::AllProviderTerminalCoverageUnavailable => {
+                RefreshOutcomeCode::AllProviderTerminalCoverageUnavailable
+            }
+        }
+    }
+
+    pub(super) const fn as_str(self) -> &'static str {
+        self.outcome_code().as_str()
+    }
+}
+
+impl std::str::FromStr for SourceBackedRefreshFailureType {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.parse::<RefreshOutcomeCode>()? {
+            RefreshOutcomeCode::UnsupportedSchema => Ok(Self::UnsupportedSchema),
+            RefreshOutcomeCode::MalformedSource => Ok(Self::MalformedSource),
+            RefreshOutcomeCode::SourceUnavailable => Ok(Self::SourceUnavailable),
+            RefreshOutcomeCode::SourceChanged => Ok(Self::SourceChanged),
+            RefreshOutcomeCode::SourceFailures => Ok(Self::SourceFailures),
+            RefreshOutcomeCode::AllProviderTerminalCoverageUnavailable => {
+                Ok(Self::AllProviderTerminalCoverageUnavailable)
+            }
+            _ => bail!("unknown source-backed refresh failure type"),
+        }
     }
 }
 
@@ -129,7 +180,7 @@ pub(super) struct SourceBackedRefreshAttempt {
     pub(super) daemon_mode: String,
     pub(super) trigger: &'static str,
     pub(super) trigger_provenance: &'static str,
-    pub(super) failure_type: Option<&'static str>,
+    pub(super) failure_type: Option<SourceBackedRefreshFailureType>,
     pub(super) failure_outcome: Option<SourceBackedRefreshFailureOutcome>,
     pub(super) last_error: Option<String>,
 }
@@ -194,14 +245,20 @@ impl SourceBackedRefreshAttempt {
             .as_deref()
             .filter(|error| error.contains(TERMINAL_COVERAGE_ERROR_CODE))
             .map(|_| TERMINAL_COVERAGE_ERROR_CODE)
-            .or_else(|| self.failure_outcome.as_ref().map(|outcome| outcome.code))
+            .or_else(|| {
+                self.failure_outcome
+                    .as_ref()
+                    .map(|outcome| outcome.code.as_str())
+            })
     }
 
     fn failure_reason(&self) -> Option<&'static str> {
         if self.failure_code() == Some(TERMINAL_COVERAGE_ERROR_CODE) {
             return Some("provider_terminal_coverage_unavailable");
         }
-        self.failure_outcome.as_ref().map(|outcome| outcome.class)
+        self.failure_outcome
+            .as_ref()
+            .map(|outcome| outcome.class.as_str())
     }
 
     fn request_generation_changed(&self) -> Option<bool> {
@@ -362,7 +419,7 @@ impl SourceBackedRefreshAttempt {
             "daemon_mode": self.daemon_mode.as_str(),
             "trigger": self.trigger,
             "trigger_provenance": self.trigger_provenance,
-            "failure_type": self.failure_type,
+            "failure_type": self.failure_type.map(SourceBackedRefreshFailureType::as_str),
             "error_code": self.failure_code(),
             "reason": self.failure_reason(),
             "last_error": self.last_error,
@@ -420,7 +477,7 @@ impl SourceBackedRefreshAttempt {
             "daemon_mode": self.daemon_mode.as_str(),
             "trigger": self.trigger,
             "trigger_provenance": self.trigger_provenance,
-            "failure_type": self.failure_type,
+            "failure_type": self.failure_type.map(SourceBackedRefreshFailureType::as_str),
             "error_code": self.failure_code(),
             "reason": self.failure_reason(),
             "last_error": self.last_error,

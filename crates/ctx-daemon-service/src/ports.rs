@@ -55,6 +55,7 @@ pub enum DaemonTrigger {
     Setup,
     Import,
     Search,
+    Semantic,
 }
 
 impl DaemonTrigger {
@@ -63,6 +64,7 @@ impl DaemonTrigger {
             Self::Setup => "setup",
             Self::Import => "import",
             Self::Search => "search",
+            Self::Semantic => "semantic",
         }
     }
 }
@@ -115,8 +117,8 @@ impl DaemonConfigSnapshot {
 }
 
 impl ctx_upgrade_engine::AutomaticUpgradePolicySnapshot for DaemonConfigSnapshot {
-    fn daemon_enabled(&self) -> bool {
-        self.daemon.enabled
+    fn daemon_maintenance_enabled(&self) -> bool {
+        self.daemon.enabled && self.daemon.mode == DaemonMode::Full
     }
 
     fn automatic_upgrade_enabled(&self) -> bool {
@@ -170,7 +172,11 @@ pub trait DaemonInstallationLease {
 pub trait DaemonInstallationPort {
     type Lease: DaemonInstallationLease;
 
-    fn lifecycle_blocks_current_process(&self, data_root: &Path) -> bool;
+    fn lifecycle_blocks_current_process(
+        &self,
+        data_root: &Path,
+        allow_automatic_recovery: bool,
+    ) -> bool;
     fn upgrade_handoff_blocks_current_process(&self, data_root: &Path) -> bool;
     fn current_process_owns_upgrade_handoff(&self, data_root: &Path) -> bool;
     fn acquire(
@@ -179,6 +185,7 @@ pub trait DaemonInstallationPort {
         trigger: DaemonTrigger,
         loop_interval_seconds: Option<u64>,
         allow_active_upgrade: bool,
+        allow_automatic_recovery: bool,
         persistent: bool,
     ) -> Result<Option<Self::Lease>>;
     fn resume_completed(&self, data_root: &Path) -> Result<()>;
@@ -347,7 +354,11 @@ mod tests {
     impl DaemonInstallationPort for Installation {
         type Lease = Lease;
 
-        fn lifecycle_blocks_current_process(&self, _data_root: &Path) -> bool {
+        fn lifecycle_blocks_current_process(
+            &self,
+            _data_root: &Path,
+            _allow_automatic_recovery: bool,
+        ) -> bool {
             false
         }
         fn upgrade_handoff_blocks_current_process(&self, _data_root: &Path) -> bool {
@@ -362,6 +373,7 @@ mod tests {
             _trigger: DaemonTrigger,
             _loop_interval_seconds: Option<u64>,
             _allow_active_upgrade: bool,
+            _allow_automatic_recovery: bool,
             _persistent: bool,
         ) -> Result<Option<Self::Lease>> {
             Ok(Some(Lease(Arc::clone(&self.0))))
@@ -377,7 +389,14 @@ mod tests {
         let acknowledged = Arc::new(AtomicBool::new(false));
         let installation = Installation(Arc::clone(&acknowledged));
         let lease = installation
-            .acquire(Path::new("data"), DaemonTrigger::Search, None, false, true)
+            .acquire(
+                Path::new("data"),
+                DaemonTrigger::Search,
+                None,
+                false,
+                false,
+                true,
+            )
             .unwrap()
             .unwrap();
 
@@ -398,7 +417,8 @@ mod tests {
             upgrade_channel: "stable".to_owned(),
         };
 
-        assert!(snapshot.daemon_enabled());
+        assert!(snapshot.daemon.enabled);
+        assert!(snapshot.daemon_maintenance_enabled());
         assert!(snapshot.semantic_enabled());
         assert!(snapshot.automatic_upgrade_enabled());
         assert_eq!(snapshot.interval(), Duration::from_secs(3_600));

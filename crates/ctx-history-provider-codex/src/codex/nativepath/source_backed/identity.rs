@@ -165,20 +165,16 @@ pub(in crate::codex::nativepath) fn codex_source_key_in_root(
     source_root_lineage: Option<[u8; 32]>,
     native_session_id: &str,
 ) -> CodexSourceBackedResultV0<SourceKey> {
-    let anchor = match source_root_lineage {
-        Some(lineage) => TypedKey::composite(vec![
-            TypedKey::bytes(lineage.to_vec())?,
-            TypedKey::utf8(native_session_id)?,
-        ])?,
-        None => TypedKey::utf8(native_session_id)?,
-    };
-    Ok(SourceKey::derive_provider_native(
+    let scope =
+        source_root_lineage.map_or(SourceAnchorScope::Unqualified, SourceAnchorScope::Lineage);
+    Ok(SourceKey::derive_provider_native_scoped(
         CaptureProvider::Codex.as_str(),
         CODEX_SESSION_SOURCE_FORMAT,
         CODEX_SOURCE_SCHEMA_VARIANT,
         1,
         CODEX_SOURCE_ANCHOR_NAMESPACE,
-        anchor,
+        TypedKey::utf8(native_session_id)?,
+        scope,
     )?)
 }
 
@@ -215,7 +211,7 @@ pub(in crate::codex::nativepath) fn codex_core_record(
     owner: &CodexSessionRow,
     row: CodexCoreRecordDraft,
     event_identity_state: &mut CodexEventIdentityStateV0,
-) -> CodexSourceBackedResultV0<CoreRecord> {
+) -> CodexSourceBackedResultV0<Option<CoreRecord>> {
     let native_session_id = owner.native_session_id.as_str();
     let parent_session_id = owner
         .parent_native_session_id
@@ -231,26 +227,14 @@ pub(in crate::codex::nativepath) fn codex_core_record(
             codex_session_id_for_native_id(source_root_lineage, native_session_id)
         })
         .transpose()?;
-    let (event_id, native_event_id, provider_occurrence) =
-        event_identity_state.next_identity(source, session_id, &row)?;
-    let CodexCoreRecordDraft {
-        raw_ordinal,
-        provider_event_identity,
-        provider_event_copy,
-        occurred_at,
-        event_type,
-        role,
-        session_cwd,
-        lexical_body,
-        structured_content,
-        discovery_exclusion,
-        mut activity,
-    } = row;
-    if lexical_body.is_empty() {
+    let mut row = row;
+    if row.lexical_body.is_empty() {
         return Err(CodexSourceBackedErrorV0::MissingLexicalBody);
     }
+    let content_omission = (row.lexical_body.len() > ctx_history_core::MAX_CORE_CONTENT_BYTES)
+        .then_some("Codex provider record content exceeds the Core content limit");
     let mut session_facts = Vec::new();
-    if let Some(cwd) = session_cwd.as_deref().filter(|value| !value.is_empty()) {
+    if let Some(cwd) = row.session_cwd.as_deref().filter(|value| !value.is_empty()) {
         session_facts.push(ctx_history_core::ProviderDeclaredFact {
             kind: ctx_history_core::LiteralFactKind::SessionCwd,
             value: cwd.to_owned(),
@@ -280,7 +264,7 @@ pub(in crate::codex::nativepath) fn codex_core_record(
         }
     }
     if !session_facts.is_empty() {
-        if let Some(activity) = activity.as_mut() {
+        if let Some(activity) = row.activity.as_mut() {
             if activity
                 .facts
                 .len()
@@ -291,7 +275,7 @@ pub(in crate::codex::nativepath) fn codex_core_record(
             }
             activity.facts.splice(0..0, session_facts);
         } else {
-            activity = Some(ctx_history_core::CoreActivity {
+            row.activity = Some(ctx_history_core::CoreActivity {
                 revision: ctx_history_core::CORE_ACTIVITY_REVISION,
                 provider_call_id: None,
                 invocation: None,
@@ -300,6 +284,46 @@ pub(in crate::codex::nativepath) fn codex_core_record(
             });
         }
     }
+    if content_omission.is_none() {
+        if !ctx_history_jsonl::selected_content_fits(
+            &row.lexical_body,
+            row.structured_content.as_ref(),
+            row.activity.as_ref(),
+            ctx_history_core::MAX_CORE_CONTENT_BYTES,
+        ) {
+            row.structured_content = None;
+        }
+        ctx_history_jsonl::fit_jsonl_activity(
+            &row.lexical_body,
+            row.structured_content.as_ref(),
+            &mut row.activity,
+            ctx_history_jsonl::JsonlActivityObservedBytes::infer_from_present(),
+            ctx_history_core::MAX_CORE_CONTENT_BYTES,
+        );
+        if !ctx_history_jsonl::selected_content_fits(
+            &row.lexical_body,
+            row.structured_content.as_ref(),
+            row.activity.as_ref(),
+            ctx_history_core::MAX_CORE_CONTENT_BYTES,
+        ) {
+            return Ok(None);
+        }
+    }
+    let (event_id, native_event_id, provider_occurrence) =
+        event_identity_state.next_identity(source, session_id, &row)?;
+    let CodexCoreRecordDraft {
+        raw_ordinal,
+        provider_event_identity,
+        provider_event_copy,
+        occurred_at,
+        event_type,
+        role,
+        session_cwd: _,
+        lexical_body,
+        structured_content,
+        discovery_exclusion,
+        activity,
+    } = row;
     let mut record = CoreRecord::new_selected(
         event_id,
         session_id,
@@ -307,7 +331,7 @@ pub(in crate::codex::nativepath) fn codex_core_record(
         raw_ordinal,
         event_type.as_str(),
         CODEX_PARSER_REVISION,
-        lexical_body,
+        content_omission.map_or(lexical_body, |_| "Codex content omitted".to_owned()),
     )?;
     record.parent_session_id = parent_session_id;
     record.root_session_id = match owner.session_relationship {
@@ -341,30 +365,14 @@ pub(in crate::codex::nativepath) fn codex_core_record(
             ctx_history_core::AgentScope::Subagent
         }
     });
-    let mut structured_content = structured_content;
-    if !ctx_history_jsonl::selected_content_fits(
-        record
-            .content
-            .normalized_body
-            .as_deref()
-            .unwrap_or_default(),
-        structured_content.as_ref(),
-        activity.as_ref(),
-        ctx_history_core::MAX_CORE_CONTENT_BYTES,
-    ) {
-        structured_content = None;
+    if let Some(reason) = content_omission {
+        record.content.policy_status = ctx_history_core::CoreContentPolicyStatus::Omitted {
+            reason: reason.to_owned(),
+        };
+        record.content.normalized_body = None;
+        record.validate_contract()?;
+        return Ok(Some(record));
     }
-    ctx_history_jsonl::fit_jsonl_activity(
-        record
-            .content
-            .normalized_body
-            .as_deref()
-            .unwrap_or_default(),
-        structured_content.as_ref(),
-        &mut activity,
-        ctx_history_jsonl::JsonlActivityObservedBytes::infer_from_present(),
-        ctx_history_core::MAX_CORE_CONTENT_BYTES,
-    );
     record.content.structured_content = structured_content;
     record.content.discovery_exclusion = discovery_exclusion;
     record.content.activity = activity;
@@ -372,7 +380,7 @@ pub(in crate::codex::nativepath) fn codex_core_record(
         .content
         .omit_structured_content_if_aggregate_exceeds_limit()?;
     record.validate_contract()?;
-    Ok(record)
+    Ok(Some(record))
 }
 
 fn codex_session_id_for_native_id(

@@ -222,6 +222,11 @@ const NATIVE_PROVIDER_CLI_SPECS: &[ProviderCliSpec] = &[
         cli_name: "codebuddy",
         aliases: &["code-buddy", "code_buddy"],
     },
+    ProviderCliSpec {
+        provider: CaptureProvider::Fx,
+        cli_name: "fx",
+        aliases: &[],
+    },
 ];
 
 const CUSTOM_PROVIDER_CLI_SPEC: ProviderCliSpec = ProviderCliSpec {
@@ -260,20 +265,23 @@ pub fn provider_cli_name(provider: CaptureProvider) -> &'static str {
     provider_cli_spec(provider).map_or_else(|| provider.as_str(), |spec| spec.cli_name)
 }
 
-pub fn parse_provider_name(value: &str) -> Option<HistoryProvider> {
+/// Resolves canonical CLI names, persisted storage identifiers, and compatibility aliases.
+pub fn parse_capture_provider_name(value: &str) -> Option<CaptureProvider> {
     provider_cli_specs()
         .find(|spec| {
             spec.cli_name == value
                 || spec.provider.as_str() == value
                 || spec.aliases.contains(&value)
         })
-        .map(|spec| HistoryProvider::from(spec.provider))
+        .map(|spec| spec.provider)
+}
+
+pub fn parse_provider_name(value: &str) -> Option<HistoryProvider> {
+    parse_capture_provider_name(value).map(HistoryProvider::from)
 }
 
 pub fn parse_native_provider_name(value: &str) -> Option<CaptureProvider> {
-    parse_provider_name(value)
-        .map(HistoryProvider::capture_provider)
-        .filter(|provider| *provider != CaptureProvider::Custom)
+    parse_capture_provider_name(value).filter(|provider| *provider != CaptureProvider::Custom)
 }
 
 pub fn parse_provider(value: &str) -> std::result::Result<HistoryProvider, String> {

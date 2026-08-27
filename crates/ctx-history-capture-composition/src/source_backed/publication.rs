@@ -65,17 +65,19 @@ use ownership::source_owner_covers_base_source;
 use ownership::{
     automatic_carried_route_retirements, capture_staged_source_route_revalidation_receipts,
     require_complete_base_source_ownership, revalidate_staged_source_route,
+    BaseSourceOwnershipEvidence,
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static BEFORE_SOURCE_BACKED_COMMIT_HOOK: std::cell::RefCell<
         Option<Box<dyn FnOnce()>>,
     > = const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
-pub(super) fn install_before_source_backed_commit_hook_for_test(hook: impl FnOnce() + 'static) {
+#[doc(hidden)]
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_before_source_backed_commit_hook_for_test(hook: impl FnOnce() + 'static) {
     BEFORE_SOURCE_BACKED_COMMIT_HOOK.with(|slot| {
         let previous = slot.replace(Some(Box::new(hook)));
         assert!(
@@ -85,7 +87,7 @@ pub(super) fn install_before_source_backed_commit_hook_for_test(hook: impl FnOnc
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_before_source_backed_commit_hook() {
     BEFORE_SOURCE_BACKED_COMMIT_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -94,7 +96,7 @@ fn run_before_source_backed_commit_hook() {
     });
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 fn run_before_source_backed_commit_hook() {}
 
 /// Capture-owned executor that can be installed behind the daemon's

@@ -3,8 +3,8 @@ use std::path::Path;
 use serde_json::Value;
 
 use ctx_terminal::{
-    fields, format_bytes, hint, outcome, section, Action, Document, Field, Hint, Outcome,
-    OutcomeState, RenderContext, Token,
+    fields, format_bytes, format_count, hint, outcome, section, Action, Document, Field, Hint,
+    Outcome, OutcomeState, RenderContext, Token,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,22 +293,22 @@ pub(crate) fn render_daemon_status_human(
             semantic_state(semantic, runtime_active, semantic_fallback);
         let mut semantic_fields = vec![state_field("Status", semantic_state, semantic_token)];
         let mut semantic_details = Vec::new();
+        let runtime = semantic.and_then(|job| job.get("embedding_runtime"));
+        if let Some(backend) = runtime
+            .and_then(|runtime| runtime.get("backend"))
+            .and_then(Value::as_str)
+            .filter(|backend| !backend.is_empty())
+        {
+            semantic_details.push(("Backend", humanize_code(backend)));
+        }
+        if let Some(compute) = runtime
+            .and_then(|runtime| runtime.get("compute_mode"))
+            .and_then(Value::as_str)
+            .filter(|compute| !compute.is_empty())
+        {
+            semantic_details.push(("Compute", humanize_code(compute)));
+        }
         if let Some(fallback) = semantic_fallback {
-            let runtime = semantic.and_then(|job| job.get("embedding_runtime"));
-            if let Some(backend) = runtime
-                .and_then(|runtime| runtime.get("backend"))
-                .and_then(Value::as_str)
-                .filter(|backend| !backend.is_empty())
-            {
-                semantic_details.push(("Backend", humanize_code(backend)));
-            }
-            if let Some(compute) = runtime
-                .and_then(|runtime| runtime.get("compute_mode"))
-                .and_then(Value::as_str)
-                .filter(|compute| !compute.is_empty())
-            {
-                semantic_details.push(("Compute", humanize_code(compute)));
-            }
             semantic_details.push(("Fallback", humanize_code(fallback)));
         }
         if let Some(reason) = semantic
@@ -884,17 +884,5 @@ fn humanize_code(value: &str) -> String {
 
 fn counted(count: u64, singular: &str, plural: &str) -> String {
     let noun = if count == 1 { singular } else { plural };
-    format!("{} {noun}", grouped_count(count))
-}
-
-fn grouped_count(count: u64) -> String {
-    let digits = count.to_string();
-    let mut reversed = String::with_capacity(digits.len().saturating_add(digits.len() / 3));
-    for (index, character) in digits.chars().rev().enumerate() {
-        if index > 0 && index % 3 == 0 {
-            reversed.push(',');
-        }
-        reversed.push(character);
-    }
-    reversed.chars().rev().collect()
+    format!("{} {noun}", format_count(count))
 }

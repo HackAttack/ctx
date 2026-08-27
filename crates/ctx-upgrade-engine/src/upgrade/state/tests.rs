@@ -1,5 +1,151 @@
 use super::*;
 
+fn daemon_due_hint_install(temp: &tempfile::TempDir) -> PathBuf {
+    let install = temp.path().join("ctx");
+    fs::write(&install, b"test executable").unwrap();
+    fs::write(
+        crate::upgrade::install::install_marker_path(&install),
+        b"managed marker candidate",
+    )
+    .unwrap();
+    install
+}
+
+#[test]
+fn daemon_due_hint_is_inert_without_a_regular_marker() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let install = temp.path().join("ctx");
+    fs::write(&install, b"test executable")?;
+    assert!(!automatic_upgrade_check_due_for(
+        &install,
+        Duration::from_secs(60)
+    )?);
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(
+            temp.path().join("missing"),
+            crate::upgrade::install::install_marker_path(&install),
+        )?;
+        assert!(!automatic_upgrade_check_due_for(
+            &install,
+            Duration::from_secs(60)
+        )?);
+    }
+    Ok(())
+}
+
+#[test]
+fn daemon_due_hint_uses_bounded_shared_cadence() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let install = daemon_due_hint_install(&temp);
+    let interval = Duration::from_secs(60);
+    assert!(automatic_upgrade_check_due_for(&install, interval)?);
+
+    fs::write(
+        state_path(&install),
+        serde_json::to_vec(&json!({
+            "schema_version": STATE_SCHEMA_VERSION,
+            "next_check_unix_s": now_unix_s().saturating_add(60),
+        }))?,
+    )?;
+    assert!(!automatic_upgrade_check_due_for(&install, interval)?);
+
+    fs::write(state_path(&install), b"{malformed")?;
+    assert!(automatic_upgrade_check_due_for(&install, interval)?);
+
+    fs::write(
+        state_path(&install),
+        vec![b'x'; DUE_HINT_STATE_MAX_BYTES as usize + 1],
+    )?;
+    assert!(automatic_upgrade_check_due_for(&install, interval)?);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn daemon_due_hint_does_not_follow_or_block_on_nonregular_state() -> Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
+
+    let temp = tempfile::tempdir()?;
+    let install = daemon_due_hint_install(&temp);
+    let state = state_path(&install);
+    std::os::unix::fs::symlink("/dev/zero", &state)?;
+    assert!(automatic_upgrade_check_due_for(
+        &install,
+        Duration::from_secs(60)
+    )?);
+
+    fs::remove_file(&state)?;
+    let state_c = CString::new(state.as_os_str().as_bytes())?;
+    if unsafe { libc::mkfifo(state_c.as_ptr(), 0o600) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    assert!(automatic_upgrade_check_due_for(
+        &install,
+        Duration::from_secs(60)
+    )?);
+    Ok(())
+}
+
+#[test]
+fn daemon_due_hint_suppresses_only_recent_in_progress_attempts() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let install = daemon_due_hint_install(&temp);
+    let interval = Duration::from_secs(60);
+
+    fs::write(
+        state_path(&install),
+        serde_json::to_vec(&json!({
+            "schema_version": STATE_SCHEMA_VERSION,
+            "status": "checking",
+            "last_attempt_at": utc_now(),
+        }))?,
+    )?;
+    assert!(!automatic_upgrade_check_due_for(&install, interval)?);
+
+    let stale = utc_now()
+        - chrono::Duration::from_std(DUE_HINT_RECENT_ATTEMPT_GRACE)?
+        - chrono::Duration::seconds(1);
+    fs::write(
+        state_path(&install),
+        serde_json::to_vec(&json!({
+            "schema_version": STATE_SCHEMA_VERSION,
+            "status": "staged",
+            "last_attempt_at": stale,
+        }))?,
+    )?;
+    assert!(automatic_upgrade_check_due_for(&install, interval)?);
+
+    let future = utc_now() + chrono::Duration::hours(24);
+    fs::write(
+        state_path(&install),
+        serde_json::to_vec(&json!({
+            "schema_version": STATE_SCHEMA_VERSION,
+            "status": "checking",
+            "last_attempt_at": future,
+        }))?,
+    )?;
+    assert!(automatic_upgrade_check_due_for(&install, interval)?);
+    Ok(())
+}
+
+#[test]
+fn current_and_legacy_automatic_sources_share_cadence_and_backoff() {
+    for source in ["automatic", "daemon"] {
+        let mut success = UpgradeState::default();
+        let attempt = success.begin(source);
+        success.terminal(&attempt, "up_to_date", Duration::from_secs(60), 100);
+        assert_eq!(success.next_check_unix_s, Some(160), "{source}");
+        assert_eq!(success.consecutive_failures, 0, "{source}");
+
+        let mut failure = UpgradeState::default();
+        let attempt = failure.begin(source);
+        failure.fail(&attempt, "network", 100);
+        assert_eq!(failure.next_retry_unix_s, Some(160), "{source}");
+        assert_eq!(failure.consecutive_failures, 1, "{source}");
+    }
+}
+
 fn test_installation() -> Result<(tempfile::TempDir, PathBuf)> {
     let temp = tempfile::tempdir()?;
     let bin = temp.path().join("bin");
@@ -48,6 +194,68 @@ fn active_current_state_remains_fenced_while_installation_is_locked() -> Result<
 }
 
 #[test]
+fn only_trusted_automatic_active_state_admits_the_recovery_daemon() -> Result<()> {
+    let (temp, install_path) = test_installation()?;
+    let attempt_id = "ua_recovery_admission_test";
+    let journal_path = install_path.with_file_name(".ctx.upgrade-install-transaction.json");
+    let data_root = temp.path().join("data-root");
+    ctx_history_platform::platform_security::create_private_directory_all(&data_root)?;
+    atomic_write_json(
+        &journal_path,
+        &json!({
+            "schema_version": 2,
+            "attempt_id": attempt_id,
+            "data_root": data_root,
+            "runtime_root": data_root.join("runtime"),
+            "phase": "publishing",
+            "install_path": install_path,
+            "paths": [],
+        }),
+    )?;
+    assert!(interrupted_recovery_admission_matches(
+        &install_path,
+        attempt_id
+    )?);
+    for (source, expected) in [("automatic", true), ("daemon", true), ("manual", false)] {
+        atomic_write_json(
+            &state_path(&install_path),
+            &json!({
+                "schema_version": STATE_SCHEMA_VERSION,
+                "status": "applying",
+                "attempt_id": attempt_id,
+                "attempt_source": source,
+            }),
+        )?;
+        assert_eq!(
+            installation_interrupted_automatic_upgrade_is_recoverable_for(&install_path)?,
+            expected,
+            "{source}"
+        );
+    }
+
+    atomic_write_json(
+        &state_path(&install_path),
+        &json!({
+            "schema_version": STATE_SCHEMA_VERSION,
+            "status": "applying",
+            "attempt_id": attempt_id,
+            "attempt_source": "automatic",
+        }),
+    )?;
+    let _live_upgrade = InstallationLock::try_acquire(&install_path)?
+        .ok_or_else(|| anyhow!("test installation lock held"))?;
+    assert!(!installation_interrupted_automatic_upgrade_is_recoverable_for(&install_path)?);
+    drop(_live_upgrade);
+
+    fs::write(&journal_path, b"{not valid transaction journal")?;
+    assert!(!installation_interrupted_automatic_upgrade_is_recoverable_for(&install_path)?);
+
+    fs::write(state_path(&install_path), b"{not valid upgrade state")?;
+    assert!(!installation_interrupted_automatic_upgrade_is_recoverable_for(&install_path)?);
+    Ok(())
+}
+
+#[test]
 fn untrusted_state_remains_fail_closed_while_installation_is_locked() -> Result<()> {
     let (_temp, install_path) = test_installation()?;
     let _upgrade =
@@ -62,20 +270,98 @@ fn untrusted_state_remains_fail_closed_while_installation_is_locked() -> Result<
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
-fn scheduler_state_path_is_installation_scoped() {
+fn unmanaged_read_only_installation_is_never_active_without_a_lock() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let (temp, install_path) = test_installation()?;
+    // No install marker: an unmanaged, third-party packaged installation.
+    // Make the executable directory read-only to prove no installation lock
+    // or coordination file is required to observe it.
+    let bin = install_path.parent().unwrap();
+    fs::set_permissions(bin, fs::Permissions::from_mode(0o555))?;
+
+    assert!(!installation_upgrade_is_active_for(&install_path)?);
+
+    fs::set_permissions(bin, fs::Permissions::from_mode(0o755))?;
+    drop(temp);
+    Ok(())
+}
+
+#[test]
+fn unmanaged_installation_with_active_state_remains_fenced() -> Result<()> {
+    let (_temp, install_path) = test_installation()?;
+    // No install marker, but a leftover active scheduler record must still
+    // fence: the unmanaged shortcut never bypasses active-state observation.
+    atomic_write_json(
+        &state_path(&install_path),
+        &json!({
+            "schema_version": STATE_SCHEMA_VERSION,
+            "status": "applying",
+            "attempt_id": "ua_unmanaged_active_test",
+        }),
+    )?;
+
+    assert!(installation_upgrade_is_active_for(&install_path)?);
+    Ok(())
+}
+
+#[test]
+fn scheduler_state_path_remains_installation_scoped() {
     let install = Path::new("/opt/ctx/bin/ctx");
     assert_eq!(
         state_path(install),
         Path::new("/opt/ctx/bin/.ctx.upgrade-state.json")
     );
+}
+
+#[test]
+fn daemon_coordination_is_user_scoped_by_canonical_executable() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let user_state = temp.path().join("user-state");
+    let first_bin = temp.path().join("first").join("bin");
+    let second_bin = temp.path().join("second").join("bin");
+    fs::create_dir_all(&first_bin)?;
+    fs::create_dir_all(&second_bin)?;
+    let first = first_bin.join("ctx");
+    let second = second_bin.join("ctx");
+    fs::write(&first, b"first ctx executable")?;
+    fs::write(&second, b"second ctx executable")?;
+
+    let first_paths = installation_daemon_coordination_paths_in(&user_state, &first)?;
+    let aliased_first = first_bin.join("..").join("bin").join("ctx");
     assert_eq!(
-        installation_daemon_coordination_paths_for(install),
-        (
-            PathBuf::from("/opt/ctx/bin/.ctx.daemon-quiescence.lock"),
-            PathBuf::from("/opt/ctx/bin/.ctx.daemon-quiescence-acks"),
-        )
+        installation_daemon_coordination_paths_in(&user_state, &aliased_first)?,
+        first_paths,
+        "path aliases for one executable must share coordination"
     );
+    assert_eq!(
+        first_paths.0.file_name().and_then(|name| name.to_str()),
+        Some(DAEMON_QUIESCENCE_LOCK_FILE)
+    );
+    assert_eq!(
+        first_paths.1.file_name().and_then(|name| name.to_str()),
+        Some(DAEMON_QUIESCENCE_ACK_DIR)
+    );
+    let expected_coordination_root = user_state.join(DAEMON_INSTALLATION_STATE_DIR);
+    assert_eq!(
+        first_paths.0.parent().and_then(Path::parent),
+        Some(expected_coordination_root.as_path())
+    );
+
+    let second_paths = installation_daemon_coordination_paths_in(&user_state, &second)?;
+    assert_ne!(
+        first_paths.0.parent(),
+        second_paths.0.parent(),
+        "distinct executable paths must not share coordination"
+    );
+    assert_eq!(
+        state_path(&first),
+        first.with_file_name(".ctx.upgrade-state.json"),
+        "daemon coordination must not move scheduler state"
+    );
+    Ok(())
 }
 
 #[test]
@@ -133,21 +419,21 @@ fn fresh_and_interrupted_state_are_due_without_a_persisted_lease() {
 }
 
 #[test]
-fn successful_check_uses_normal_cadence() {
+fn successful_automatic_check_uses_normal_cadence() {
     let mut state = UpgradeState::default();
-    let attempt = state.begin("daemon");
+    let attempt = state.begin("automatic");
     state.terminal(&attempt, "up_to_date", Duration::from_secs(100), 1_000);
     assert!(!auto_check_due(&state, Duration::from_secs(100), 1_099));
     assert!(auto_check_due(&state, Duration::from_secs(100), 1_100));
 }
 
 #[test]
-fn only_daemon_failures_advance_automatic_backoff() {
-    let mut daemon = UpgradeState::default();
-    let attempt = daemon.begin("daemon");
-    daemon.fail(&attempt, "network", 1_000);
-    assert_eq!(daemon.consecutive_failures, 1);
-    assert_eq!(daemon.next_retry_unix_s, Some(1_060));
+fn only_automatic_failures_advance_automatic_backoff() {
+    let mut automatic = UpgradeState::default();
+    let attempt = automatic.begin("automatic");
+    automatic.fail(&attempt, "network", 1_000);
+    assert_eq!(automatic.consecutive_failures, 1);
+    assert_eq!(automatic.next_retry_unix_s, Some(1_060));
 
     let mut manual = UpgradeState::default();
     let attempt = manual.begin("manual_apply");
@@ -157,7 +443,7 @@ fn only_daemon_failures_advance_automatic_backoff() {
 }
 
 #[test]
-fn manual_success_does_not_change_daemon_cadence_or_backoff() {
+fn manual_success_does_not_change_automatic_cadence_or_backoff() {
     let mut state = UpgradeState {
         schema_version: STATE_SCHEMA_VERSION,
         next_check_unix_s: Some(2_000),

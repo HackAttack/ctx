@@ -10,10 +10,9 @@ use serde_json::Value;
 
 use ctx_client_observability::analytics::{
     duration_bucket, DurationBucket, ForegroundProviderRefreshV1, Outcome, ProviderCoreResult,
-    ProviderRefreshChange, ProviderRefreshCompletedV1, ProviderRefreshContentEvidence,
-    ProviderRefreshCountsV1, ProviderRefreshFailureScope, ProviderRefreshFailureType,
-    ProviderRefreshResult, ProviderRefreshSourceMode, ProviderRefreshTrigger,
-    ProviderRefreshWorkKind, PublicEventV1, Surface,
+    ProviderRefreshChange, ProviderRefreshCompletedV1, ProviderRefreshCountsV1,
+    ProviderRefreshFailureScope, ProviderRefreshFailureType, ProviderRefreshResult,
+    ProviderRefreshTerminalHealthV1, ProviderRefreshTrigger, PublicEventV1, Surface,
 };
 
 pub(super) fn provider_refresh_event(
@@ -37,20 +36,10 @@ pub(super) fn provider_refresh_event(
     };
     let progress = SourceBackedRefreshProgress::from_status_json(job).ok()?;
     let provider = single_provider(&progress.providers);
-    let source_mode = provider.map(|_| ProviderRefreshSourceMode::Discovered);
-    let sources = progress_total_sources(job, &progress);
     let duration = refresh_duration(job);
 
     if terminal_status == "failed" {
-        return failed_provider_refresh_event(
-            job,
-            successor_pending,
-            trigger,
-            provider,
-            source_mode,
-            sources,
-            duration,
-        );
+        return failed_provider_refresh_event(job, successor_pending, trigger, provider, duration);
     }
 
     let receipt = published_refresh_receipt_for_recovery(job).ok()?;
@@ -64,22 +53,8 @@ pub(super) fn provider_refresh_event(
         .unwrap_or(false);
     let (failure_scope, failure_type) = completed_failure(&receipt, rejections, source_failures);
     let generation_changed = receipt.generation_changed;
-    let work_kind = if !generation_changed {
-        Some(ProviderRefreshWorkKind::NoOp)
-    } else if receipt.previous_generation.is_none() {
-        Some(ProviderRefreshWorkKind::Fresh)
-    } else {
-        None
-    };
-    let counts = provider.map(|_| {
-        ProviderRefreshCountsV1::sparse_refresh_receipt(
-            sources,
-            progress_u64(job, "processed_sessions"),
-            Some(rejections),
-            Some(source_failures),
-            progress_u64(job, "processed_bytes"),
-        )
-    });
+    let counts = provider
+        .map(|_| ProviderRefreshCountsV1::sparse(None, progress_u64(job, "processed_bytes")));
     let event = ProviderRefreshCompletedV1::bucketed(
         Surface::Daemon,
         Outcome::Success,
@@ -87,14 +62,11 @@ pub(super) fn provider_refresh_event(
         ForegroundProviderRefreshV1 {
             provider,
             trigger,
-            source_mode,
             change: if generation_changed {
                 ProviderRefreshChange::Changed
             } else {
                 ProviderRefreshChange::NoOp
             },
-            content_evidence: ProviderRefreshContentEvidence::Unknown,
-            work_kind,
             refresh_result: if partial {
                 ProviderRefreshResult::Partial
             } else {
@@ -108,25 +80,17 @@ pub(super) fn provider_refresh_event(
             failure_scope,
             failure_type,
             work_remaining: successor_pending || structured_retryable,
-            // A removed source is not an exact retired-record aggregate.
-            retired_records: None,
             counts,
-            // Daemon refreshes do not own exact process CPU or peak-RSS
-            // observations around only this shared engine call.
-            performance: None,
         },
-    );
+    )
+    .with_terminal_health(refresh_terminal_health(successor_pending, None));
     Some(PublicEventV1::ProviderRefreshCompleted(event))
 }
-
-#[allow(clippy::too_many_arguments)]
 fn failed_provider_refresh_event(
     job: &Value,
     successor_pending: bool,
     trigger: ProviderRefreshTrigger,
     provider: Option<CaptureProvider>,
-    source_mode: Option<ProviderRefreshSourceMode>,
-    sources: Option<u64>,
     duration: DurationBucket,
 ) -> Option<PublicEventV1> {
     let status = RefreshStatus::parse_schema_v1(job.clone()).ok()?;
@@ -137,16 +101,10 @@ fn failed_provider_refresh_event(
     if !outcome.code.is_failure() {
         return None;
     }
+    let retained_previous_generation = outcome.retained_generation.is_some();
     let (failure_scope, failure_type) = terminal_failure(outcome.code);
-    let counts = provider.map(|_| {
-        ProviderRefreshCountsV1::sparse_refresh_receipt(
-            sources,
-            progress_u64(job, "processed_sessions"),
-            None,
-            None,
-            progress_u64(job, "processed_bytes"),
-        )
-    });
+    let counts = provider
+        .map(|_| ProviderRefreshCountsV1::sparse(None, progress_u64(job, "processed_bytes")));
     Some(PublicEventV1::ProviderRefreshCompleted(
         ProviderRefreshCompletedV1::bucketed(
             Surface::Daemon,
@@ -155,21 +113,30 @@ fn failed_provider_refresh_event(
             ForegroundProviderRefreshV1 {
                 provider,
                 trigger,
-                source_mode,
                 change: ProviderRefreshChange::NoOp,
-                content_evidence: ProviderRefreshContentEvidence::Unknown,
-                work_kind: None,
                 refresh_result: ProviderRefreshResult::Failure,
                 core_result: ProviderCoreResult::Failure,
                 failure_scope,
                 failure_type,
                 work_remaining: successor_pending || outcome.retryable,
-                retired_records: None,
                 counts,
-                performance: None,
             },
-        ),
+        )
+        .with_terminal_health(refresh_terminal_health(
+            successor_pending,
+            Some(retained_previous_generation),
+        )),
     ))
+}
+
+fn refresh_terminal_health(
+    successor_pending: bool,
+    retained_previous_generation: Option<bool>,
+) -> ProviderRefreshTerminalHealthV1 {
+    ProviderRefreshTerminalHealthV1 {
+        retained_previous_generation,
+        successor_pending,
+    }
 }
 
 fn completed_failure(
@@ -257,18 +224,6 @@ fn terminal_failure(
     )
 }
 
-fn progress_total_sources(job: &Value, progress: &SourceBackedRefreshProgress) -> Option<u64> {
-    let known = match job
-        .get("progress")
-        .and_then(|progress| progress.get("total_sources_known"))
-    {
-        Some(Value::Bool(known)) => *known,
-        Some(_) => return None,
-        None => progress.total_sources != 0,
-    };
-    known.then(|| u64::try_from(progress.total_sources).ok())?
-}
-
 fn progress_u64(job: &Value, field: &str) -> Option<u64> {
     job.get("progress")?.get(field)?.as_u64()
 }
@@ -305,7 +260,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use ctx_client_observability::analytics::{bytes_bucket, count_bucket};
+    use ctx_client_observability::analytics::bytes_bucket;
 
     fn completed_job(
         trigger: &str,
@@ -351,9 +306,7 @@ mod tests {
                 "total_sources": 1,
                 "total_sources_known": true,
                 "providers": ["codex"],
-                "processed_sessions": 7,
                 "processed_bytes": 4096,
-                "completed_records": 21,
             },
             "structured_outcome": { "retryable": false },
         })
@@ -367,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn cold_setup_receipt_emits_fresh_daemon_event_with_sparse_exact_facts() {
+    fn completed_refresh_emits_minimal_terminal_and_coarse_work_facts() {
         let event = refresh(
             provider_refresh_event(&completed_job("setup", None, true), false)
                 .expect("setup refresh event"),
@@ -375,37 +328,33 @@ mod tests {
         let facts = event.foreground.expect("refresh facts");
 
         assert_eq!(event.surface, Surface::Daemon);
-        assert_eq!(facts.trigger, ProviderRefreshTrigger::Setup);
-        assert_eq!(
-            facts.source_mode,
-            Some(ProviderRefreshSourceMode::Discovered)
-        );
-        assert_eq!(facts.provider, Some(CaptureProvider::Codex));
-        assert_eq!(facts.work_kind, Some(ProviderRefreshWorkKind::Fresh));
-        assert_eq!(facts.change, ProviderRefreshChange::Changed);
-        assert_eq!(facts.refresh_result, ProviderRefreshResult::Partial);
-        assert_eq!(facts.failure_scope, ProviderRefreshFailureScope::Mixed);
-        assert_eq!(facts.failure_type, ProviderRefreshFailureType::Mixed);
-        assert_eq!(facts.retired_records, None);
+        assert_eq!(event.outcome, Outcome::Success);
         assert_eq!(
             event.duration,
             duration_bucket(Duration::from_millis(2_500))
         );
-        let counts = facts.counts.expect("receipt counts");
-        assert_eq!(counts.sources, Some(count_bucket(1)));
-        assert_eq!(counts.sessions, Some(count_bucket(7)));
-        assert_eq!(counts.events, None);
-        assert_eq!(counts.rejections, Some(count_bucket(3)));
-        assert_eq!(counts.failures, Some(count_bucket(2)));
-        assert_eq!(counts.bytes, Some(bytes_bucket(4096)));
-        assert_eq!(counts.source_files, None);
-        assert_eq!(counts.edges, None);
-        assert_eq!(counts.skips, None);
-        assert_eq!(facts.performance, None);
+        assert_eq!(facts.provider, Some(CaptureProvider::Codex));
+        assert_eq!(facts.trigger, ProviderRefreshTrigger::Setup);
+        assert_eq!(facts.change, ProviderRefreshChange::Changed);
+        assert_eq!(facts.refresh_result, ProviderRefreshResult::Partial);
+        assert_eq!(facts.core_result, ProviderCoreResult::Complete);
+        assert_eq!(facts.failure_scope, ProviderRefreshFailureScope::Mixed);
+        assert_eq!(facts.failure_type, ProviderRefreshFailureType::Mixed);
+        assert!(!facts.work_remaining);
+        let counts = facts.counts.expect("coarse work facts");
+        assert_eq!(counts.records, None);
+        assert_eq!(counts.logical_bytes, Some(bytes_bucket(4096)));
+        assert_eq!(
+            event.terminal_health,
+            Some(ProviderRefreshTerminalHealthV1 {
+                retained_previous_generation: None,
+                successor_pending: false,
+            })
+        );
     }
 
     #[test]
-    fn incremental_periodic_noop_uses_daemon_trigger_and_reports_successor() {
+    fn no_op_refresh_keeps_successor_and_work_remaining() {
         let event = refresh(
             provider_refresh_event(
                 &completed_job("periodic", Some("generation-b"), false),
@@ -415,47 +364,20 @@ mod tests {
         );
         let facts = event.foreground.expect("refresh facts");
 
-        assert_eq!(event.surface, Surface::Daemon);
         assert_eq!(facts.trigger, ProviderRefreshTrigger::Daemon);
         assert_eq!(facts.change, ProviderRefreshChange::NoOp);
-        assert_eq!(facts.work_kind, Some(ProviderRefreshWorkKind::NoOp));
         assert_eq!(facts.core_result, ProviderCoreResult::NoOp);
         assert!(facts.work_remaining);
-    }
-
-    #[test]
-    fn changed_incremental_receipt_does_not_invent_append_or_rewrite() {
-        let event = refresh(
-            provider_refresh_event(&completed_job("search", Some("generation-a"), true), false)
-                .expect("search refresh event"),
+        assert!(
+            event
+                .terminal_health
+                .expect("terminal health")
+                .successor_pending
         );
-        let facts = event.foreground.expect("refresh facts");
-
-        assert_eq!(facts.trigger, ProviderRefreshTrigger::Search);
-        assert_eq!(facts.change, ProviderRefreshChange::Changed);
-        assert_eq!(facts.work_kind, None);
     }
 
     #[test]
-    fn run_selected_source_total_does_not_use_global_generation_cardinality() {
-        let mut job = completed_job("periodic", Some("generation-a"), true);
-        job["source_count"] = json!(500);
-        job["progress"]["completed_sources"] = json!(2);
-        job["progress"]["total_sources"] = json!(2);
-
-        let event = refresh(provider_refresh_event(&job, false).expect("refresh event"));
-        let counts = event
-            .foreground
-            .expect("refresh facts")
-            .counts
-            .expect("single-provider run counts");
-
-        assert_eq!(counts.sources, Some(count_bucket(2)));
-        assert_ne!(counts.sources, Some(count_bucket(500)));
-    }
-
-    #[test]
-    fn provider_neutral_refresh_omits_source_mode_and_all_run_counts() {
+    fn provider_neutral_refresh_omits_run_work() {
         let mut job = completed_job("periodic", Some("generation-a"), true);
         job["progress"]["providers"] = json!(["codex", "claude"]);
 
@@ -463,7 +385,6 @@ mod tests {
         let facts = event.foreground.expect("refresh facts");
 
         assert_eq!(facts.provider, None);
-        assert_eq!(facts.source_mode, None);
         assert_eq!(facts.counts, None);
     }
 
@@ -497,39 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn omitted_source_diagnostics_keep_known_scope_but_unknown_type() {
-        let mut job = completed_job("periodic", Some("generation-a"), true);
-        let mut receipt = published_refresh_receipt_for_recovery(&job).unwrap();
-        let route = receipt.route_results.first_mut().unwrap();
-        route.rejected_record_total = 0;
-        receipt.current.rejected_records = 0;
-        job["receipt"] = receipt.to_json();
-
-        let event = refresh(provider_refresh_event(&job, false).expect("refresh event"));
-        let facts = event.foreground.expect("refresh facts");
-
-        assert_eq!(facts.failure_scope, ProviderRefreshFailureScope::Source);
-        assert_eq!(facts.failure_type, ProviderRefreshFailureType::Unknown);
-    }
-
-    #[test]
-    fn aggregate_terminal_source_failures_do_not_invent_mixed_type() {
-        for code in [
-            RefreshOutcomeCode::SourceFailures,
-            RefreshOutcomeCode::LogicalSourceFailures,
-        ] {
-            assert_eq!(
-                terminal_failure(code),
-                (
-                    ProviderRefreshFailureScope::Source,
-                    ProviderRefreshFailureType::Unknown,
-                )
-            );
-        }
-    }
-
-    #[test]
-    fn terminal_source_failure_emits_one_truthful_failure_event() {
+    fn terminal_failure_keeps_retained_previous_generation() {
         let route = "ef".repeat(32);
         let request_id = "019fcaaa-0000-7000-8000-000000000410";
         let job = json!({
@@ -553,7 +442,7 @@ mod tests {
                 "total_sources": 2,
                 "total_sources_known": true,
                 "providers": ["codex"],
-                "processed_sessions": 7,
+                "completed_records": 5,
                 "processed_bytes": 4096,
                 "estimated_remaining_millis": null,
             },
@@ -573,15 +462,7 @@ mod tests {
         let event = refresh(provider_refresh_event(&job, true).expect("failed refresh event"));
         let facts = event.foreground.expect("refresh facts");
 
-        assert_eq!(event.surface, Surface::Daemon);
         assert_eq!(event.outcome, Outcome::Failure);
-        assert_eq!(
-            event.duration,
-            duration_bucket(Duration::from_millis(2_500))
-        );
-        assert_eq!(facts.trigger, ProviderRefreshTrigger::Setup);
-        assert_eq!(facts.change, ProviderRefreshChange::NoOp);
-        assert_eq!(facts.work_kind, None);
         assert_eq!(facts.refresh_result, ProviderRefreshResult::Failure);
         assert_eq!(facts.core_result, ProviderCoreResult::Failure);
         assert_eq!(facts.failure_scope, ProviderRefreshFailureScope::Source);
@@ -590,24 +471,13 @@ mod tests {
             ProviderRefreshFailureType::UnsupportedSchema
         );
         assert!(facts.work_remaining);
-        assert_eq!(facts.retired_records, None);
-        assert_eq!(
-            facts.counts.expect("known failed-run counts").sources,
-            Some(count_bucket(2))
-        );
+        let health = event.terminal_health.expect("terminal health");
+        assert!(health.successor_pending);
+        assert_eq!(health.retained_previous_generation, Some(true));
     }
 
     #[test]
-    fn cli_owned_import_success_and_failure_are_not_duplicated_by_daemon() {
+    fn cli_owned_import_is_not_duplicated_by_daemon() {
         assert!(provider_refresh_event(&completed_job("import", None, true), false).is_none());
-        assert!(provider_refresh_event(
-            &json!({
-                "status": "failed",
-                "operation": "refresh",
-                "trigger": "import",
-            }),
-            true,
-        )
-        .is_none());
     }
 }

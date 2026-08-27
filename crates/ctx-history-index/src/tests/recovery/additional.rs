@@ -27,8 +27,10 @@ fn version_eight_manifest_preserves_history_when_automatic_discovery_is_disabled
     let provider_policy_offset = current_manifest
         .rfind(",\"automatic_provider_discovery\":")
         .unwrap();
+    let current_version = format!("\"manifest_version\":{GENERATION_MANIFEST_VERSION}");
+    assert!(current_manifest[..provider_policy_offset].contains(&current_version));
     let mut version_eight = current_manifest[..provider_policy_offset].replacen(
-        "\"manifest_version\":9",
+        &current_version,
         "\"manifest_version\":8",
         1,
     );

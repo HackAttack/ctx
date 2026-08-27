@@ -26,8 +26,8 @@ use ctx_history_core::{
     CtxHistoryJsonlLineageContract, CtxHistoryJsonlRecord, NativeSessionKey,
     ProjectionContractError, ProviderDeclaredFact, ProviderNativeCopyProof,
     ProviderNativeSessionRelationship, ScannedSourceCounts, SessionIdentityInput, SourceAnchor,
-    SourceFrontier, SourceKey, StableEntityId, TypedKey, CTX_HISTORY_JSONL_SCHEMA_VERSION,
-    MAX_CORE_CONTENT_BYTES, MAX_PROVIDER_DECLARED_FACTS,
+    SourceAnchorScope, SourceFrontier, SourceKey, StableEntityId, TypedKey,
+    CTX_HISTORY_JSONL_SCHEMA_VERSION, MAX_CORE_CONTENT_BYTES, MAX_PROVIDER_DECLARED_FACTS,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -42,11 +42,10 @@ use crate::{
     provider::{
         custom_history_jsonl::{validate_custom_history_identifier, validate_custom_source_record},
         source_backed::family::jsonl::{
-            JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyBaseScope, JsonlFamilyInventory,
-            JsonlFamilyLeaf, JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjector,
-            JsonlFamilyPublication, JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof,
-            JsonlFamilyWorkerContext, JsonlPhysicalDigest, JsonlPhysicalStream, JsonlRecordFraming,
-            JsonlResumableSha256,
+            JsonlFamilyAdapter, JsonlFamilyAppendMode, JsonlFamilyInventory, JsonlFamilyLeaf,
+            JsonlFamilyOptimizedLeafOutcome, JsonlFamilyProjector, JsonlFamilyPublication,
+            JsonlFamilyRootMissingMode, JsonlFamilyTerminalProof, JsonlFamilyWorkerContext,
+            JsonlPhysicalDigest, JsonlPhysicalStream, JsonlRecordFraming, JsonlResumableSha256,
         },
     },
     CaptureError, ProviderImportSummary, ProviderSourceFailureKind, MAX_PROVIDER_JSONL_LINE_BYTES,
@@ -61,7 +60,7 @@ use parser::parse_projection;
 
 const CUSTOM_SOURCE_IDENTITY_VERSION: u32 = 1;
 const CUSTOM_HISTORY_PUBLIC_SCHEMA_VERSION: &str = CTX_HISTORY_JSONL_SCHEMA_VERSION;
-const CUSTOM_ROUTE_SOURCE_FORMAT: &str = "ctx_history_jsonl_v2";
+const CUSTOM_ROUTE_SOURCE_FORMAT: &str = crate::CUSTOM_HISTORY_SOURCE_FORMAT;
 const CUSTOM_SOURCE_SCHEMA_VARIANT: &str = "ctx-history-jsonl-v2-source-backed-v1";
 pub(super) const CUSTOM_SOURCE_BACKED_PARSER_REVISION: &str =
     "custom-history-jsonl-source-backed-v9-provider-session-identity";
@@ -172,6 +171,7 @@ pub(crate) type CustomHistorySourceBackedResult<T> = Result<T, CustomHistorySour
 pub(crate) struct CustomHistorySourceBackedInput {
     path: PathBuf,
     catalog_lineage: [u8; 32],
+    source_anchor_scope: SourceAnchorScope,
 }
 
 impl CustomHistorySourceBackedInput {
@@ -179,6 +179,21 @@ impl CustomHistorySourceBackedInput {
         Self {
             path: path.into(),
             catalog_lineage,
+            source_anchor_scope: SourceAnchorScope::Unqualified,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn explicit_with_source_root_lineage(
+        path: impl Into<PathBuf>,
+        catalog_lineage: [u8; 32],
+        source_root_lineage: Option<[u8; 32]>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            catalog_lineage,
+            source_anchor_scope: source_root_lineage
+                .map_or(SourceAnchorScope::Unqualified, SourceAnchorScope::Lineage),
         }
     }
 
@@ -187,12 +202,13 @@ impl CustomHistorySourceBackedInput {
     }
 
     pub(crate) fn source_key(&self) -> CustomHistorySourceBackedResult<SourceKey> {
-        Ok(SourceKey::derive(
+        Ok(SourceKey::derive_scoped(
             CaptureProvider::Custom.as_str(),
             CUSTOM_ROUTE_SOURCE_FORMAT,
             CUSTOM_SOURCE_SCHEMA_VARIANT,
             CUSTOM_SOURCE_IDENTITY_VERSION,
             SourceAnchor::CatalogLineage(self.catalog_lineage),
+            self.source_anchor_scope,
         )?)
     }
 }
@@ -245,10 +261,6 @@ impl<R: JsonlProviderRuntime> JsonlFamilyAdapter for CustomHistoryJsonlFamilyAda
 
     fn root_missing_mode(&self) -> JsonlFamilyRootMissingMode {
         JsonlFamilyRootMissingMode::AuthoritativeEmpty
-    }
-
-    fn base_scope(&self) -> JsonlFamilyBaseScope {
-        JsonlFamilyBaseScope::Route
     }
 
     fn discover(&self, root: &Path) -> crate::Result<JsonlFamilyInventory> {

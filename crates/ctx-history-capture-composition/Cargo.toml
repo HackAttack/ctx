@@ -9,6 +9,10 @@ homepage.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = []
+test-support = ["ctx-history-provider-gemini/test-support"]
+
 [dependencies]
 chrono.workspace = true
 ctx-history-capture-model = { path = "../ctx-history-capture-model" }
@@ -19,6 +23,7 @@ ctx-history-jsonl = { path = "../ctx-history-jsonl" }
 ctx-history-provider-claude-cursor = { path = "../ctx-history-provider-claude-cursor" }
 ctx-history-provider-codex = { path = "../ctx-history-provider-codex" }
 ctx-history-provider-docproj = { path = "../ctx-history-provider-docproj" }
+ctx-history-provider-fx = { path = "../ctx-history-provider-fx" }
 ctx-history-provider-gemini = { path = "../ctx-history-provider-gemini" }
 ctx-history-provider-hermes = { path = "../ctx-history-provider-hermes" }
 ctx-history-provider-mistral-mux = { path = "../ctx-history-provider-mistral-mux" }
@@ -39,7 +44,6 @@ thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-ctx-history-openclaw-schema = { path = "../ctx-history-openclaw-schema", features = ["test-support"] }
 ctx-history-jsonl = { path = "../ctx-history-jsonl", features = ["test-support"] }
 ctx-history-provider-claude-cursor = { path = "../ctx-history-provider-claude-cursor", features = ["test-support"] }
 ctx-history-provider-codex = { path = "../ctx-history-provider-codex", features = ["test-support"] }
@@ -49,4 +53,3 @@ ctx-history-providers-sqlite-inventory = { path = "../ctx-history-providers-sqli
 ctx-history-providers-sqlite-selected = { path = "../ctx-history-providers-sqlite-selected", features = ["test-support"] }
 ctx-history-source-io = { path = "../ctx-history-source-io", features = ["test-support"] }
 rusqlite.workspace = true
-zstd.workspace = true

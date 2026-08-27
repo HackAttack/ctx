@@ -61,6 +61,7 @@ fn core_publication_fixture() -> (tempfile::TempDir, std::path::PathBuf, String)
                 "receipt": receipt.to_json(),
                 "route_observations": [null],
                 "route_controls": {},
+                "committed_rejection_diagnostics": {},
             }))
             .map_err(|error| ctx_history_index::IndexError::PublicationMetadata(error.to_string()))
         },
@@ -586,7 +587,9 @@ fn legacy_zero_source_publication_is_not_projected_as_ready() {
         .as_object_mut()
         .unwrap()
         .remove("zero_source_authority");
-    metadata.as_object_mut().unwrap().remove("route_controls");
+    let metadata_fields = metadata.as_object_mut().unwrap();
+    metadata_fields.remove("route_controls");
+    metadata_fields.remove("committed_rejection_diagnostics");
     drop(current);
     let writer = GenerationWriter::open(&index_root, WriterOptions::default())
         .unwrap()
@@ -638,6 +641,86 @@ fn published_record_rejections_are_ready_but_remain_diagnostic() {
         current_rejected_record_count(&json!({"refresh": report})),
         1
     );
+}
+
+#[test]
+fn automatic_refresh_diagnostics_expose_bounded_local_drilldown() {
+    let daemon = json!({"running": true});
+    let report = refresh_report(
+        Some(&json!({
+            "request_state": "published",
+            "published_generation": "generation-1",
+            "receipt": {
+                "outcome": "completed_with_rejections_and_source_failures",
+                "source_failure_total": 2,
+                "source_failures_omitted": 1,
+                "rejected_record_total": 3,
+                "rejection_diagnostics_omitted": 2,
+                "current": {"current_rejected_records": 3},
+                "route_results": {
+                    "route-1": [
+                        "s",
+                        false,
+                        2,
+                        0,
+                        [[
+                            "source-failure-1",
+                            "codex",
+                            "r",
+                            true,
+                            "logical-source:source-failure-1",
+                            "missing or conflicting Codex session owner"
+                        ]],
+                        3,
+                        [[
+                            "source-rejection-1",
+                            "codex",
+                            "/local/codex/rollout.jsonl",
+                            37,
+                            "unspecified",
+                            "m",
+                            "Codex record is not valid projectable JSON"
+                        ]]
+                    ]
+                }
+            },
+        })),
+        Some("generation-1"),
+        &daemon,
+    );
+
+    let diagnostics = &report["diagnostics"];
+    assert_eq!(diagnostics["source_failure_total"], 2);
+    assert_eq!(diagnostics["source_failures_shown"], 1);
+    assert_eq!(diagnostics["source_failures_omitted"], 1);
+    assert_eq!(diagnostics["source_failures"][0]["class"], "unreadable");
+    assert_eq!(diagnostics["source_failures"][0]["carried_forward"], true);
+    assert_eq!(diagnostics["rejected_record_total"], 3);
+    assert_eq!(diagnostics["rejection_diagnostics_shown"], 1);
+    assert_eq!(diagnostics["rejection_diagnostics_omitted"], 2);
+    assert_eq!(
+        diagnostics["record_rejections"][0]["source_selector"],
+        "/local/codex/rollout.jsonl"
+    );
+    assert_eq!(diagnostics["record_rejections"][0]["line"], 37);
+    assert_eq!(
+        diagnostics["record_rejections"][0]["class"],
+        "malformed_record"
+    );
+}
+
+#[test]
+fn health_consumes_authoritative_refresh_diagnostic_totals() {
+    let refresh = json!({
+        "source_failure_total": 91,
+        "rejected_record_total": 92,
+        "diagnostics": {
+            "source_failure_total": 2,
+            "rejected_record_total": 3,
+        },
+    });
+
+    assert_eq!(refresh_diagnostic_totals(&refresh), (2, 3));
 }
 
 #[test]

@@ -6,8 +6,8 @@ use std::{
 
 use ctx_history_core::{
     derive_event_id, derive_native_session_id, CaptureProvider, CertifiedSource, CoreRecord,
-    CoreRecordError, EventIdentityInput, NativeItemKey, ProjectionContractError, SourceKey,
-    StableEntityId, TypedKey,
+    CoreRecordError, EventIdentityInput, NativeItemKey, ProjectionContractError, SourceAnchorScope,
+    SourceKey, StableEntityId, TypedKey,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -43,7 +43,7 @@ const CODEX_NATIVE_SESSION_NAMESPACE: &str = "codex.session";
 const CODEX_LOGICAL_SESSION_KIND: &str = "codex-session";
 const CODEX_LOGICAL_EVENT_KIND: &str = "codex-event";
 const CODEX_SOURCE_SCHEMA_VARIANT: &str = "codex-nativepath-jsonl-v0";
-const CODEX_PARSER_REVISION: &str = "codex-nativepath-core-activity-v8-inherited-session-lineage";
+const CODEX_PARSER_REVISION: &str = "codex-nativepath-core-activity-v10-item-completed-plan";
 
 type CodexSessionPlanV0 = (CodexCatalogSource, SourceKey, String);
 

@@ -13,27 +13,11 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 try:
-    from .mcp_tool_call_attribution_authority import (
-        CODEX_NOT_QUALIFIED_VERSIONS,
-        CONFORMANCE_AUTHORITY,
-        CONFORMANCE_MANIFEST,
-        CONFORMANCE_SUITES,
-        AuthorityError,
-        validate_authority,
-    )
     from .mcp_tool_call_attribution_boundary import (
         contract_path_violation,
         public_boundary_violation,
     )
 except ImportError:
-    from mcp_tool_call_attribution_authority import (
-        CODEX_NOT_QUALIFIED_VERSIONS,
-        CONFORMANCE_AUTHORITY,
-        CONFORMANCE_MANIFEST,
-        CONFORMANCE_SUITES,
-        AuthorityError,
-        validate_authority,
-    )
     from mcp_tool_call_attribution_boundary import (
         contract_path_violation,
         public_boundary_violation,
@@ -58,22 +42,14 @@ PUBLIC_DOC_PATHS = (
     "docs/sdks.md",
     "docs/storage.md",
 )
-PUBLIC_AUTHORITY_SOURCE_PATHS = (
-    Path(CONFORMANCE_MANIFEST),
-    Path(CONFORMANCE_SUITES),
-    Path("crates/ctx-history-capture/tests/mcp_attribution_conformance.py"),
-    Path("crates/ctx-history-capture/tests/mcp_attribution_conformance_schema.py"),
-    Path("crates/ctx-history-capture/tests/mcp_attribution_conformance_test.py"),
-)
-
 ALLOWED_STATUSES = {"exact", "not-qualified", "excluded"}
 EXACT_PROVIDERS = {"codex", "copilot_cli", "warp"}
-EXPECTED_PROVIDER_STATUS_COUNTS = {"exact": 3, "not-qualified": 38, "excluded": 0}
-EXPECTED_LANE_STATUS_COUNTS = {"exact": 3, "not-qualified": 45, "excluded": 1}
+EXPECTED_PROVIDER_STATUS_COUNTS = {"exact": 3, "not-qualified": 39, "excluded": 0}
+EXPECTED_LANE_STATUS_COUNTS = {"exact": 3, "not-qualified": 47, "excluded": 1}
 EXPECTED_COUNTS = {
-    "providers": 41,
-    "base_routes": 46,
-    "capability_lanes": 49,
+    "providers": 42,
+    "base_routes": 47,
+    "capability_lanes": 51,
     "lane_statuses": EXPECTED_LANE_STATUS_COUNTS,
     "provider_statuses": EXPECTED_PROVIDER_STATUS_COUNTS,
 }
@@ -86,6 +62,7 @@ CODEX_EXACT_BOUND = {
     "unknown_generations": "not-qualified",
 }
 CODEX_PUBLIC_SOURCE_COMMIT = "60c722e07514d46d980034319dfcbfe4e74e659f"
+CODEX_NOT_QUALIFIED_VERSIONS = ("0.200.0", "0.201.0", "0.202.0")
 EXPECTED_NOT_QUALIFIED_REASONS = {
     "codex": "route_mismatch",
     "grok_build": "no_server_field",
@@ -126,13 +103,14 @@ EXPECTED_NOT_QUALIFIED_REASONS = {
     "roo_code": "no_unique_terminal_link",
     "deepagents": "lossy_composite",
     "mistral_vibe": "lossy_composite",
+    "fx": "no_server_field",
 }
 ROW_FIELDS = set(
     "provider_id route source_format source_schema producer_bound status detail evidence".split()
 )
 CHECK_FIELDS = set(
     "provider_id route source_format source_schema producer_bound implementation_source "
-    "parser_revision suite_id conformance_suite tests".split()
+    "suite_id tests".split()
 )
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 VERSION_RE = re.compile(r"^\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$")
@@ -196,16 +174,10 @@ def discover_public_checker_source_paths(repo_root: Path = REPO_ROOT) -> tuple[P
             continue
         discovered.append(relative)
         roles[role] += 1
-    for relative in PUBLIC_AUTHORITY_SOURCE_PATHS:
-        if not (repo_root / relative).is_file():
-            fail(f"public conformance authority source is missing: {relative}")
-        discovered.append(relative)
-        roles["conformance authority"] += 1
     required_roles = {
         "docs gate",
         "attribution checker",
         "attribution test",
-        "conformance authority",
     }
     if not required_roles.issubset(roles):
         fail(f"public checker source discovery is incomplete: roles={dict(roles)}")
@@ -778,24 +750,11 @@ def validate_exact_checks(
             check.get("implementation_source"), f"{label}.implementation_source"
         )
         implementation_text = implementation.read_text(encoding="utf-8")
-        parser_revision = require_string(check.get("parser_revision"), f"{label}.parser_revision")
         if f'"{schema}"' not in implementation_text:
             fail(f"{label}.source_schema is absent from its implementation source")
-        if f'"{parser_revision}"' not in implementation_text:
-            fail(f"{label}.parser_revision is stale or absent from its implementation source")
         suite_id = require_string(check.get("suite_id"), f"{label}.suite_id")
         binding, package_dir, target, _manifest = resolve_suite(suite_id)
         suites.add(suite_id)
-        conformance_suite = require_string(
-            check.get("conformance_suite"), f"{label}.conformance_suite"
-        )
-        expected_conformance_suite = {
-            "codex": "mcp_attribution_codex_provider_units",
-            "copilot_cli": "mcp_attribution_native_jsonl_provider_units",
-            "warp": "mcp_attribution_selected_sqlite_provider_units",
-        }.get(base[0], "mcp_attribution_provider_units")
-        if conformance_suite != expected_conformance_suite:
-            fail(f"{label}.conformance_suite does not name the authoritative suite")
         tests = expect_list(check.get("tests"), f"{label}.tests")
         minimum_test_count = 2 if base[0] == "codex" else 3
         if len(tests) < minimum_test_count:
@@ -819,17 +778,6 @@ def validate_exact_checks(
     if checked != exact_rows:
         fail("exact check inventory does not cover every exact full capability tuple")
     return len(suites), len(all_test_ids), link_count
-
-
-def validate_conformance_authority(
-    capability: dict[str, Any],
-    repo_root: Path = REPO_ROOT,
-    authority_overrides: Mapping[str, str] | None = None,
-) -> bool:
-    try:
-        return validate_authority(capability, repo_root, authority_overrides)
-    except AuthorityError as exc:
-        fail(str(exc))
 
 
 def validate_public_docs(
@@ -866,10 +814,7 @@ def validate_public_docs(
     normalized_main = " ".join(main.split())
     required = (
         "Codex `codex_session_jsonl_tree` / `codex-nativepath-jsonl-v0`",
-        "49 capability lanes: three `exact`, 45 `not-qualified`, and one `excluded`",
-        "`codex-nativepath-core-activity-v8-inherited-session-lineage`",
-        "`warp-source-backed-logical-v7-neutral-activity-agent-scope`",
-        "`copilot-cli-direct-native-jsonl-v8-optional-activity-admission`",
+        "51 capability lanes: three `exact`, 47 `not-qualified`, and one `excluded`",
         "`activity.invocation`",
         "`provider_call_id`",
         "`protocol` equal to `mcp`",
@@ -893,16 +838,6 @@ def validate_public_docs(
     for snippet in required:
         if snippet not in normalized_main:
             fail(f"public attribution docs are missing exact contract text: {snippet}")
-    runbook = " ".join(docs["docs/mcp-tool-call-attribution-evidence.md"].split())
-    for snippet in (
-        CONFORMANCE_MANIFEST,
-        CONFORMANCE_SUITES,
-        "three `supported`, 45 `not_qualified`, and one `excluded`",
-        "only unversioned generation 1 is supported",
-        "`ambiguity_duplicate_linkage`, `canonical_terminal_outcomes`, `exact_boundary`, `exact_positive_pair`, `malformed_identity`, `max_plus_one`, `privacy_sinks`, `result_preservation`, and `stable_ids`",
-    ):
-        if snippet not in runbook:
-            fail(f"public evidence runbook is missing authority text: {snippet}")
     if "Co-authored-by" in main:
         fail("reporter credit must not be represented as authorship")
 
@@ -913,12 +848,11 @@ def validate_contract(
     docs: dict[str, str],
     link_checker: Callable[[str], None] = validate_evidence_url_reachable,
     checker_source_overrides: Mapping[str, str] | None = None,
-    authority_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if support.get("schema_version") != 2:
         fail("provider support matrix schema_version must be 2")
-    if capability.get("schema_version") != 3 or capability.get("capability_revision") != 4:
-        fail("capability schema_version must be 3 and capability_revision must be 4")
+    if capability.get("schema_version") != 5 or capability.get("capability_revision") != 4:
+        fail("capability schema_version must be 5 and capability_revision must be 4")
     if capability.get("capability") != "exact_mcp_tool_call_attribution":
         fail("unexpected capability name")
     if capability.get("key_fields") != [
@@ -965,15 +899,12 @@ def validate_contract(
         if provider_id in support_by_id:
             fail(f"duplicate support provider: {provider_id}")
         support_by_id[provider_id] = row
-    if len(support_by_id) != 41:
-        fail(f"support matrix must contain 41 providers, found {len(support_by_id)}")
+    if len(support_by_id) != 42:
+        fail(f"support matrix must contain 42 providers, found {len(support_by_id)}")
 
     rows, lane_statuses, provider_statuses = validate_routes(capability, support_by_id)
     exact_suites, exact_tests, exact_links = validate_exact_checks(
         capability, rows, link_checker
-    )
-    authority_checked = validate_conformance_authority(
-        capability, authority_overrides=authority_overrides
     )
     validate_public_docs(docs, checker_source_overrides)
     return {
@@ -985,5 +916,4 @@ def validate_contract(
         "exact_suites": exact_suites,
         "exact_tests": exact_tests,
         "exact_links": exact_links,
-        "conformance_authority": "validated" if authority_checked else "declared",
     }

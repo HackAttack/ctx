@@ -19,23 +19,26 @@ mod state;
 mod version;
 mod version_probe;
 
-pub use command::{PreparedDaemonUpgrade, UpgradeOutcome};
+pub use command::{PreparedAutomaticUpgrade, UpgradeOutcome};
 pub use diagnostics::{
     managed_install_executable, upgrade_diagnostics, ManagedInstallDiagnostic, UpgradeDiagnostics,
 };
 pub use install::{
-    current_install_path, installation_hosted_uninstall_is_active,
+    current_exe_has_managed_install_marker_hint, current_exe_is_unmanaged, current_install_path,
+    installation_hosted_uninstall_is_active,
     installation_hosted_uninstall_is_active_for_executable,
     invalid_install_marker_recovery_guidance, is_valid_install_attempt_id,
-    managed_install_marker_for_current_exe, run_hosted_transaction,
-    unmanaged_install_conversion_guidance, HostedTransactionAction, HostedTransactionArgs,
-    InstallMarker, ManagedInstallMarker,
+    managed_install_marker_for_current_exe, managed_install_path_identity_matches,
+    run_hosted_transaction, unmanaged_install_conversion_guidance, HostedTransactionAction,
+    HostedTransactionArgs, InstallMarker, ManagedInstallMarker,
 };
+use state::automatic_upgrade_check_due;
 pub use state::{
     active_installation_upgrade_attempt_id, installation_daemon_coordination_paths,
     installation_daemon_coordination_paths_for, installation_executable_path,
-    installation_upgrade_is_active, is_valid_upgrade_attempt_id, read_state_json,
-    terminal_installation_upgrade_attempt_id, STATE_SCHEMA_VERSION,
+    installation_interrupted_automatic_upgrade_is_recoverable, installation_upgrade_is_active,
+    is_valid_upgrade_attempt_id, read_state_json, terminal_installation_upgrade_attempt_id,
+    STATE_SCHEMA_VERSION,
 };
 
 /// Product identity supplied by the ctx composition root.
@@ -50,12 +53,11 @@ pub struct ProductBuildIdentity {
 pub trait ReleaseTransport: Send + Sync {
     fn get_bytes_limited(&self, endpoint: &str, max_bytes: usize) -> Result<Vec<u8>>;
 
-    fn download_artifact_verified(
+    fn download_artifact(
         &self,
         endpoint: &str,
         destination: &mut File,
         max_bytes: u64,
-        expected_sha256: &str,
         timeout: Duration,
     ) -> Result<u64>;
 }
@@ -182,7 +184,7 @@ pub trait DaemonUpgradePort: Send + Sync {
 }
 
 pub trait AutomaticUpgradePolicySnapshot {
-    fn daemon_enabled(&self) -> bool;
+    fn daemon_maintenance_enabled(&self) -> bool;
     fn automatic_upgrade_enabled(&self) -> bool;
     fn interval(&self) -> Duration;
     fn channel(&self) -> &str;

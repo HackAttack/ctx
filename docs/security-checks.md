@@ -9,7 +9,9 @@ the local retrieval product.
   configured ctx data root: Core/Tantivy generations, optional semantic data,
   config data, and optional persistent daemon lock/status/job state when
   automatic autostart runs. Manual setup starts no worker.
-- `ctx sources` writes nothing in local-only security mode.
+- `ctx sources` listing writes nothing in local-only security mode.
+  `ctx sources add [--replace]` and `ctx sources remove` write only the locked,
+  durably replaced `config.toml`; they never modify provider history.
 - `ctx import` writes only under the configured ctx data root: Core generations,
   optional semantic data, config data, and optional daemon lock/status/job
   state when a persistent daemon or finite Core worker runs.
@@ -17,8 +19,11 @@ the local retrieval product.
   a bounded daemon-owned refresh of discovered native provider history before
   querying the active Core generation. Manual background search and
   `--refresh off` must not start or wake a process. The query process does not
-  write Core generations or projections. Without semantic opt-in, default
-  search must not download embedding models or start semantic indexing.
+  write Core generations. In manual mode, an opted-in semantic or nonzero-weight
+  hybrid `--refresh wait` may acquire the pinned model and write semantic
+  projection data only after finite Core publication for the exact pinned
+  generation. Without semantic opt-in, default search must not download
+  embedding models or start semantic indexing.
 - `ctx show` writes nothing in local-only security mode, except
   `ctx show session --out` writes only the explicit path when one is provided.
 - `ctx status` does not mutate canonical history: missing stores stay missing,
@@ -53,11 +58,14 @@ the local retrieval product.
   checksum file, runtime archive, and runtime DLL. The public verifier accepts
   that exact handoff plus an independently supplied expected manifest digest;
   it does not sign, attest, or treat a matching handoff sidecar as authority.
-- Automatic upgrade defaults on for managed installs, but the persistent
-  daemon in automatic indexing mode is its only scheduler. Manual indexing and
-  finite Core workers perform no automatic check, download, or apply. Signed
-  policy and explicit opt-outs remain mandatory, and upgrade work must not
-  collect provider history or pollute command stdout/stderr.
+- Automatic upgrade defaults on for managed installs. Automatic indexing with
+  the full daemon profile uses the enabled persistent daemon as the sole check
+  and apply driver. Manual indexing, source-refresh-only mode, ordinary
+  foreground commands, MCP, and finite Core workers perform no automatic check,
+  download, or apply. One installation-scoped scheduler and lock coordinates
+  daemon and explicit upgrade work. Signed policy and explicit opt-outs remain
+  mandatory, and upgrade work must not collect provider history or pollute
+  command stdout/stderr.
 
 - A ctx-owned persistent coordinator, when launched by `ctx daemon run` or
   automatic setup/import autostart, must write only under the configured ctx
@@ -65,7 +73,7 @@ the local retrieval product.
   only bounded native local provider-history refresh and bounded semantic
   catch-up. It must not run history-source plugins.
   Network model acquisition is allowed only for the local embedding model when
-  semantic search is explicitly enabled with `ctx setup --semantic` in auto
+  semantic search is explicitly enabled with `ctx semantic enable` in auto
   mode. `ctx daemon run` blocks in the foreground and does not mutate indexing
   mode.
 - A finite Core worker may start only for explicit import or search

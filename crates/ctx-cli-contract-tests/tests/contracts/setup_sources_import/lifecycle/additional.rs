@@ -353,11 +353,12 @@ fn human_setup_without_sources_starts_daemon_and_reports_observed_refresh_state(
     let reports_queued = stdout.contains("History indexing is queued");
     assert_ne!(reports_ready, reports_queued, "{stdout}");
     if reports_ready {
+        let normalized = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
-            stdout.contains("Sources     0 sources")
-                && stdout.contains("Events      0 searchable events"),
+            normalized.contains("Indexed 0 sessions; 0 messages; 0 tool calls; 0 B processed"),
             "{stdout}"
         );
+        assert!(!stdout.contains("indexed sources"), "{stdout}");
         assert!(stdout.contains("  ctx search \"test failure\""), "{stdout}");
     } else {
         assert!(

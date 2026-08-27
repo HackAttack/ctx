@@ -115,9 +115,11 @@ Self-upgrade requires an official installer-managed binary and matching
 package-manager installs, and binaries whose SHA-256 no longer matches the
 sidecar are intentionally unmanaged.
 
-Daemon-owned automatic upgrade is on by default for an official
-installer-managed binary in automatic indexing mode. To opt out persistently,
-run:
+Automatic upgrade is on by default for an official installer-managed binary.
+Auto indexing with the full daemon profile uses the persistent daemon for
+checks. Manual indexing, source-refresh-only mode, ordinary foreground commands,
+MCP, and finite workers perform no automatic upgrade work. Explicit
+`ctx upgrade` remains available. To opt out persistently, run:
 
 ```bash
 ctx upgrade disable
@@ -129,23 +131,28 @@ or for one process:
 CTX_UPGRADE_AUTO=off ctx search "query"
 ```
 
-The automatic scheduler state is stored beside the managed executable in
-`.ctx.upgrade-state.json`; checks should not write to foreground stdout or
-stderr. With `[indexing] mode = "manual"`, no automatic check occurs. Finite
-Core workers do not perform upgrade maintenance.
+The shared automatic scheduler state is stored beside the managed executable in
+`.ctx.upgrade-state.json`; checks do not write to foreground stdout or stderr.
+Finite Core workers do not perform upgrade maintenance.
 
 ## Semantic Search Is Not Ready
 
-Semantic indexing requires auto mode. Enable it and inspect current health with:
+Continuous semantic indexing requires auto mode. Enable it and inspect current
+health with:
 
 ```bash
 ctx index mode auto
-ctx setup --semantic
-ctx index
+ctx semantic enable --wait
+ctx semantic status
 ```
 
 Lexical search remains available while embeddings build. Hybrid search begins
 using both lexical and semantic evidence when coverage is ready.
+
+In manual mode, there is no background semantic maintenance. After enabling
+semantic search, run an explicit semantic or nonzero-weight hybrid search with
+`--refresh wait` to acquire the local model when needed and reconcile the
+semantic projection for that request's pinned Core generation.
 
 ## Store Problems
 

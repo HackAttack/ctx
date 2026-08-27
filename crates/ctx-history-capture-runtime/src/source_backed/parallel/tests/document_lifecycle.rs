@@ -65,6 +65,7 @@ struct LifecycleState {
     peak_scans: usize,
     mutate_before_scan: Option<u8>,
     mutate_on_revalidate: bool,
+    terminal_failure: Option<SourceBackedRouteErrorKind>,
     unavailable_leaf: Option<u8>,
     append_base: Option<CertifiedSource>,
 }
@@ -421,6 +422,12 @@ impl ReplacementDocumentTree for LifecycleAdapter {
         tree: &CompleteDocumentTree<Self::Leaf, Self::TreeAuthority>,
     ) -> SourceBackedRouteResult<[u8; 32]> {
         let mut state = self.state.lock().unwrap();
+        if let Some(kind) = state.terminal_failure {
+            return Err(SourceBackedRouteError::new(
+                kind,
+                "injected document terminal failure",
+            ));
+        }
         if state.mutate_on_revalidate {
             state.leaves[0].revision = state.leaves[0].revision.saturating_add(1);
             state.mutate_on_revalidate = false;
@@ -719,7 +726,9 @@ fn active_source_family_contract_document_cold_all_rejected_is_a_source_failure(
     assert_eq!(failure.class.as_str(), "unreadable");
     assert!(!failure.carried_forward);
     assert_eq!(failed.record_rejections.total(), 1);
-    assert_eq!(failed.record_rejections.rejections()[0].line_number, 1);
+    let rejection = &failed.record_rejections.rejections()[0];
+    assert_eq!(rejection.line_number, 1);
+    assert!(!rejection.is_committed());
 }
 
 #[test]
@@ -733,6 +742,7 @@ fn active_source_family_contract_document_serial_all_rejected_fails_before_publi
     assert!(failed.writer.certified_sources.is_empty());
     assert!(failed.writer.records.is_empty());
     assert_eq!(failed.record_rejections.total(), 1);
+    assert!(!failed.record_rejections.rejections()[0].is_committed());
 }
 
 #[test]
@@ -911,6 +921,7 @@ fn active_source_family_contract_document_mixed_retained_and_rejected_records_pu
     assert_eq!(published.writer.records.len(), 1);
     assert_eq!(published.logical_source_failures.total(), 0);
     assert_eq!(published.record_rejections.total(), 1);
+    assert!(published.record_rejections.rejections()[0].is_committed());
     assert_eq!(
         published.record_rejections.rejections()[0].class,
         SourceBackedRecordRejectionClass::MalformedRecord
@@ -986,4 +997,28 @@ fn active_source_family_contract_document_races_duplicates_and_terminal_inventor
         .revalidate_complete_inventory(&inventory)
         .unwrap()
         .unwrap());
+
+    let changed = LifecycleAdapter::new(vec![leaf(21)]);
+    let driver = changed.driver();
+    let mut scanned = SinkHarness::open(Path::new("/unused"));
+    driver.scan(&mut scanned.sink()).unwrap();
+    changed.state.lock().unwrap().terminal_failure =
+        Some(SourceBackedRouteErrorKind::SourceChanged);
+    let inventory = scanned.complete_inventories[0].inventory.clone();
+    assert!(!driver
+        .revalidate_complete_inventory(&inventory)
+        .unwrap()
+        .unwrap());
+
+    let internal = LifecycleAdapter::new(vec![leaf(22)]);
+    let driver = internal.driver();
+    let mut scanned = SinkHarness::open(Path::new("/unused"));
+    driver.scan(&mut scanned.sink()).unwrap();
+    internal.state.lock().unwrap().terminal_failure = Some(SourceBackedRouteErrorKind::Internal);
+    let inventory = scanned.complete_inventories[0].inventory.clone();
+    let error = driver
+        .revalidate_complete_inventory(&inventory)
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.kind, SourceBackedRouteErrorKind::Internal);
 }

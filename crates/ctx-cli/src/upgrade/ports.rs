@@ -49,21 +49,14 @@ impl ReleaseTransport for CliReleaseTransport {
         crate::net::get_bytes_limited(endpoint, max_bytes)
     }
 
-    fn download_artifact_verified(
+    fn download_artifact(
         &self,
         endpoint: &str,
         destination: &mut File,
         max_bytes: u64,
-        expected_sha256: &str,
         timeout: Duration,
     ) -> Result<u64> {
-        crate::net::download_artifact_verified(
-            endpoint,
-            destination,
-            max_bytes,
-            expected_sha256,
-            timeout,
-        )
+        crate::net::download_artifact(endpoint, destination, max_bytes, timeout)
     }
 }
 
@@ -224,6 +217,7 @@ impl DaemonUpgradePort for CliDaemonUpgrade {
             "setup" => crate::DaemonTriggerCommandArg::Setup,
             "import" => crate::DaemonTriggerCommandArg::Import,
             "search" => crate::DaemonTriggerCommandArg::Search,
+            "semantic" => crate::DaemonTriggerCommandArg::Semantic,
             other => return Err(anyhow!("invalid daemon upgrade restart trigger {other}")),
         };
         Ok(CliDaemonUpgradeLease(

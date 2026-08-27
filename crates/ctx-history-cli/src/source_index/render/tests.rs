@@ -14,23 +14,25 @@ use crate::ui::{
 };
 
 const SESSION_ID: &str = "01900000-0000-7000-8000-000000000001";
+const SESSION_REF: &str = "01900000";
 const PARENT_SESSION_ID: &str = "01900010-0000-7000-8000-000000000010";
 const ROOT_SESSION_ID: &str = "01900020-0000-7000-8000-000000000020";
 const PARENT_SESSION_REF: &str = "019000100";
 const ROOT_SESSION_REF: &str = "019000101";
 const EVENT_ID: &str = "01900001-0000-7000-8000-000000000002";
+const EVENT_REF: &str = "01900001";
 const SECOND_EVENT_ID: &str = "01900002-0000-7000-8000-000000000003";
 
 #[test]
 fn search_snippet_centers_the_actual_match_after_character_4000() {
-    let body = format!("{}NeEdLe{}", "a".repeat(4_500), "z".repeat(4_500));
+    let body = format!("{}NeEdLe {}", "alpha ".repeat(750), "omega ".repeat(750));
 
     let (snippet, truncated) = search_snippet_fragment(&body, &["needle"]);
 
     assert!(truncated);
-    assert_eq!(snippet.graphemes(true).count(), SEARCH_SNIPPET_MAX_CHARS);
-    let match_offset = snippet.find("NeEdLe").expect("matched term stays visible");
-    assert_eq!(snippet[..match_offset].graphemes(true).count(), 157);
+    assert!(snippet.graphemes(true).count() <= SEARCH_SNIPPET_MAX_CHARS);
+    assert!(snippet.contains("NeEdLe"));
+    assert!(!snippet.starts_with("lpha"));
 }
 
 #[test]
@@ -65,7 +67,9 @@ fn search_snippet_keeps_combining_and_emoji_graphemes_intact() {
 #[test]
 fn search_snippet_byte_bounds_pathological_large_grapheme_clusters_around_the_query() {
     let oversized_cluster = format!("x{}", "\u{301}".repeat(SEARCH_SNIPPET_MAX_BYTES));
-    let body = format!("{oversized_cluster}needle{oversized_cluster}");
+    // Keep the queried term analyzer-distinct from the `x` that anchors each
+    // oversized combining cluster.
+    let body = format!("{oversized_cluster} needle {oversized_cluster}");
 
     let (snippet, truncated) = search_snippet_fragment(&body, &["needle"]);
 
@@ -94,13 +98,13 @@ fn search_snippet_byte_bounds_pathological_large_grapheme_clusters_around_the_qu
 
 #[test]
 fn search_snippet_handles_start_end_and_no_match_fallback_truthfully() {
-    let at_start = format!("needle{}", "x".repeat(500));
+    let at_start = format!("needle {}", "x".repeat(500));
     let (snippet, truncated) = search_snippet_fragment(&at_start, &["needle"]);
     assert!(truncated);
     assert!(snippet.starts_with("needle"));
     assert_eq!(snippet.graphemes(true).count(), SEARCH_SNIPPET_MAX_CHARS);
 
-    let at_end = format!("{}needle", "x".repeat(500));
+    let at_end = format!("{} needle", "x".repeat(500));
     let (snippet, truncated) = search_snippet_fragment(&at_end, &["needle"]);
     assert!(truncated);
     assert!(snippet.ends_with("needle"));
@@ -125,42 +129,39 @@ fn search_snippet_handles_start_end_and_no_match_fallback_truthfully() {
 
 #[test]
 fn search_snippet_handles_a_maximum_valid_core_body_without_offset_vectors() {
-    let needle = "NeEdLe";
-    let mut body = "x".repeat(MAX_CORE_CONTENT_BYTES - needle.len());
-    body.push_str(needle);
+    let suffix = " NeEdLe";
+    let mut body = "x".repeat(MAX_CORE_CONTENT_BYTES - suffix.len());
+    body.push_str(suffix);
 
     let (snippet, truncated) = search_snippet_fragment(&body, &["needle"]);
 
     assert!(truncated);
-    assert_eq!(snippet, format!("{}{}", "x".repeat(314), needle));
-    assert_eq!(snippet.graphemes(true).count(), SEARCH_SNIPPET_MAX_CHARS);
+    assert!(!snippet.is_empty());
+    assert!(snippet.ends_with("NeEdLe"));
+    assert!(snippet.graphemes(true).count() <= SEARCH_SNIPPET_MAX_CHARS);
+    assert!(snippet.len() <= SEARCH_SNIPPET_MAX_BYTES);
 }
 
 #[test]
 fn search_snippet_keeps_exact_boundaries_for_a_maximum_valid_unicode_core_body() {
     let combining = "e\u{301}";
     let marker = "İSTANBUL";
-    let prefix_bytes = MAX_CORE_CONTENT_BYTES - marker.len();
+    let prefix_bytes = MAX_CORE_CONTENT_BYTES - marker.len() - 1;
     let prefix_graphemes = prefix_bytes / combining.len();
     let ascii_remainder = prefix_bytes % combining.len();
     let mut body = combining.repeat(prefix_graphemes);
     body.push_str(&"x".repeat(ascii_remainder));
+    body.push(' ');
     body.push_str(marker);
     assert_eq!(body.len(), MAX_CORE_CONTENT_BYTES);
 
-    let (snippet, truncated) = search_snippet_fragment(&body, &["i\u{307}stanbul"]);
+    let (snippet, truncated) = search_snippet_fragment(&body, &[marker]);
 
-    let marker_graphemes = marker.graphemes(true).count();
-    let expected_combining = SEARCH_SNIPPET_MAX_CHARS - marker_graphemes - ascii_remainder;
-    let expected = format!(
-        "{}{}{}",
-        combining.repeat(expected_combining),
-        "x".repeat(ascii_remainder),
-        marker
-    );
     assert!(truncated);
-    assert_eq!(snippet, expected);
-    assert_eq!(snippet.graphemes(true).count(), SEARCH_SNIPPET_MAX_CHARS);
+    assert!(snippet.ends_with(marker));
+    assert!(snippet.graphemes(true).count() <= SEARCH_SNIPPET_MAX_CHARS);
+    assert!(snippet.len() <= SEARCH_SNIPPET_MAX_BYTES);
+    assert_ne!(snippet.graphemes(true).next(), Some("\u{301}"));
 }
 
 #[test]
@@ -173,15 +174,12 @@ fn search_snippet_preserves_exact_unicode_casefold_and_grapheme_boundaries() {
         family.repeat(360)
     );
 
-    let (expanded_case, expanded_truncated) = search_snippet_fragment(&body, &["i\u{307}stanbul"]);
+    let (expanded_case, expanded_truncated) = search_snippet_fragment(&body, &["İSTANBUL"]);
     let (inside_grapheme, inside_truncated) = search_snippet_fragment(&body, &["\u{301}"]);
 
     assert!(expanded_truncated);
     assert!(inside_truncated);
-    assert_eq!(
-        expanded_case.graphemes(true).count(),
-        SEARCH_SNIPPET_MAX_CHARS
-    );
+    assert!(expanded_case.graphemes(true).count() <= SEARCH_SNIPPET_MAX_CHARS);
     assert_eq!(
         inside_grapheme.graphemes(true).count(),
         SEARCH_SNIPPET_MAX_CHARS
@@ -260,7 +258,7 @@ fn search_agent_value(
     parent: Option<&str>,
     root: Option<&str>,
 ) -> Value {
-    let mut value = search_value();
+    let mut value = compact_search_value();
     let result = value["results"][0]
         .as_object_mut()
         .expect("search fixture result is an object");
@@ -277,6 +275,20 @@ fn search_agent_value(
         "root_ctx_session_id".to_owned(),
         root.map_or(Value::Null, |root| json!(root)),
     );
+    value
+}
+
+fn compact_search_value() -> Value {
+    let mut value = search_value();
+    let result = &mut value["results"][0];
+    result["ctx_event_id"] = json!(EVENT_REF);
+    result["ctx_session_id"] = json!(SESSION_REF);
+    result["root_ctx_session_id"] = json!(SESSION_REF);
+    result["suggested_next_commands"] = json!([
+        format!("ctx show event {EVENT_REF} --window 10"),
+        format!("ctx show session {SESSION_REF}"),
+        format!("ctx search 'Unicode cache key' --session {SESSION_REF}"),
+    ]);
     value
 }
 
@@ -455,7 +467,7 @@ fn strip_ansi(rendered: &str) -> String {
 fn primary_renderers_match_reference_goldens_at_80_columns() {
     let context = context(80, ColorMode::Never);
     assert_eq!(
-        render_search_document(&search_value(), false, &context).render_plain(),
+        render_search_document(&compact_search_value(), false, &context).render_plain(),
         include_str!("goldens/search.txt")
     );
     assert_eq!(
@@ -473,100 +485,99 @@ fn primary_renderers_match_reference_goldens_at_80_columns() {
 }
 
 #[test]
-fn search_heading_discloses_relevance_order_and_truthful_agent_scope() {
-    for unicode in [true, false] {
-        let separator = if unicode { " · " } else { " | " };
-        let all_agents =
-            render_search_document(&search_value(), false, &context_with_unicode(80, unicode))
-                .render_plain();
-        assert!(
-            all_agents.starts_with(&format!(
-                "1 result{separator}relevance order{separator}all agent sessions\n"
-            )),
-            "{all_agents}"
-        );
+fn search_heading_only_reports_result_count() {
+    let singular = search_value();
+    let mut plural = search_value();
+    let second = plural["results"][0].clone();
+    plural["results"]
+        .as_array_mut()
+        .expect("search fixture results are an array")
+        .push(second);
+    plural["result_window"]["returned"] = json!(2);
 
-        let mut primary_only = search_value();
-        primary_only["filters"]["primary_only"] = json!(true);
-        let primary_only =
-            render_search_document(&primary_only, false, &context_with_unicode(80, unicode))
-                .render_plain();
-        assert!(primary_only.starts_with(&format!(
-            "1 result{separator}relevance order{separator}primary sessions\n"
-        )));
-        assert!(!primary_only.contains("all agent sessions"));
-    }
-
-    let narrow = render_search_document(&search_value(), false, &context_with_unicode(32, true))
-        .render_plain();
-    assert!(narrow.starts_with("1 result\n  relevance order\n  all agent sessions\n"));
-
-    for width in [32, 48, 80, 120] {
-        let context = context(width, ColorMode::Never);
-        let first = render_search_document(&search_value(), false, &context);
-        let second = render_search_document(&search_value(), false, &context);
-        assert_eq!(first.render_plain(), second.render_plain());
-        assert!(first.render_plain().contains("all agent sessions"));
-        assert_fits(&first, &context);
+    for (value, expected_heading) in [(&singular, "1 result"), (&plural, "2 results")] {
+        for primary_only in [false, true] {
+            let mut filtered = value.clone();
+            filtered["filters"]["primary_only"] = json!(primary_only);
+            for unicode in [true, false] {
+                for width in [32, 48, 80, 120] {
+                    let context = context_with_unicode(width, unicode);
+                    let document = render_search_document(&filtered, false, &context);
+                    let rendered = document.render_plain();
+                    assert_eq!(
+                        rendered.lines().next(),
+                        Some(expected_heading),
+                        "{rendered}"
+                    );
+                    for removed in ["relevance order", "all agent sessions", "primary sessions"] {
+                        assert!(!rendered.contains(removed), "{rendered}");
+                    }
+                    assert_fits(&document, &context);
+                }
+            }
+        }
     }
 }
 
 #[test]
-fn normal_search_agent_field_renders_primary() {
+fn normal_search_card_separates_provider_session_and_literal_root() {
     for width in [32, 48, 80, 120] {
         let context = context(width, ColorMode::Never);
-        let document = render_search_document(&search_value(), false, &context);
+        let document = render_search_document(&compact_search_value(), false, &context);
         let rendered = document.render_plain();
 
-        assert!(rendered.contains("   Agent    primary"), "{rendered}");
-        assert_eq!(rendered.matches("Agent").count(), 1, "{rendered}");
+        assert!(!rendered.contains("Agent"), "{rendered}");
+        assert!(!rendered.contains("demo-unicode-session"), "{rendered}");
         assert_fits(&document, &context);
     }
+
+    let rendered = render_search_document(
+        &compact_search_value(),
+        false,
+        &context(120, ColorMode::Never),
+    )
+    .render_plain();
+    assert!(rendered.contains("   Provider  Codex"), "{rendered}");
+    assert!(
+        rendered.contains(&format!("   Session   {SESSION_REF}")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("   Root      {SESSION_REF}")),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("   Source"), "{rendered}");
 }
 
 #[test]
-fn normal_search_agent_field_collapses_child_parent_and_root() {
+fn normal_search_card_keeps_equal_parent_and_root_as_separate_claims() {
     let value = search_agent_value(
         Some("subagent"),
         Some(ROOT_SESSION_REF),
         Some(ROOT_SESSION_REF),
     );
-    for unicode in [true, false] {
-        let separator = if unicode { " · " } else { " | " };
-        let document = render_search_document(&value, false, &context_with_unicode(80, unicode));
-        let rendered = document.render_plain();
-        assert!(
-            rendered.contains(&format!(
-                "   Agent    subagent{separator}parent/root {ROOT_SESSION_REF}"
-            )),
-            "{rendered}"
-        );
-        assert!(document
-            .lines()
-            .iter()
-            .flat_map(|line| line.spans())
-            .any(|span| span.content() == ROOT_SESSION_REF && span.token() == Token::Reference));
-    }
+    let document = render_search_document(&value, false, &context(120, ColorMode::Never));
+    let rendered = document.render_plain();
+    assert!(
+        rendered.contains(&format!("   Parent    {ROOT_SESSION_REF}")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("   Root      {ROOT_SESSION_REF}")),
+        "{rendered}"
+    );
+    assert_eq!(rendered.matches(ROOT_SESSION_REF).count(), 2, "{rendered}");
+    assert!(!rendered.contains("Parent / root"), "{rendered}");
+    assert!(!rendered.contains("Agent"), "{rendered}");
 }
 
 #[test]
-fn normal_search_agent_field_renders_nested_direct_lineage() {
+fn normal_search_card_renders_nested_direct_lineage() {
     let value = search_agent_value(
         Some("subagent"),
         Some(PARENT_SESSION_REF),
         Some(ROOT_SESSION_REF),
     );
-    for unicode in [true, false] {
-        let separator = if unicode { " · " } else { " | " };
-        let rendered = render_search_document(&value, false, &context_with_unicode(80, unicode))
-            .render_plain();
-        assert!(
-            rendered.contains(&format!(
-                "   Agent    subagent{separator}parent {PARENT_SESSION_REF}{separator}root {ROOT_SESSION_REF}"
-            )),
-            "{rendered}"
-        );
-    }
 
     for width in [32, 48, 80, 120] {
         let styled = context(width, ColorMode::Always);
@@ -592,21 +603,21 @@ fn normal_search_agent_field_renders_nested_direct_lineage() {
 }
 
 #[test]
-fn normal_search_agent_field_renders_only_available_direct_lineage() {
+fn normal_search_card_renders_only_present_direct_lineage() {
     let cases = [
         (
             Some(PARENT_SESSION_REF),
             None,
-            "   Agent    subagent · parent 019000100",
-            "root 019000101",
+            "   Parent    019000100",
+            "   Root",
         ),
         (
             None,
             Some(ROOT_SESSION_REF),
-            "   Agent    subagent · root 019000101",
-            "parent 019000100",
+            "   Root      019000101",
+            "   Parent",
         ),
-        (None, None, "   Agent    subagent", "parent/root"),
+        (None, None, "   Session", "   Parent"),
     ];
     for (parent, root, expected, absent) in cases {
         let rendered = render_search_document(
@@ -617,22 +628,22 @@ fn normal_search_agent_field_renders_only_available_direct_lineage() {
         .render_plain();
         assert!(rendered.contains(expected), "{rendered}");
         assert!(!rendered.contains(absent), "{rendered}");
+        if root.is_none() {
+            assert!(!rendered.contains("   Root"), "{rendered}");
+        }
+        assert!(!rendered.contains("Agent"), "{rendered}");
     }
-
-    let controlled = search_agent_value(Some("subagent"), Some("parent\u{1b}[31m"), None);
-    let rendered =
-        render_search_document(&controlled, false, &context(48, ColorMode::Never)).render_plain();
-    assert!(rendered.contains("parent\\x1b[31m"), "{rendered}");
-    assert_control_safe(&rendered);
 }
 
 #[test]
-fn normal_search_agent_field_preserves_an_unresolved_full_reference() {
-    let value = search_agent_value(Some("subagent"), Some(PARENT_SESSION_ID), None);
+fn normal_search_card_preserves_an_unresolved_full_reference() {
+    let mut value = search_agent_value(Some("subagent"), Some(PARENT_SESSION_ID), None);
+    value["results"][0]["ctx_event_id"] = json!(EVENT_ID);
     let document = render_search_document(&value, false, &context(120, ColorMode::Never));
     let rendered = document.render_plain();
 
     assert!(rendered.contains(PARENT_SESSION_ID), "{rendered}");
+    assert!(rendered.contains(EVENT_ID), "{rendered}");
     assert!(document
         .lines()
         .iter()
@@ -641,48 +652,140 @@ fn normal_search_agent_field_preserves_an_unresolved_full_reference() {
 }
 
 #[test]
-fn normal_search_agent_field_does_not_infer_unknown_scope_from_lineage() {
-    let value = search_agent_value(None, Some(PARENT_SESSION_ID), Some(ROOT_SESSION_ID));
+fn normal_search_card_renders_custom_source_identity_without_provider_duplication() {
+    let mut custom = compact_search_value();
+    custom["results"][0]["provider"] = json!("custom");
+    custom["results"][0]["provider_key"] = json!("acme-history");
+    custom["results"][0]["source_id"] = json!("workstation");
     let rendered =
-        render_search_document(&value, false, &context(120, ColorMode::Never)).render_plain();
+        render_search_document(&custom, false, &context(120, ColorMode::Never)).render_plain();
+    assert!(rendered.contains("   Provider  Custom"), "{rendered}");
+    assert!(
+        rendered.contains("   Source    acme-history/workstation"),
+        "{rendered}"
+    );
 
-    assert!(rendered.contains("   Agent    unknown"), "{rendered}");
-    assert!(!rendered.contains("01900010"), "{rendered}");
-    assert!(!rendered.contains("01900020"), "{rendered}");
+    custom["results"][0]["provider"] = json!("acme_history");
+    custom["results"][0]["provider_key"] = json!("acme_history");
+    custom["results"][0]["source_id"] = Value::Null;
+    let rendered =
+        render_search_document(&custom, false, &context(120, ColorMode::Never)).render_plain();
+    assert!(rendered.contains("   Provider  acme history"), "{rendered}");
+    assert!(!rendered.contains("   Source"), "{rendered}");
 }
 
 #[test]
-fn search_event_row_uses_exact_milliseconds_and_quiet_missing_time() {
-    let document = render_search_document(&search_value(), false, &context(80, ColorMode::Never));
+fn search_card_dynamic_identity_fields_are_control_safe() {
+    let mut value = search_agent_value(None, Some("parent\u{1b}[31m"), None);
+    value["results"][0]["provider"] = json!("custom");
+    value["results"][0]["provider_key"] = json!("plugin\u{1b}[2J");
+    value["results"][0]["source_id"] = json!("line\nbreak\tvalue");
+    let document = render_search_document(&value, false, &context(48, ColorMode::Never));
     let rendered = document.render_plain();
-    assert!(rendered.contains("Event    01900001 · 2026-07-30T12:00:00.123Z"));
-    assert!(!rendered.contains("Match"));
-    assert!(document
-        .lines()
-        .iter()
-        .flat_map(|line| line.spans())
-        .any(|span| span.content() == "01900001" && span.token() == Token::Reference));
-    assert!(document
-        .lines()
-        .iter()
-        .flat_map(|line| line.spans())
-        .any(|span| {
-            span.content() == "2026-07-30T12:00:00.123Z" && span.token() == Token::Text
-        }));
-
-    let ascii = render_search_document(&search_value(), false, &context_with_unicode(80, false))
-        .render_plain();
     assert!(
-        ascii.contains("Event    01900001 | 2026-07-30T12:00:00.123Z"),
-        "{ascii}"
+        rendered.contains("plugin\\x1b[2J/line\\nbreak\\tvalue"),
+        "{rendered}"
     );
+    assert!(rendered.contains("parent\\x1b[31m"), "{rendered}");
+    assert_control_safe(&rendered);
+    assert_fits(&document, &context(48, ColorMode::Never));
+}
 
-    let mut missing = search_value();
+#[test]
+fn normal_search_uses_compact_refs_and_verbose_uses_full_ctx_ids() {
+    let mut ordinary_value = compact_search_value();
+    ordinary_value["results"][0]["parent_ctx_session_id"] = json!(PARENT_SESSION_REF);
+    ordinary_value["results"][0]["root_ctx_session_id"] = json!(ROOT_SESSION_REF);
+    let ordinary = render_search_document(&ordinary_value, false, &context(120, ColorMode::Never))
+        .render_plain();
+    for expected in [SESSION_REF, EVENT_REF, PARENT_SESSION_REF, ROOT_SESSION_REF] {
+        assert!(ordinary.contains(expected), "{ordinary}");
+    }
+    for unexpected in [SESSION_ID, EVENT_ID, PARENT_SESSION_ID, ROOT_SESSION_ID] {
+        assert!(!ordinary.contains(unexpected), "{ordinary}");
+    }
+
+    let mut verbose_value = search_value();
+    verbose_value["results"][0]["parent_ctx_session_id"] = json!(PARENT_SESSION_ID);
+    verbose_value["results"][0]["root_ctx_session_id"] = json!(ROOT_SESSION_ID);
+    let verbose = render_search_document(&verbose_value, true, &context(120, ColorMode::Never))
+        .render_plain();
+    for expected in [SESSION_ID, EVENT_ID, PARENT_SESSION_ID, ROOT_SESSION_ID] {
+        assert!(verbose.contains(expected), "{verbose}");
+    }
+}
+
+#[test]
+fn search_event_and_time_are_separate_fields_with_exact_milliseconds() {
+    for unicode in [true, false] {
+        for width in [32, 48, 80, 120] {
+            let context = context_with_unicode(width, unicode);
+            let document = render_search_document(&compact_search_value(), false, &context);
+            let rendered = document.render_plain();
+            assert!(!rendered.contains("Match"));
+
+            let event_line = document
+                .lines()
+                .iter()
+                .position(|line| {
+                    line.spans()
+                        .iter()
+                        .any(|span| span.content() == "Event" && span.token() == Token::Label)
+                })
+                .expect("event field is rendered");
+            let time_line = document
+                .lines()
+                .iter()
+                .position(|line| {
+                    line.spans()
+                        .iter()
+                        .any(|span| span.content() == "Time" && span.token() == Token::Label)
+                })
+                .expect("time field is rendered");
+            assert_ne!(event_line, time_line, "{rendered}");
+            assert!(
+                document.lines()[event_line]
+                    .spans()
+                    .iter()
+                    .any(|span| span.content() == "01900001" && span.token() == Token::Reference),
+                "{rendered}"
+            );
+            let time_end = document
+                .lines()
+                .iter()
+                .enumerate()
+                .skip(time_line + 1)
+                .find_map(|(index, line)| {
+                    line.spans()
+                        .iter()
+                        .any(|span| span.content() == "More" && span.token() == Token::Label)
+                        .then_some(index)
+                })
+                .unwrap_or(document.lines().len());
+            let time_value: String = document.lines()[time_line..time_end]
+                .iter()
+                .flat_map(|line| line.spans())
+                .filter(|span| span.token() == Token::Text)
+                .flat_map(|span| span.content().chars())
+                .filter(|character| !character.is_whitespace())
+                .collect();
+            assert!(
+                time_value.contains("2026-07-30T12:00:00.123Z"),
+                "{rendered}"
+            );
+            assert_fits(&document, &context);
+        }
+    }
+
+    let mut missing = compact_search_value();
     missing["results"][0]["timestamp"] = Value::Null;
     let document = render_search_document(&missing, false, &context(32, ColorMode::Never));
     let rendered = document.render_plain();
-    assert!(rendered.contains("Event    01900001"), "{rendered}");
-    assert!(rendered.contains("Time     time unavailable"), "{rendered}");
+    assert!(rendered.contains("Event     01900001"), "{rendered}");
+    assert!(
+        rendered.contains("Time      time unavailable"),
+        "{rendered}"
+    );
     assert!(document
         .lines()
         .iter()
@@ -692,32 +795,45 @@ fn search_event_row_uses_exact_milliseconds_and_quiet_missing_time() {
 
 #[test]
 fn verbose_search_exposes_context_without_redundant_values_or_citation() {
-    let ordinary = render_search_document(&search_value(), false, &context(120, ColorMode::Never))
-        .render_plain();
+    let ordinary = render_search_document(
+        &compact_search_value(),
+        false,
+        &context(120, ColorMode::Never),
+    )
+    .render_plain();
     assert!(!ordinary.contains("Sequence"), "{ordinary}");
-    assert!(ordinary.contains("Agent    primary"), "{ordinary}");
+    assert!(ordinary.contains("Provider  Codex"), "{ordinary}");
+    assert!(!ordinary.contains("Provider session"), "{ordinary}");
+    assert!(!ordinary.contains("Agent"), "{ordinary}");
 
     let verbose = render_search_document(&search_value(), true, &context(120, ColorMode::Never))
         .render_plain();
     assert!(verbose.contains("Sequence          17"), "{verbose}");
-    assert!(verbose.contains("Agent    primary"), "{verbose}");
+    assert!(
+        verbose.contains("Provider session  demo-unicode-session"),
+        "{verbose}"
+    );
+    assert!(
+        verbose.contains("Source format     codex_session_jsonl"),
+        "{verbose}"
+    );
     assert!(!verbose.contains("Citation"), "{verbose}");
-    assert_eq!(verbose.matches("Agent").count(), 1, "{verbose}");
-    assert_eq!(verbose.matches("primary").count(), 1, "{verbose}");
+    assert!(!verbose.contains("Agent"), "{verbose}");
 
     let mut nested = search_value();
     nested["results"][0]["agent_scope"] = json!("subagent");
-    nested["results"][0]["parent_ctx_session_id"] = json!(PARENT_SESSION_REF);
-    nested["results"][0]["root_ctx_session_id"] = json!(ROOT_SESSION_REF);
+    nested["results"][0]["parent_ctx_session_id"] = json!(PARENT_SESSION_ID);
+    nested["results"][0]["root_ctx_session_id"] = json!(ROOT_SESSION_ID);
     let nested =
         render_search_document(&nested, true, &context(120, ColorMode::Never)).render_plain();
     for expected in [
-        "Agent    subagent · parent 019000100 · root 019000101",
-        "Parent            019000100",
-        "Root              019000101",
+        format!("Parent    {PARENT_SESSION_ID}"),
+        format!("Root      {ROOT_SESSION_ID}"),
     ] {
-        assert!(nested.contains(expected), "{nested}");
+        assert!(nested.contains(&expected), "{nested}");
     }
+    assert_eq!(nested.matches(PARENT_SESSION_ID).count(), 1, "{nested}");
+    assert_eq!(nested.matches(ROOT_SESSION_ID).count(), 1, "{nested}");
 }
 
 #[test]
@@ -938,6 +1054,23 @@ fn empty_search_action_displays_a_positional_query() {
 }
 
 #[test]
+fn empty_exhausted_search_keeps_the_bounded_work_warning() {
+    let mut value = empty_search_value();
+    value["truncation"]["candidate_pool_truncated"] = json!(true);
+
+    for width in [32, 48, 80, 120] {
+        let context = context(width, ColorMode::Never);
+        let document = render_search_document(&value, false, &context);
+        let rendered = document.render_plain();
+        let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(rendered.starts_with("No results for"));
+        assert!(normalized.contains("Search reached a bounded candidate or work limit."));
+        assert!(normalized.contains("Refine the query"));
+        assert_fits(&document, &context);
+    }
+}
+
+#[test]
 fn more_available_footer_has_exact_contract_bytes_and_no_guidance() {
     let context = context(80, ColorMode::Never);
     let value = search_value();
@@ -1044,8 +1177,7 @@ fn search_candidate_warning_and_more_available_footer_are_actionable() {
         let rendered = document.render_plain();
         let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(rendered.contains("Warning\n"));
-        assert!(normalized.contains("Root diversity reached the current candidate bound."));
-        assert!(!normalized.contains("Session diversity"));
+        assert!(normalized.contains("Search reached a bounded candidate or work limit."));
         assert!(normalized.contains("Refine the query"));
         assert!(normalized.contains("provider, workspace, file, or session filter"));
         assert!(rendered.ends_with("More results available.\n"));

@@ -2,10 +2,13 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 use ctx_cli_presentation::upgrade::{
-    render_auto_mode, render_error, render_outcome, UpgradeArgs, UpgradeCommand,
+    render_auto_mode, render_error, render_outcome, AutoModeInstallAuthority, UpgradeArgs,
+    UpgradeCommand,
 };
 use ctx_upgrade_engine::{
-    run_hosted_transaction, HostedTransactionArgs, UpgradeOutcome, UpgradePolicy,
+    managed_install_marker_for_current_exe, run_hosted_transaction,
+    unmanaged_install_conversion_guidance, HostedTransactionArgs, ManagedInstallMarker,
+    UpgradeOutcome, UpgradePolicy,
 };
 
 use crate::{
@@ -29,18 +32,8 @@ pub fn run(
     telemetry: &mut UpgradeTelemetry,
     ui: &mut Ui,
 ) -> Result<()> {
+    validate_hidden_upgrade_protocol(&args)?;
     if let Some(action) = args.hosted_transaction {
-        if args.command.is_some()
-            || args.channel.is_some()
-            || args.dry_run
-            || args.format != JsonOutputFormat::Text
-            || args.replacement_helper
-            || args.parent_pid.is_some()
-        {
-            return Err(anyhow!(
-                "hosted transaction cannot be combined with upgrade options"
-            ));
-        }
         telemetry.suppress_event = true;
         return run_hosted_transaction(HostedTransactionArgs {
             action: action.into(),
@@ -105,14 +98,27 @@ pub fn run(
                 )
             }
             Some(UpgradeCommand::Enable) => {
+                require_managed_install_for_auto_upgrade()?;
                 insert_upgrade_simple_analytics(telemetry, UpgradeStatus::AutoEnabled);
                 set_auto_mode(&data_root, "apply")?;
-                render_auto_mode(true, args.format.is_json(), ui)
+                render_auto_mode(
+                    true,
+                    AutoModeInstallAuthority::Hosted,
+                    args.format.is_json(),
+                    ui,
+                )
             }
             Some(UpgradeCommand::Disable) => {
+                let authority = match managed_install_marker_for_current_exe() {
+                    Ok(ManagedInstallMarker::Valid(_)) => AutoModeInstallAuthority::Hosted,
+                    Ok(ManagedInstallMarker::Absent) => AutoModeInstallAuthority::External,
+                    Ok(ManagedInstallMarker::Invalid { .. }) | Err(_) => {
+                        AutoModeInstallAuthority::Inconsistent
+                    }
+                };
                 insert_upgrade_simple_analytics(telemetry, UpgradeStatus::AutoDisabled);
                 set_auto_mode(&data_root, "off")?;
-                render_auto_mode(false, args.format.is_json(), ui)
+                render_auto_mode(false, authority, args.format.is_json(), ui)
             }
             None => {
                 let outcome =
@@ -126,6 +132,67 @@ pub fn run(
         insert_upgrade_error_analytics(telemetry, error);
     }
     render_error(result, !args.json_output(), ui)
+}
+
+fn require_managed_install_for_auto_upgrade() -> Result<()> {
+    match managed_install_marker_for_current_exe()? {
+        ManagedInstallMarker::Valid(_) => Ok(()),
+        ManagedInstallMarker::Absent => Err(anyhow!(
+            "ctx is not installed by the hosted installer; {}",
+            unmanaged_install_conversion_guidance()
+        )),
+        ManagedInstallMarker::Invalid { reason } => Err(anyhow!(reason)),
+    }
+}
+
+fn validate_hidden_upgrade_protocol(args: &UpgradeArgs) -> Result<()> {
+    let normal_options = args.command.is_some()
+        || args.channel.is_some()
+        || args.dry_run
+        || args.format != JsonOutputFormat::Text;
+
+    if args.hosted_transaction.is_some() {
+        if normal_options || args.replacement_helper || args.parent_pid.is_some() {
+            return Err(anyhow!(
+                "hosted transaction cannot be combined with upgrade options"
+            ));
+        }
+        return Ok(());
+    }
+
+    if args.replacement_helper {
+        #[cfg(not(windows))]
+        return Err(anyhow!("replacement helper is available only on Windows"));
+
+        #[cfg(windows)]
+        {
+            let valid_identity = args.install_path.is_some()
+                && args.attempt_id.is_some()
+                && args.parent_pid.is_some_and(|pid| pid != 0);
+            if normal_options
+                || !valid_identity
+                || args.marker_source.is_some()
+                || args.ownership_source.is_some()
+                || args.binary_sha256.is_some()
+            {
+                return Err(anyhow!("invalid replacement-helper process protocol"));
+            }
+            return Ok(());
+        }
+    }
+
+    if args.install_path.is_some()
+        || args.attempt_id.is_some()
+        || args.parent_pid.is_some()
+        || args.marker_source.is_some()
+        || args.ownership_source.is_some()
+        || args.binary_sha256.is_some()
+    {
+        return Err(anyhow!(
+            "hidden process options require a matching upgrade process role"
+        ));
+    }
+    Ok(())
 }
 
 fn insert_upgrade_outcome_analytics(telemetry: &mut UpgradeTelemetry, outcome: &UpgradeOutcome) {
@@ -190,5 +257,43 @@ fn upgrade_failure_kind(error: &anyhow::Error) -> UpgradeFailureKind {
         UpgradeFailureKind::PolicyDisallowed
     } else {
         UpgradeFailureKind::ApplyFailed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse_upgrade(args: &[&str]) -> UpgradeArgs {
+        let cli =
+            crate::cli::Cli::try_parse_from(std::iter::once("ctx").chain(args.iter().copied()))
+                .unwrap();
+        let crate::cli::CommandRoot::Upgrade(args) = cli.command else {
+            panic!("expected upgrade command");
+        };
+        args
+    }
+
+    #[test]
+    fn normal_upgrade_rejects_orphaned_hidden_process_fields() {
+        let args = parse_upgrade(&["upgrade", "--parent-pid", "42"]);
+        assert!(validate_hidden_upgrade_protocol(&args).is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_rejects_windows_replacement_role() {
+        let replacement = parse_upgrade(&[
+            "upgrade",
+            "--replacement-helper",
+            "--install-path",
+            "/tmp/ctx",
+            "--attempt-id",
+            "ua_test",
+            "--parent-pid",
+            "42",
+        ]);
+        assert!(validate_hidden_upgrade_protocol(&replacement).is_err());
     }
 }

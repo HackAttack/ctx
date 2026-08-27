@@ -37,11 +37,13 @@ string_enum!(RefreshOutcomeCode, "code", {
     CompletedWithSourceFailures => "completed_with_source_failures",
     CompletedWithRejectionsAndSourceFailures => "completed_with_rejections_and_source_failures",
     SourceUnavailable => "source_unavailable",
+    ExplicitSourcePathMissing => "explicit_source_path_missing",
     SourceChanged => "source_changed",
     MalformedSource => "malformed_source",
     UnsupportedSchema => "unsupported_schema",
     SourceFailures => "source_failures",
     LogicalSourceFailures => "logical_source_failures",
+    SourceUnclaimed => "source_unclaimed",
     SourceRefreshFailed => "source_refresh_failed",
     SourceRefreshInternal => "source_refresh_internal",
     ResourceUnavailable => "resource_unavailable",
@@ -77,9 +79,11 @@ impl RefreshOutcomeCode {
                 RefreshTerminalFailureType::MalformedSource,
             )),
             Self::SourceUnavailable
+            | Self::ExplicitSourcePathMissing
             | Self::SourceChanged
             | Self::SourceFailures
-            | Self::LogicalSourceFailures => Some((
+            | Self::LogicalSourceFailures
+            | Self::SourceUnclaimed => Some((
                 RefreshTerminalFailureScope::Source,
                 RefreshTerminalFailureType::Unknown,
             )),
@@ -134,6 +138,7 @@ string_enum!(RefreshOutcomeClass, "class", {
 
 string_enum!(RefreshRetryAdvice, "retry advice", {
     RetryAffectedRoutes => "retry_affected_routes",
+    RetryRetryableRoutesAndInspectBlocked => "retry_retryable_routes_and_inspect_blocked",
     RetryRequest => "retry_request",
     RetryAdmission => "retry_admission",
     RetryFinalization => "retry_finalization",
@@ -682,8 +687,8 @@ fn parse_terminal_outcome(value: &Value) -> Result<RefreshTerminalOutcome> {
     let fields = value
         .as_object()
         .ok_or_else(|| anyhow!("source refresh structured outcome is not an object"))?;
-    let code = required_outcome_string(fields, "code")?.parse()?;
-    let class = required_outcome_string(fields, "class")?.parse()?;
+    let code: RefreshOutcomeCode = required_outcome_string(fields, "code")?.parse()?;
+    let class: RefreshOutcomeClass = required_outcome_string(fields, "class")?.parse()?;
     let retryable = fields
         .get("retryable")
         .and_then(Value::as_bool)
@@ -694,6 +699,10 @@ fn parse_terminal_outcome(value: &Value) -> Result<RefreshTerminalOutcome> {
     if !retryable_routes.is_disjoint(&blocked_routes)
         || !retryable_routes.is_subset(&affected_routes)
         || !blocked_routes.is_subset(&affected_routes)
+        || (code.is_failure()
+            && retryable_routes
+                .union(&blocked_routes)
+                .ne(affected_routes.iter()))
         || (!affected_routes.is_empty() && retryable == retryable_routes.is_empty())
     {
         bail!("source refresh structured outcome has inconsistent route dispositions");
@@ -703,6 +712,18 @@ fn parse_terminal_outcome(value: &Value) -> Result<RefreshTerminalOutcome> {
         Some(value) => Some(value.parse()?),
         None => None,
     };
+    if code == RefreshOutcomeCode::SourceUnclaimed
+        && (class != RefreshOutcomeClass::Coverage
+            || blocked_routes.is_empty()
+            || retry_advice
+                != Some(if retryable {
+                    RefreshRetryAdvice::RetryRetryableRoutesAndInspectBlocked
+                } else {
+                    RefreshRetryAdvice::InspectSources
+                }))
+    {
+        bail!("source refresh source-unclaimed outcome is inconsistent");
+    }
     Ok(RefreshTerminalOutcome {
         code,
         class,

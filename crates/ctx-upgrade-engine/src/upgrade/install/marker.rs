@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env, io,
     path::{Path, PathBuf},
 };
 
@@ -17,6 +17,7 @@ use super::lock::canonical_executable;
 #[cfg(windows)]
 use super::lock::canonical_recovery_executable;
 use super::lock_fs::{read_stable_file, StableFileKind};
+use super::path_identity::managed_install_path_identity_matches;
 
 const MIN_INSTALL_ATTEMPT_ID_BODY_BYTES: usize = 8;
 const MAX_INSTALL_ATTEMPT_ID_BODY_BYTES: usize = 128;
@@ -47,8 +48,17 @@ pub(in crate::upgrade) fn install_fingerprint(path: &Path) -> Result<InstallFing
     let binary = std::fs::read(path)
         .with_context(|| format!("read managed ctx executable {}", path.display()))?;
     let marker_path = install_marker_path(path);
-    let marker = std::fs::read(&marker_path)
-        .with_context(|| format!("read ctx install marker {}", marker_path.display()))?;
+    // An unmanaged installation has no marker beside its executable, so its
+    // plan-time fingerprint digests an empty marker. Managed publication
+    // paths still require a valid marker before any fingerprint comparison.
+    let marker = match std::fs::read(&marker_path) {
+        Ok(marker) => marker,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read ctx install marker {}", marker_path.display()))
+        }
+    };
     Ok(InstallFingerprint {
         binary_sha256: sha256_hex(&binary),
         marker_sha256: sha256_hex(&marker),
@@ -113,9 +123,11 @@ fn read_install_marker_at(path: &Path) -> Result<Option<InstallMarker>> {
         .and_then(Value::as_str)
         .map(PathBuf::from)
         .ok_or_else(|| anyhow!("ctx install marker missing install_path"))?;
-    let canonical_install_path =
-        canonical_executable(&install_path).context("canonicalize ctx install marker path")?;
-    if canonical_install_path != path {
+    let certified_path =
+        canonical_executable(path).context("certify managed ctx executable path")?;
+    if !managed_install_path_identity_matches(&certified_path, path)
+        || !managed_install_path_identity_matches(&certified_path, &install_path)
+    {
         return Err(anyhow!(
             "ctx install marker path mismatch: marker {}, running {}",
             install_path.display(),
@@ -123,7 +135,7 @@ fn read_install_marker_at(path: &Path) -> Result<Option<InstallMarker>> {
         ));
     }
     Ok(Some(InstallMarker {
-        install_path: canonical_install_path,
+        install_path: certified_path,
         platform: string_field(&value, "platform")?,
         channel: string_field(&value, "channel")?,
         version: string_field(&value, "version")?,
@@ -154,10 +166,46 @@ pub(in crate::upgrade) fn install_marker_for_plan(
     }
 }
 
-fn absent_install_marker_error() -> anyhow::Error {
+pub(in crate::upgrade) fn absent_install_marker_error() -> anyhow::Error {
     anyhow!(
         "ctx is not installed by the hosted installer; {}",
         unmanaged_install_conversion_guidance()
+    )
+}
+
+/// An installation is unmanaged when no install marker is plainly present
+/// beside the executable (third-party packaging, source builds). A present
+/// but invalid marker is a distinct inconsistent state and keeps the
+/// fail-closed managed-install errors.
+pub(in crate::upgrade) fn installation_is_unmanaged_at(path: &Path) -> bool {
+    matches!(
+        std::fs::symlink_metadata(install_marker_path(path)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound
+    )
+}
+
+/// Whether the running ctx is an unmanaged installation whose executable
+/// directory the hosted installer never mutates. Resolution failures count
+/// as managed so unexpected states stay fail-closed.
+pub fn current_exe_is_unmanaged() -> bool {
+    current_install_path()
+        .map(|path| installation_is_unmanaged_at(&path))
+        .unwrap_or(false)
+}
+
+/// Cheap foreground hint for automatic-upgrade worker admission. This parses
+/// the small marker and checks its authority/path/platform without hashing the
+/// executable; the worker performs the full digest verification before use.
+pub fn current_exe_has_managed_install_marker_hint() -> bool {
+    let Ok(path) = current_install_path() else {
+        return false;
+    };
+    let Ok(platform) = platform_key() else {
+        return false;
+    };
+    matches!(
+        read_install_marker_at(&path),
+        Ok(Some(marker)) if marker.platform == platform
     )
 }
 
@@ -284,7 +332,7 @@ fn read_install_marker_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
     )
 }
 
-pub(super) fn install_marker_path(path: &Path) -> PathBuf {
+pub(in crate::upgrade) fn install_marker_path(path: &Path) -> PathBuf {
     let mut file_name = path
         .file_name()
         .unwrap_or_else(|| std::ffi::OsStr::new("ctx"))

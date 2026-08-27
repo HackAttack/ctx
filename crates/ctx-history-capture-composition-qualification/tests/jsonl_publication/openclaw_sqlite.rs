@@ -150,6 +150,7 @@ fn registered_registry(data_root: &Path, database: &Path) -> SourceBackedProvide
             catalog_support: ProviderCatalogSupport::None,
             status: ProviderSourceStatus::Available,
             unsupported_reason: None,
+            route_provenance: Default::default(),
         },
         SourceBackedRouteSelection::Automatic,
         data_root,

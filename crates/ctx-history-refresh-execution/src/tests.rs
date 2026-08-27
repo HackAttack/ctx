@@ -2,11 +2,12 @@ use super::*;
 use std::fs;
 
 use ctx_history_capture::{
-    provider_source_for_path, DiscoveryPlatform, DiscoveryPlatformDirs,
-    SourceBackedSelectorAuthority,
+    provider_source_for_path, DiscoveryPlatform, DiscoveryPlatformDirs, ProviderRouteRole,
+    ProviderSourceRouteProvenance, SourceBackedSelectorAuthority,
 };
 use ctx_history_capture_model::{
-    ProviderCatalogSupport, ProviderImportSupport, ProviderSource, ProviderSourceKind,
+    ProviderCatalogSupport, ProviderImportSupport, ProviderRootKind, ProviderSource,
+    ProviderSourceKind,
 };
 use ctx_history_core::{
     derive_event_id, derive_session_id, CaptureProvider, CoreRecord, EventIdentityInput,
@@ -101,6 +102,159 @@ fn discovery_fixture(root: &Path) -> (PathBuf, PathBuf, DiscoveryContext) {
         DiscoveryPlatformDirs::default(),
     );
     (home, cwd, discovery)
+}
+
+#[test]
+fn configured_provider_root_identity_matching_rejects_duplicate_stable_ids() {
+    let temp = tempfile::tempdir().unwrap();
+    let (_, _, discovery) = discovery_fixture(temp.path());
+    let roots = [CaptureProvider::Claude, CaptureProvider::Hermes]
+        .map(|provider| ctx_history_capture::ProviderRootDefinition {
+            id: "duplicate".to_owned(),
+            provider,
+            path: temp.path().join(provider.as_str()),
+            group: None,
+            kind: None,
+        })
+        .to_vec();
+    let discovery = discovery.with_configured_provider_roots(roots);
+
+    let error = configured_retained_provider_roots(&discovery, None).unwrap_err();
+    assert!(error.to_string().contains("not unique"), "{error:#}");
+}
+
+#[test]
+fn configured_root_transition_partitions_removals_from_incompatible_replacements() {
+    use ctx_history_capture::{ProviderRootDefinition, ProviderRootKind};
+    use ctx_history_index::{AppliedProviderRoot, AppliedProviderRootSourceMembership};
+
+    let route = |byte: &str| SourceRouteIdentity::from_sha256(byte.repeat(64)).unwrap();
+    let replaced_provider_route = route("1");
+    let replaced_kind_route = route("2");
+    let compatible_route = route("3");
+    let exact_shared_route = route("4");
+    let removed_route = route("5");
+    let applied = |definition, route| {
+        AppliedProviderRoot::with_source_identity(
+            definition,
+            ProviderRootSourceIdentity::NamedV1,
+            vec![route],
+        )
+        .unwrap()
+    };
+    let retained = vec![
+        applied(
+            ProviderRootDefinition {
+                id: "provider-replacement".to_owned(),
+                provider: CaptureProvider::Claude,
+                path: "/old/claude".into(),
+                group: None,
+                kind: None,
+            },
+            replaced_provider_route.clone(),
+        ),
+        applied(
+            ProviderRootDefinition {
+                id: "kind-replacement".to_owned(),
+                provider: CaptureProvider::OpenHands,
+                path: "/old/openhands".into(),
+                group: None,
+                kind: Some(ProviderRootKind::OpenHandsCurrentConversations),
+            },
+            replaced_kind_route.clone(),
+        ),
+        applied(
+            ProviderRootDefinition {
+                id: "compatible-move".to_owned(),
+                provider: CaptureProvider::Claude,
+                path: "/old/path".into(),
+                group: Some("old-group".to_owned()),
+                kind: None,
+            },
+            compatible_route,
+        ),
+        applied(
+            ProviderRootDefinition {
+                id: "removed".to_owned(),
+                provider: CaptureProvider::Codex,
+                path: "/old/codex".into(),
+                group: None,
+                kind: None,
+            },
+            removed_route.clone(),
+        ),
+        AppliedProviderRoot::with_source_identity(
+            ProviderRootDefinition {
+                id: "removed-exact-subset".to_owned(),
+                provider: CaptureProvider::Crush,
+                path: "/old/crush.db".into(),
+                group: None,
+                kind: None,
+            },
+            ProviderRootSourceIdentity::Released,
+            vec![exact_shared_route.clone()],
+        )
+        .unwrap()
+        .with_exact_source_memberships(vec![AppliedProviderRootSourceMembership::exact(
+            exact_shared_route,
+            vec!["ab".repeat(32)],
+        )
+        .unwrap()])
+        .unwrap(),
+    ];
+    let desired = vec![
+        ProviderRootDefinition {
+            id: "provider-replacement".to_owned(),
+            provider: CaptureProvider::Codex,
+            path: "/new/codex".into(),
+            group: None,
+            kind: None,
+        },
+        ProviderRootDefinition {
+            id: "kind-replacement".to_owned(),
+            provider: CaptureProvider::OpenHands,
+            path: "/new/openhands".into(),
+            group: None,
+            kind: Some(ProviderRootKind::OpenHandsLegacyPersistence),
+        },
+        ProviderRootDefinition {
+            id: "compatible-move".to_owned(),
+            provider: CaptureProvider::Claude,
+            path: "/new/path".into(),
+            group: Some("new-group".to_owned()),
+            kind: None,
+        },
+    ];
+
+    assert_eq!(
+        incompatible_configured_provider_root_routes(&retained, &desired),
+        BTreeSet::from([
+            replaced_provider_route,
+            replaced_kind_route,
+            removed_route.clone(),
+        ])
+    );
+    assert_eq!(
+        removed_configured_provider_root_routes(&retained, &desired),
+        BTreeSet::from([removed_route])
+    );
+}
+
+fn configured_provider_source_for_path(
+    provider: CaptureProvider,
+    path: PathBuf,
+    root_id: &str,
+    root_path: PathBuf,
+    route_role: &'static str,
+) -> ProviderSource {
+    let mut source = provider_source_for_path(provider, path);
+    source.route_provenance = ProviderSourceRouteProvenance::ConfiguredRoot {
+        root_id: root_id.to_owned(),
+        root_path,
+        route_role: ProviderRouteRole::from_static(route_role),
+        automatic_route_role: None,
+    };
+    source
 }
 
 fn run_report(
@@ -296,6 +450,121 @@ fn query_readiness_decodes_metadata_before_certifying_generation() {
         verify_generation_query_readiness(&invalid).unwrap_err()
     )
     .contains("unsupported Core source-refresh publication metadata version"));
+}
+
+#[test]
+fn publication_metadata_versions_preserve_receipt_shape_and_gate_the_v4_ledger() {
+    let temp = tempfile::tempdir().unwrap();
+    let generation_id = publish_pin_source(temp.path(), publication_pin_source_with_anchor(0x98));
+    let publication = test_publication(generation_id.clone());
+    let receipt = SourceBackedRefreshReceipt::from_verified_publication(
+        None,
+        generation_id.clone(),
+        &publication,
+    )
+    .unwrap();
+    let route_identity = "11".repeat(32);
+    let source_identity = "22".repeat(32);
+    let ledger = json!({
+        (&route_identity): [
+            "s",
+            false,
+            0,
+            0,
+            [],
+            1,
+            [[
+                source_identity,
+                "qwen_code",
+                "/tmp/qwen.jsonl",
+                3,
+                "message",
+                "m",
+                "invalid shape"
+            ]]
+        ]
+    });
+    let metadata = SourceBackedPublicationMetadata {
+        version: SOURCE_REFRESH_PUBLICATION_METADATA_VERSION,
+        request_id: "metadata-version-ledger".to_owned(),
+        operation: RefreshOperation::Refresh,
+        refresh_scope: SourceBackedRefreshScope::All,
+        receipt: receipt.to_json(),
+        route_observations: BTreeMap::new(),
+        route_controls: BTreeMap::new(),
+    };
+    let current = metadata
+        .encode_with_committed_rejection_diagnostics(&ledger)
+        .unwrap();
+    let republish = |bytes: Vec<u8>| {
+        let writer = GenerationWriter::open(temp.path(), WriterOptions::default())
+            .unwrap()
+            .into_writer()
+            .unwrap();
+        writer
+            .republish_current_publication_metadata(&generation_id, bytes)
+            .unwrap()
+    };
+
+    let verified = republish(current.clone());
+    let (decoded, decoded_ledger) =
+        SourceBackedPublicationMetadata::decode_with_committed_rejection_diagnostics(&verified)
+            .unwrap();
+    assert_eq!(decoded.version, SOURCE_REFRESH_PUBLICATION_METADATA_VERSION);
+    assert_eq!(decoded_ledger.unwrap().len(), 1);
+    assert_eq!(decoded.response_value()["receipt"], receipt.to_json());
+    assert!(decoded.response_value()["receipt"]
+        .get(crate::metadata::COMMITTED_REJECTION_DIAGNOSTICS_FIELD)
+        .is_none());
+    assert_eq!(
+        published_refresh_receipt_for_index(&decoded.response_value(), &verified).unwrap(),
+        receipt
+    );
+    drop(verified);
+
+    for version in [1_u64, 2, 3] {
+        let mut legacy: Value = serde_json::from_slice(&current).unwrap();
+        legacy["version"] = json!(version);
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove(crate::metadata::COMMITTED_REJECTION_DIAGNOSTICS_FIELD);
+        if version < 3 {
+            legacy.as_object_mut().unwrap().remove("route_controls");
+        }
+        if version == 1 {
+            legacy["receipt"]
+                .as_object_mut()
+                .unwrap()
+                .remove("zero_source_authority");
+        }
+        let verified = republish(serde_json::to_vec(&legacy).unwrap());
+        let (decoded, decoded_ledger) =
+            SourceBackedPublicationMetadata::decode_with_committed_rejection_diagnostics(&verified)
+                .unwrap();
+        assert_eq!(decoded.version, version);
+        assert!(decoded_ledger.is_none());
+        drop(verified);
+    }
+
+    for mutation in ["missing", "unknown"] {
+        let mut invalid: Value = serde_json::from_slice(&current).unwrap();
+        if mutation == "missing" {
+            invalid
+                .as_object_mut()
+                .unwrap()
+                .remove(crate::metadata::COMMITTED_REJECTION_DIAGNOSTICS_FIELD);
+        } else {
+            invalid["unexpected"] = json!(true);
+        }
+        let verified = republish(serde_json::to_vec(&invalid).unwrap());
+        assert!(format!(
+            "{:#}",
+            SourceBackedPublicationMetadata::decode(&verified).unwrap_err()
+        )
+        .contains("unknown or missing fields"));
+        drop(verified);
+    }
 }
 
 #[test]

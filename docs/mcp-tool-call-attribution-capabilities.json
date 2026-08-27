@@ -1,32 +1,8 @@
 {
-  "schema_version": 3,
+  "schema_version": 5,
   "capability": "exact_mcp_tool_call_attribution",
   "capability_revision": 4,
   "scope": "Exact event-local MCP dispatch server alias and advertised tool identity only; general provider import support is defined separately.",
-  "conformance_authority": {
-    "manifest": "crates/ctx-history-capture/tests/mcp-attribution-conformance.manifest.json",
-    "suite_registry": "crates/ctx-history-capture/tests/mcp_attribution_suites.bzl",
-    "manifest_sha256": "8a4e10bfa031764f296d076ba9a8cff4106f8c39d1c0c57976d9383383e01305",
-    "suite_registry_sha256": "4ea7e8bf8d4e671fb6c0ebd82d19c99d14510c286f9615d9808af9aaf0257466",
-    "manifest_schema_version": 7,
-    "capability_revision": 8,
-    "status_mapping": {
-      "exact": "supported",
-      "not-qualified": "not_qualified",
-      "excluded": "excluded"
-    },
-    "expected_counts": {
-      "providers": 41,
-      "base_routes": 46,
-      "schema_generations": 45,
-      "capability_lanes": 49,
-      "status_rows": {
-        "supported": 3,
-        "not_qualified": 45,
-        "excluded": 1
-      }
-    }
-  },
   "key_fields": [
     "provider_id",
     "route",
@@ -76,17 +52,17 @@
     "exact_requires_source_commits": false
   },
   "expected_counts": {
-    "providers": 41,
-    "base_routes": 46,
-    "capability_lanes": 49,
+    "providers": 42,
+    "base_routes": 47,
+    "capability_lanes": 51,
     "lane_statuses": {
       "exact": 3,
-      "not-qualified": 45,
+      "not-qualified": 47,
       "excluded": 1
     },
     "provider_statuses": {
       "exact": 3,
-      "not-qualified": 38,
+      "not-qualified": 39,
       "excluded": 0
     }
   },
@@ -449,6 +425,20 @@
       "status": "not-qualified", "reason": "no_unique_terminal_link",
       "detail": "The exact request pair is durable, but execution ID is webview-only and response grouping is order-based; the durable no-response text is also ambiguous.",
       "evidence": ["https://github.com/RooCodeInc/Roo-Code/tree/b867ec9145750d0ae1ff7f02d35406e9bf2a0b16"]
+    },
+    {
+      "provider_id": "fx", "route": "native_import", "source_format": "fx_sessions_tree", "source_schema": "fx-legacy-session-json-schema-v1-v2",
+      "producer_bound": {"kind": "unversioned", "generation": 1, "unknown_generations": "not-qualified"},
+      "status": "not-qualified", "reason": "no_server_field",
+      "detail": "Legacy schema-v1/v2 snapshots accepted by current fx v0.0.6 contain no authoritative MCP server alias; ctx does not infer one from tool names or configuration.",
+      "evidence": ["https://github.com/vercel-labs/fx/blob/79666393e5f613c85f2f0b4b65475f1addd55379/src/core/session/session_json.zig"]
+    },
+    {
+      "provider_id": "fx", "route": "native_import", "source_format": "fx_sessions_tree", "source_schema": "fx-transactional-event-log-schema-v3",
+      "producer_bound": {"kind": "versions", "versions": ["0.0.6"], "ranges": [], "source_commits": ["79666393e5f613c85f2f0b4b65475f1addd55379"], "unknown_generations": "not-qualified"},
+      "status": "not-qualified", "reason": "no_server_field",
+      "detail": "Current fx v0.0.6 schema-v3 durable call records contain no authoritative MCP server alias; ctx does not infer one from tool names or configuration.",
+      "evidence": ["https://github.com/vercel-labs/fx/blob/79666393e5f613c85f2f0b4b65475f1addd55379/src/core/session/session_codec.zig"]
     }
   ],
   "exact_checks": [
@@ -456,9 +446,7 @@
       "provider_id": "codex", "route": "native_import", "source_format": "codex_session_jsonl_tree", "source_schema": "codex-nativepath-jsonl-v0",
       "producer_bound": {"kind": "unversioned", "generation": 1, "unknown_generations": "not-qualified"},
       "implementation_source": "crates/ctx-history-provider-codex/src/codex/nativepath/source_backed.rs",
-      "parser_revision": "codex-nativepath-core-activity-v8-inherited-session-lineage",
       "suite_id": "ctx-history-provider-codex::native_unit",
-      "conformance_suite": "mcp_attribution_codex_provider_units",
       "tests": [
         {"id": "codex::nativepath::rows::tests::mcp_terminal_activity_preserves_exact_server_tool_and_linkage", "source": "crates/ctx-history-provider-codex/src/codex/nativepath/rows/tests.rs"},
         {"id": "codex::nativepath::rows::tests::duplicate_selectors_withhold_linkage_and_preserve_raw_fact_order", "source": "crates/ctx-history-provider-codex/src/codex/nativepath/rows/tests.rs"},
@@ -469,9 +457,7 @@
       "provider_id": "warp", "route": "native_import", "source_format": "warp_sqlite", "source_schema": "warp-agent-task-protobuf-v1",
       "producer_bound": {"kind": "unversioned", "generation": 1, "unknown_generations": "not-qualified"},
       "implementation_source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/source_backed.rs",
-      "parser_revision": "warp-source-backed-logical-v7-neutral-activity-agent-scope",
       "suite_id": "ctx-history-providers-sqlite-selected::native_unit",
-      "conformance_suite": "mcp_attribution_selected_sqlite_provider_units",
       "tests": [
         {"id": "providers::warp::nativepath::decode::tests::qualified_mcp_success_error_cancellation_and_nontext_results_link_exactly", "source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/nativepath/decode/tests.rs"},
         {"id": "providers::warp::nativepath::decode::tests::invalid_duplicate_orphan_and_ambiguous_mcp_relations_abstain", "source": "crates/ctx-history-providers-sqlite-selected/src/providers/warp/nativepath/decode/tests.rs"},
@@ -482,9 +468,7 @@
       "provider_id": "copilot_cli", "route": "native_import", "source_format": "copilot_cli_session_events_jsonl", "source_schema": "copilot-cli-direct-native-jsonl-v1",
       "producer_bound": {"kind": "unversioned", "generation": 1, "unknown_generations": "not-qualified"},
       "implementation_source": "crates/ctx-history-provider-native-jsonl/src/native_path/copilot.rs",
-      "parser_revision": "copilot-cli-direct-native-jsonl-v8-optional-activity-admission",
       "suite_id": "ctx-history-provider-native-jsonl::native_unit",
-      "conformance_suite": "mcp_attribution_native_jsonl_provider_units",
       "tests": [
         {"id": "native_path::source_backed::copilot_tests::invocation_preserves_exact_native_identity_and_arguments", "source": "crates/ctx-history-provider-native-jsonl/src/native_path/source_backed_copilot_tests.rs"},
         {"id": "native_path::source_backed::copilot_tests::absent_and_ambiguous_capture_states_are_explicit", "source": "crates/ctx-history-provider-native-jsonl/src/native_path/source_backed_copilot_tests.rs"},

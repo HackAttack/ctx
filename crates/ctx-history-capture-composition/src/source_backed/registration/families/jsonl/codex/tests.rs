@@ -18,6 +18,7 @@ fn codex_session_tree_registration_does_not_inventory_the_root() {
         catalog_support: ProviderCatalogSupport::None,
         status: ProviderSourceStatus::Available,
         unsupported_reason: None,
+        route_provenance: Default::default(),
     };
     let mut registry = SourceBackedProviderRegistry::new();
 
@@ -35,6 +36,7 @@ fn codex_session_tree_registration_does_not_inventory_the_root() {
                 catalog_support: ProviderCatalogSupport::None,
                 status: ProviderSourceStatus::Available,
                 unsupported_reason: None,
+                route_provenance: Default::default(),
             },
         ],
         SourceBackedRouteSelection::Automatic,

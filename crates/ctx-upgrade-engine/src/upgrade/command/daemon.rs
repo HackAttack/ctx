@@ -1,29 +1,69 @@
-//! Daemon-owned automatic upgrade state machine.
+//! Shared automatic upgrade state machine.
 
 use super::*;
 
 /// Downloaded and verified automatic-upgrade inputs held under the one
 /// installation lease. The daemon keeps serving while these are staged, then
 /// drains its services before handing the value to
-/// `finish_daemon_auto_upgrade`.
-pub struct PreparedDaemonUpgrade(PreparedDaemonUpgradeKind);
+/// `finish_automatic_upgrade`.
+pub struct PreparedAutomaticUpgrade(PreparedAutomaticUpgradeKind);
 
 struct PreparedProvisioningArtifacts {
     runtime: Option<DownloadedArtifact>,
     semantic: Vec<DownloadedArtifact>,
 }
 
-impl PreparedDaemonUpgrade {
+impl PreparedAutomaticUpgrade {
     pub fn attempt_id(&self) -> Option<&str> {
         match &self.0 {
-            PreparedDaemonUpgradeKind::Apply { attempt, .. } => Some(attempt.id()),
-            PreparedDaemonUpgradeKind::Recover { recovery, .. } => Some(&recovery.attempt_id),
+            PreparedAutomaticUpgradeKind::Apply { attempt, .. } => Some(attempt.id()),
+            PreparedAutomaticUpgradeKind::Recover { recovery, .. } => Some(&recovery.attempt_id),
         }
+    }
+
+    pub fn data_root(&self) -> &Path {
+        match &self.0 {
+            PreparedAutomaticUpgradeKind::Apply { data_root, .. } => data_root,
+            PreparedAutomaticUpgradeKind::Recover { recovery, .. } => &recovery.data_root,
+        }
+    }
+
+    pub fn install_path(&self) -> &Path {
+        match &self.0 {
+            PreparedAutomaticUpgradeKind::Apply { plan, .. } => &plan.install_path,
+            PreparedAutomaticUpgradeKind::Recover { recovery, .. } => &recovery.install_path,
+        }
+    }
+
+    pub fn abort(self, error: &anyhow::Error) -> Result<()> {
+        let (data_root, lock, attempt) = match self.0 {
+            PreparedAutomaticUpgradeKind::Apply {
+                data_root,
+                lock,
+                attempt,
+                ..
+            } => (data_root, lock, attempt),
+            PreparedAutomaticUpgradeKind::Recover {
+                recovery,
+                lock,
+                attempt,
+                ..
+            } => (recovery.data_root, lock, attempt),
+        };
+        let durable =
+            write_state_error_locked(&data_root, &lock, &attempt, "failed", &format!("{error:#}"))?;
+        drop(lock);
+        if !durable {
+            return Err(anyhow!(
+                "automatic upgrade attempt changed before abort could be recorded"
+            ));
+        }
+        Ok(())
     }
 }
 
 #[allow(clippy::large_enum_variant)]
-enum PreparedDaemonUpgradeKind {
+enum PreparedAutomaticUpgradeKind {
     Apply {
         data_root: PathBuf,
         interval: Duration,
@@ -39,18 +79,30 @@ enum PreparedDaemonUpgradeKind {
         interval: Duration,
         started: Instant,
         lock: UpgradeLock,
+        attempt: UpgradeAttempt,
     },
 }
 
-/// Called only by the ready enabled long-lived daemon. Foreground commands do
-/// not have access to this automatic scheduling entry point.
-pub(crate) fn prepare_daemon_auto_upgrade<D, P, O>(
+fn automatic_maintenance_allowed<S: AutomaticUpgradePolicySnapshot>(policy: &S) -> bool {
+    policy.daemon_maintenance_enabled() && policy.automatic_upgrade_enabled()
+}
+
+fn automatic_channel_is_current<S: AutomaticUpgradePolicySnapshot>(
+    policy: &S,
+    selected_channel: &str,
+) -> bool {
+    policy.channel() == selected_channel
+}
+
+/// Claim and stage one automatic attempt for the persistent daemon's
+/// installation-scoped scheduler.
+pub(crate) fn prepare_automatic_upgrade<D, P, O>(
     engine: &UpgradeEngine<'_, D>,
     policy_provider: &P,
     observer: &O,
     data_root: &Path,
     startup_policy: &P::Snapshot,
-) -> Result<Option<PreparedDaemonUpgrade>>
+) -> Result<Option<PreparedAutomaticUpgrade>>
 where
     D: DaemonUpgradePort + ?Sized,
     P: AutomaticUpgradePolicyProvider,
@@ -58,91 +110,121 @@ where
 {
     let started = Instant::now();
     let current = policy_provider.reload(data_root)?;
-    if !startup_policy.daemon_enabled()
-        || !current.daemon_enabled()
-        || !startup_policy.automatic_upgrade_enabled()
-        || !current.automatic_upgrade_enabled()
-    {
+    if !automatic_maintenance_allowed(startup_policy) || !automatic_maintenance_allowed(&current) {
         return Ok(None);
     }
-    if let Some(recovery) = pending_recovery(data_root, engine.semantic_layout)? {
-        if let Some(terminal) = recovery.terminal.as_ref() {
-            let Some(lock) =
-                UpgradeLock::try_acquire_terminal_recovery(&recovery, engine.semantic_layout)?
+    let (attempt, lock) = loop {
+        if let Some(recovery) = pending_recovery(data_root, engine.semantic_layout)? {
+            if let Some(terminal) = recovery.terminal.as_ref() {
+                let Some(lock) =
+                    UpgradeLock::try_acquire_terminal_recovery(&recovery, engine.semantic_layout)?
+                else {
+                    return Ok(None);
+                };
+                let current = policy_provider.reload(data_root)?;
+                let (applied, detail) = match terminal {
+                    TerminalRecovery::Applied { warning } => (true, warning.as_deref()),
+                    TerminalRecovery::Failed { error } => (false, Some(error.as_str())),
+                };
+                let automatic = reconcile_replacement_terminal_locked(
+                    &lock,
+                    &recovery.attempt_id,
+                    applied,
+                    detail,
+                    current.interval(),
+                )?;
+                remove_terminal_recovery(&recovery, lock.installation(), engine.semantic_layout)?;
+                drop(lock);
+                if automatic {
+                    send_daemon_upgrade_terminal(
+                        observer,
+                        data_root,
+                        &current,
+                        None,
+                        &recovery.attempt_id,
+                        if applied {
+                            UpgradeTerminalStatus::Applied
+                        } else {
+                            UpgradeTerminalStatus::Failed
+                        },
+                        applied,
+                        if applied {
+                            None
+                        } else {
+                            Some(UpgradeFailureKind::ApplyFailed)
+                        },
+                        started.elapsed(),
+                    );
+                }
+                return Ok(None);
+            }
+            let Some(lock) = UpgradeLock::try_acquire_recovery(&recovery, engine.semantic_layout)?
             else {
                 return Ok(None);
             };
+            let channel = automatic_recovery_channel_locked(&lock, &recovery.attempt_id)?;
             let current = policy_provider.reload(data_root)?;
-            let (applied, detail) = match terminal {
-                TerminalRecovery::Applied { warning } => (true, warning.as_deref()),
-                TerminalRecovery::Failed { error } => (false, Some(error.as_str())),
-            };
-            let automatic = reconcile_replacement_terminal_locked(
-                &lock,
-                &recovery.attempt_id,
-                applied,
-                detail,
-                current.interval(),
-            )?;
-            remove_terminal_recovery(&recovery, lock.installation(), engine.semantic_layout)?;
-            drop(lock);
-            if automatic {
-                send_daemon_upgrade_terminal(
-                    observer,
-                    data_root,
-                    &current,
-                    None,
-                    &recovery.attempt_id,
-                    if applied {
-                        UpgradeTerminalStatus::Applied
-                    } else {
-                        UpgradeTerminalStatus::Failed
-                    },
-                    applied,
-                    if applied {
-                        None
-                    } else {
-                        Some(UpgradeFailureKind::ApplyFailed)
-                    },
-                    started.elapsed(),
-                );
+            if !automatic_maintenance_allowed(&current)
+                || !automatic_channel_is_current(&current, &channel)
+            {
+                return Ok(None);
             }
+            let attempt = begin_recovery_attempt_locked(&lock, &recovery.attempt_id, "automatic")?;
+            return Ok(Some(PreparedAutomaticUpgrade(
+                PreparedAutomaticUpgradeKind::Recover {
+                    recovery,
+                    interval: current.interval(),
+                    started,
+                    lock,
+                    attempt,
+                },
+            )));
+        }
+        // Recovery is always discovered first. Healthy installations then use
+        // the bounded, lock-free cadence hint so ordinary daemon wakes do not
+        // hash the executable when no check is due.
+        if !automatic_upgrade_check_due(current.interval())? {
             return Ok(None);
         }
-        let Some(lock) = UpgradeLock::try_acquire_recovery(&recovery, engine.semantic_layout)?
-        else {
+        let lock = match try_acquire_automatic_upgrade(current.interval())? {
+            AutomaticUpgradeLease::Acquired(lock) => lock,
+            AutomaticUpgradeLease::NotDue | AutomaticUpgradeLease::Contended => return Ok(None),
+        };
+        // Close the probe/lock race before writing a new scheduler attempt. A
+        // transaction that appeared while the lock was contended must be
+        // recovered, and a brand-new attempt requires full hosted authority
+        // while that same installation lock is held.
+        if pending_recovery(data_root, engine.semantic_layout)?.is_some() {
+            drop(lock);
+            continue;
+        }
+        if !matches!(
+            managed_install_marker_for_current_exe(),
+            Ok(ManagedInstallMarker::Valid(_))
+        ) {
+            return Ok(None);
+        }
+        let Some(attempt) = begin_automatic_attempt_locked(&lock, current.interval())? else {
             return Ok(None);
         };
-        let current = policy_provider.reload(data_root)?;
-        if !current.daemon_enabled() || !current.automatic_upgrade_enabled() {
-            return Ok(None);
-        }
-        begin_recovery_attempt_locked(&lock, &recovery.attempt_id, "daemon")?;
-        return Ok(Some(PreparedDaemonUpgrade(
-            PreparedDaemonUpgradeKind::Recover {
-                recovery,
-                interval: current.interval(),
-                started,
-                lock,
-            },
-        )));
-    }
-    let (attempt, lock) = match claim_daemon_auto_upgrade(current.interval())? {
-        AutoUpgradeClaim::Claimed { attempt, lock } => (attempt, lock),
-        AutoUpgradeClaim::NotDue | AutoUpgradeClaim::Contended => return Ok(None),
+        break (attempt, lock);
     };
     let mut attempt = Some(attempt);
     let mut lock = Some(lock);
-    let prepared = (|| -> Result<Option<PreparedDaemonUpgrade>> {
+    let prepared = (|| -> Result<Option<PreparedAutomaticUpgrade>> {
         let policy = UpgradePolicy {
             channel: current.channel(),
             interval: current.interval(),
             semantic_enabled: current.semantic_enabled(),
         };
-        let plan = build_upgrade_plan(engine, lock.as_ref().unwrap(), policy, None, true)?;
-        let semantic_repair_required =
-            semantic_install_required(engine.semantic_layout, &plan, data_root)?;
-        if !plan.update_available && !semantic_repair_required {
+        let plan = build_upgrade_plan(engine, policy, None, true)?;
+        let repairs = classify_repair_requirements(
+            engine.semantic_layout,
+            &plan,
+            data_root,
+            policy.semantic_enabled,
+        )?;
+        if !plan.update_available && !repairs.any() {
             write_state_checked_locked(
                 data_root,
                 lock.as_ref().unwrap(),
@@ -197,7 +279,9 @@ where
         } else {
             None
         };
-        let runtime_artifact = if plan.update_available && plan.semantic_provisioning.is_none() {
+        let runtime_artifact = if (plan.update_available || repairs.legacy_runtime)
+            && plan.semantic_provisioning.is_none()
+        {
             match (
                 plan.metadata.onnxruntime.as_ref(),
                 plan.onnxruntime_artifact_url(),
@@ -219,7 +303,7 @@ where
             None
         };
         let mut semantic_artifacts = Vec::new();
-        if semantic_repair_required {
+        if repairs.catalog {
             let provisioning = plan
                 .semantic_provisioning
                 .as_ref()
@@ -247,8 +331,8 @@ where
             "staged",
             current.interval(),
         )?;
-        Ok(Some(PreparedDaemonUpgrade(
-            PreparedDaemonUpgradeKind::Apply {
+        Ok(Some(PreparedAutomaticUpgrade(
+            PreparedAutomaticUpgradeKind::Apply {
                 data_root: data_root.to_path_buf(),
                 interval: current.interval(),
                 started,
@@ -295,13 +379,13 @@ where
     }
 }
 
-/// Completes a staged daemon-owned attempt after the daemon has stopped
-/// accepting work and released its per-root lifecycle lock.
-pub(crate) fn finish_daemon_auto_upgrade<D, P, O>(
+/// Completes a staged automatic attempt after daemon lifecycle handoff has
+/// quiesced every process using this installation.
+pub(crate) fn finish_automatic_upgrade<D, P, O>(
     engine: &UpgradeEngine<'_, D>,
     policy_provider: &P,
     observer: &O,
-    prepared: PreparedDaemonUpgrade,
+    prepared: PreparedAutomaticUpgrade,
     handoff: Option<D::Lease>,
 ) -> Result<()>
 where
@@ -309,14 +393,20 @@ where
     P: AutomaticUpgradePolicyProvider,
     O: UpgradeObserver<P::Snapshot>,
 {
-    let handoff =
-        handoff.ok_or_else(|| anyhow!("automatic upgrade has no daemon lifecycle handoff"))?;
+    let handoff = match handoff {
+        Some(handoff) => handoff,
+        None => {
+            let error = anyhow!("automatic upgrade has no daemon lifecycle handoff");
+            let abort_error = prepared.abort(&error).err();
+            return Err(with_automatic_cleanup_errors(error, abort_error, None));
+        }
+    };
     let restart = handoff
         .replacement_restart()
         .map(|restart| (restart.trigger, restart.loop_interval_seconds));
     let (data_root, interval, started, lock, attempt, plan, mut artifact, mut provisioning) =
         match prepared.0 {
-            PreparedDaemonUpgradeKind::Apply {
+            PreparedAutomaticUpgradeKind::Apply {
                 data_root,
                 interval,
                 started,
@@ -335,44 +425,116 @@ where
                 artifact,
                 provisioning,
             ),
-            PreparedDaemonUpgradeKind::Recover {
+            PreparedAutomaticUpgradeKind::Recover {
                 recovery,
                 interval,
                 started,
                 lock,
+                attempt,
             } => {
-                let current = policy_provider.reload(&recovery.data_root)?;
-                if !current.daemon_enabled() || !current.automatic_upgrade_enabled() {
-                    reconcile_replacement_terminal_locked(
+                let channel = match automatic_recovery_channel_locked(&lock, &recovery.attempt_id) {
+                    Ok(channel) => channel,
+                    Err(error) => {
+                        return fail_automatic_before_apply(
+                            &recovery.data_root,
+                            lock,
+                            attempt,
+                            handoff,
+                            &recovery.install_path,
+                            error,
+                        );
+                    }
+                };
+                let current = match policy_provider.reload(&recovery.data_root) {
+                    Ok(current) => current,
+                    Err(error) => {
+                        return fail_automatic_before_apply(
+                            &recovery.data_root,
+                            lock,
+                            attempt,
+                            handoff,
+                            &recovery.install_path,
+                            error,
+                        );
+                    }
+                };
+                if !automatic_maintenance_allowed(&current)
+                    || !automatic_channel_is_current(&current, &channel)
+                {
+                    let detail = if automatic_maintenance_allowed(&current) {
+                        "automatic interrupted-install recovery channel changed"
+                    } else {
+                        "automatic interrupted-install recovery was disabled"
+                    };
+                    if let Err(error) = reconcile_replacement_terminal_locked(
                         &lock,
                         &recovery.attempt_id,
                         false,
-                        Some("automatic interrupted-install recovery was disabled"),
+                        Some(detail),
                         interval,
-                    )?;
+                    ) {
+                        return fail_automatic_before_apply(
+                            &recovery.data_root,
+                            lock,
+                            attempt,
+                            handoff,
+                            &recovery.install_path,
+                            error,
+                        );
+                    }
                     drop(lock);
-                    return handoff.resume_with(&current_install_path()?);
+                    return handoff.resume_with(&recovery.install_path);
                 }
-                return match recover_interrupted_install(
+                let recovery_result = match recover_interrupted_install(
                     engine.process,
                     &recovery,
                     lock.installation(),
                     engine.semantic_layout,
-                )? {
-                    InstallRecovery::None => Err(anyhow!(
-                        "interrupted ctx installation recovery disappeared while owned"
-                    )),
+                ) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        return fail_automatic_before_apply(
+                            &recovery.data_root,
+                            lock,
+                            attempt,
+                            handoff,
+                            &recovery.install_path,
+                            error,
+                        );
+                    }
+                };
+                return match recovery_result {
+                    InstallRecovery::None => fail_automatic_before_apply(
+                        &recovery.data_root,
+                        lock,
+                        attempt,
+                        handoff,
+                        &recovery.install_path,
+                        anyhow!("interrupted ctx installation recovery disappeared while owned"),
+                    ),
                     InstallRecovery::Recovered { committed } => {
                         let detail = (!committed).then_some(CURRENT_FORMAT_ROLLBACK_DETAIL);
-                        let automatic = reconcile_replacement_terminal_locked(
+                        let automatic = match reconcile_replacement_terminal_locked(
                             &lock,
                             &recovery.attempt_id,
                             committed,
                             detail,
                             interval,
-                        )?;
+                        ) {
+                            Ok(automatic) => automatic,
+                            Err(error) => {
+                                return fail_automatic_before_apply(
+                                    &recovery.data_root,
+                                    lock,
+                                    attempt,
+                                    handoff,
+                                    &recovery.install_path,
+                                    error,
+                                );
+                            }
+                        };
                         drop(lock);
-                        let resumed = handoff.resume_with(&current_install_path()?);
+                        let resumed = handoff.resume_with(&recovery.install_path);
                         if automatic {
                             send_daemon_upgrade_terminal(
                                 observer,
@@ -398,13 +560,25 @@ where
                     }
                     #[cfg(unix)]
                     InstallRecovery::ReexecCurrentFormat(reexec) => {
-                        let automatic = reconcile_replacement_terminal_locked(
+                        let automatic = match reconcile_replacement_terminal_locked(
                             &lock,
                             &recovery.attempt_id,
                             false,
                             Some(CURRENT_FORMAT_ROLLBACK_DETAIL),
                             interval,
-                        )?;
+                        ) {
+                            Ok(automatic) => automatic,
+                            Err(error) => {
+                                return fail_automatic_before_apply(
+                                    &recovery.data_root,
+                                    lock,
+                                    attempt,
+                                    handoff,
+                                    &recovery.install_path,
+                                    error,
+                                );
+                            }
+                        };
                         if automatic {
                             send_daemon_upgrade_terminal(
                                 observer,
@@ -428,9 +602,34 @@ where
                 };
             }
         };
-    let current = policy_provider.reload(&data_root)?;
-    if !current.daemon_enabled() || !current.automatic_upgrade_enabled() {
-        write_state_checked_locked(&data_root, &lock, &attempt, &plan, "disabled", interval)?;
+    let current = match policy_provider.reload(&data_root) {
+        Ok(current) => current,
+        Err(error) => {
+            return fail_automatic_before_apply(
+                &data_root,
+                lock,
+                attempt,
+                handoff,
+                &plan.install_path,
+                error,
+            );
+        }
+    };
+    if !automatic_maintenance_allowed(&current)
+        || !automatic_channel_is_current(&current, plan.channel())
+    {
+        if let Err(error) =
+            write_state_checked_locked(&data_root, &lock, &attempt, &plan, "disabled", interval)
+        {
+            return fail_automatic_before_apply(
+                &data_root,
+                lock,
+                attempt,
+                handoff,
+                &plan.install_path,
+                error,
+            );
+        }
         drop(lock);
         let restart = handoff.resume_with(&plan.install_path);
         send_daemon_upgrade_terminal(
@@ -446,7 +645,16 @@ where
         );
         return restart;
     }
-    write_state_phase_locked(&lock, &attempt, "quiescing")?;
+    if let Err(error) = write_state_phase_locked(&lock, &attempt, "quiescing") {
+        return fail_automatic_before_apply(
+            &data_root,
+            lock,
+            attempt,
+            handoff,
+            &plan.install_path,
+            error,
+        );
+    }
     let mut record_applying = || {
         write_state_phase_locked(&lock, &attempt, "applying")?;
         Ok(())
@@ -482,7 +690,18 @@ where
             if let Some(warning) = result.cleanup_warning() {
                 warnings.push(warning.to_owned());
             }
-            write_state_checked_locked(&data_root, &lock, &attempt, &plan, "applied", interval)?;
+            if let Err(error) =
+                write_state_checked_locked(&data_root, &lock, &attempt, &plan, "applied", interval)
+            {
+                return fail_automatic_before_apply(
+                    &data_root,
+                    lock,
+                    attempt,
+                    handoff,
+                    &plan.install_path,
+                    error,
+                );
+            }
             drop(lock);
             let restart = handoff.resume_with(&plan.install_path);
             send_daemon_upgrade_terminal(
@@ -531,6 +750,55 @@ where
                 None => Ok(()),
             }
         }
+    }
+}
+
+fn fail_automatic_before_apply<L: DaemonUpgradeLease>(
+    data_root: &Path,
+    lock: UpgradeLock,
+    attempt: UpgradeAttempt,
+    handoff: L,
+    install_path: &Path,
+    error: anyhow::Error,
+) -> Result<()> {
+    let state_error =
+        match write_state_error_locked(data_root, &lock, &attempt, "failed", &format!("{error:#}"))
+        {
+            Ok(true) => None,
+            Ok(false) => Some(anyhow!(
+                "automatic upgrade attempt changed before failure could be recorded"
+            )),
+            Err(error) => Some(error),
+        };
+    drop(lock);
+    let restart_error = handoff.resume_with(install_path).err();
+    Err(with_automatic_cleanup_errors(
+        error,
+        state_error,
+        restart_error,
+    ))
+}
+
+fn with_automatic_cleanup_errors(
+    error: anyhow::Error,
+    state_error: Option<anyhow::Error>,
+    restart_error: Option<anyhow::Error>,
+) -> anyhow::Error {
+    let mut cleanup = Vec::new();
+    if let Some(state_error) = state_error {
+        cleanup.push(format!(
+            "failed to terminalize automatic upgrade state: {state_error:#}"
+        ));
+    }
+    if let Some(restart_error) = restart_error {
+        cleanup.push(format!(
+            "failed to restart daemon after automatic upgrade abort: {restart_error:#}"
+        ));
+    }
+    if cleanup.is_empty() {
+        error
+    } else {
+        error.context(cleanup.join("; "))
     }
 }
 

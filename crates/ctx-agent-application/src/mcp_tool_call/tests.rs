@@ -61,12 +61,13 @@ impl SearchReadinessPort for Ports {
     fn search_ready(
         &self,
         request: ToolSearchRequest,
-    ) -> Result<SearchReadOutcome, ToolBackendError> {
+    ) -> Result<SearchReadOutcome, ctx_agent_integrations::tool_backend::ToolExecutionError> {
         self.called("search");
         Ok(SearchReadOutcome {
             structured: json!({"query": request.query}),
             compact: json!({"compact": "search"}),
             usage: ToolSearchUsageFacts::complete(11, 29),
+            execution: Default::default(),
         })
     }
 }

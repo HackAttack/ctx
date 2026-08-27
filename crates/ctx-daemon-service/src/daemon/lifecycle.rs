@@ -108,8 +108,21 @@ impl FiniteCoreWorkerExit {
 pub(super) fn daemon_should_schedule_auto_upgrade(
     daemon_enabled: bool,
     daemon_mode: DaemonMode,
+    automatic_upgrade_enabled: bool,
 ) -> bool {
-    daemon_enabled && daemon_mode == DaemonMode::Full
+    daemon_enabled && daemon_mode == DaemonMode::Full && automatic_upgrade_enabled
+}
+
+pub(super) fn daemon_automatic_recovery_allowed(
+    config: &AppConfig,
+    finite_core_worker: bool,
+) -> bool {
+    !finite_core_worker
+        && daemon_should_schedule_auto_upgrade(
+            config.daemon.enabled,
+            config.daemon.mode,
+            config.automatic_upgrade_enabled,
+        )
 }
 
 #[cfg(any(test, feature = "test-support"))]

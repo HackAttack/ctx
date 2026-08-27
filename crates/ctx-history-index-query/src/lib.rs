@@ -18,15 +18,17 @@ pub use reader::{
 };
 pub(crate) use records::stored_event_record;
 use records::{
-    core_event_fast_preflight, stored_core_event_record, stored_core_event_record_with_size,
-    stored_core_event_record_with_source_json, EventAddressCandidate, SessionEventAddressCandidate,
+    core_event_fast_preflight, core_event_identity_fast_preflight, stored_core_event_record,
+    stored_core_event_record_with_size, stored_core_event_record_with_source_json,
+    EventAddressCandidate, SessionEventAddressCandidate,
 };
+use records::{ranked_event_ref_at_address, ranked_event_ref_at_address_with_order};
 
 #[cfg(any(test, feature = "test-support"))]
 use std::cell::{Cell, RefCell};
 use std::{
     cmp::{Ordering, Reverse},
-    collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet},
+    collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap},
     ops::Bound,
 };
 
@@ -40,8 +42,8 @@ use tantivy::{
     collector::{Collector, Count, DocSetCollector, SegmentCollector, TopDocs},
     postings::SegmentPostings,
     query::{
-        AllQuery, BooleanQuery, ConstScoreQuery, EmptyQuery, EnableScoring, Explanation, Occur,
-        Query, RangeQuery, RegexQuery, Scorer, TermQuery, TermSetQuery, Weight,
+        AllQuery, BooleanQuery, ConstScoreQuery, EmptyQuery, Occur, Query, RangeQuery, RegexQuery,
+        TermQuery, TermSetQuery,
     },
     schema::{Field, IndexRecordOption},
     termdict::{TermMerger, TermStreamer},
@@ -60,7 +62,6 @@ use ctx_history_index_format::{
 };
 
 const ID_PREFIX_MATCH_LIMIT: usize = 2;
-use ctx_history_index_format::BODY_ANALYZER;
 const EVENT_ID_HIGH_FIELD: &str = "event_id_high";
 const EVENT_ID_LOW_FIELD: &str = "event_id_low";
 const SESSION_ID_HIGH_FIELD: &str = "session_id_high";
@@ -104,6 +105,18 @@ thread_local! {
     static SESSION_EVENT_ORDER_VISITED_SEQUENCES: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static LEXICAL_QUERY_CONSTRUCTIONS: Cell<usize> = const { Cell::new(0) };
     static LEXICAL_QUERY_EXECUTIONS: Cell<usize> = const { Cell::new(0) };
+    static LEXICAL_CANDIDATE_MATERIALIZATION_FAILURE_AFTER: Cell<Option<usize>> = const { Cell::new(None) };
+    static SESSION_GROUPING_AUTHORITY_QUERIES: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_session_grouping_authority_queries() {
+    SESSION_GROUPING_AUTHORITY_QUERIES.set(0);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn session_grouping_authority_queries() -> usize {
+    SESSION_GROUPING_AUTHORITY_QUERIES.get()
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -219,8 +232,40 @@ pub fn lexical_query_executions() -> usize {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn record_lexical_query_construction() {
-    LEXICAL_QUERY_CONSTRUCTIONS.set(LEXICAL_QUERY_CONSTRUCTIONS.get().saturating_add(1));
+#[doc(hidden)]
+pub fn fail_lexical_candidate_materialization_after(records: usize) {
+    LEXICAL_CANDIDATE_MATERIALIZATION_FAILURE_AFTER.set(Some(records));
+}
+
+#[cfg(any(test, feature = "test-support"))]
+struct LexicalCandidateMaterializationFailureReset;
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for LexicalCandidateMaterializationFailureReset {
+    fn drop(&mut self) {
+        LEXICAL_CANDIDATE_MATERIALIZATION_FAILURE_AFTER.set(None);
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn lexical_candidate_materialization_failure_reset() -> LexicalCandidateMaterializationFailureReset
+{
+    LexicalCandidateMaterializationFailureReset
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn lexical_candidate_materialization_should_fail() -> bool {
+    LEXICAL_CANDIDATE_MATERIALIZATION_FAILURE_AFTER.with(|remaining| match remaining.get() {
+        Some(0) => {
+            remaining.set(None);
+            true
+        }
+        Some(count) => {
+            remaining.set(Some(count - 1));
+            false
+        }
+        None => false,
+    })
 }
 
 #[cfg(any(test, feature = "test-support"))]

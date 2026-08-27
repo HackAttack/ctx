@@ -23,11 +23,7 @@ where
     R: SearchReadinessPort,
     S: SourceCatalogPort,
 {
-    let invocation_usage = operation.invocation_usage();
-    execute(operation, history, search, sources).map_err(|mut failure| {
-        failure.usage.merge(invocation_usage);
-        failure
-    })
+    execute(operation, history, search, sources)
 }
 
 fn execute<H, R, S>(
@@ -47,10 +43,7 @@ where
             .source_catalog()
             .map(source_catalog_outcome)
             .map_err(Into::into),
-        ToolOperation::Search(request) => search
-            .search_ready(request)
-            .map(search_outcome)
-            .map_err(Into::into),
+        ToolOperation::Search(request) => search.search_ready(request).map(search_outcome),
         ToolOperation::ShowSession(request) => history
             .show_session(request)
             .map(history_outcome)
@@ -83,6 +76,7 @@ fn search_outcome(result: SearchReadOutcome) -> ToolOutcome {
         compact: Some(result.compact),
         usage: ToolUsageFacts {
             search: Some(result.usage),
+            search_execution: Some(result.execution),
         },
     }
 }

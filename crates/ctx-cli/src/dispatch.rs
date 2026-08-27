@@ -19,6 +19,7 @@ use crate::{
         list::run_list,
         locate::run_locate,
         search::run_search,
+        semantic::run_semantic,
         setup::run_setup,
         show::{run_show, ShowArgs, ShowTarget},
         sources::run_sources,
@@ -44,7 +45,9 @@ use crate::{
 mod finalization;
 mod parse;
 
-use finalization::{complete_local_usage, flush_cli_output_then};
+use finalization::{
+    complete_local_usage, flush_cli_output, record_search_final_delivery, send_online_after_output,
+};
 use parse::parse_cli_from;
 
 #[derive(Debug, thiserror::Error)]
@@ -264,6 +267,7 @@ pub(crate) fn run_cli() -> Result<()> {
         local_usage::CliUsage::excluded()
     };
 
+    let search_operation = matches!(&cli.command, CommandRoot::Search(_));
     let result = match cli.command {
         CommandRoot::Pro | CommandRoot::Blame | CommandRoot::Referral => Err(anyhow::anyhow!(
             "companion-owned command bypassed native argv routing"
@@ -280,6 +284,9 @@ pub(crate) fn run_cli() -> Result<()> {
             &mut config,
             &mut ui,
         ),
+        CommandRoot::Semantic(args) => {
+            run_semantic(args, data_root.clone(), quiet, &mut config, &mut ui)
+        }
         CommandRoot::Status(args) => run_status(
             args,
             &data_root,
@@ -373,6 +380,8 @@ pub(crate) fn run_cli() -> Result<()> {
                 daemon_enabled: config.automatic_indexing_enabled(),
                 semantic_search_enabled: config.semantic_search_enabled(),
                 local_usage_enabled: config.local_usage.enabled,
+                automatic_provider_discovery: config.automatic_source_discovery_enabled(),
+                provider_roots: config.provider_root_definitions(),
             },
             &mut local_usage_draft,
             &mut ui,
@@ -423,52 +432,39 @@ pub(crate) fn run_cli() -> Result<()> {
             &mut ui,
         ),
     };
-    let rendered_error = if let Err(error) = &result {
-        if error.is::<RenderedJsonError>() || error.is::<RenderedCliError>() {
-            Some(RenderedCliError.into())
-        } else if json_output {
-            if let Some(authority_error) = error
-                .downcast_ref::<ctx_history_refresh::GenerationQueryAuthorityError>()
-                .filter(|_| query_authority_error_json)
-            {
-                eprintln!(
-                    "{}",
-                    serde_json::to_string(
-                        &crate::commands::source_index::generation_query_authority_error_json(
-                            authority_error,
-                        )
-                    )?
-                );
-                Some(RenderedJsonError.into())
-            } else if let Some(error) =
-                error.downcast_ref::<presentation_limit::PresentationOutputLimitError>()
-            {
-                eprintln!(
-                    "{}",
-                    serde_json::to_string(
-                        &presentation_limit::presentation_output_limit_error_json(error)
-                    )?
-                );
-                Some(RenderedJsonError.into())
-            } else if let Some(error) = error.downcast_ref::<semantic::SemanticNotReady>() {
-                eprintln!("{}", serde_json::to_string(&error.structured())?);
-                Some(RenderedJsonError.into())
-            } else {
-                eprintln!("Error: {error:?}");
-                Some(RenderedCliError.into())
-            }
-        } else {
-            render_generic_command_error(error, machine_output, &mut ui)?;
-            Some(RenderedCliError.into())
-        }
-    } else {
-        None
+    let output_started = Instant::now();
+    let (rendered_error, search_error_render_failure) = match render_command_result_error(
+        &result,
+        json_output,
+        query_authority_error_json,
+        machine_output,
+        search_operation,
+        &mut ui,
+    ) {
+        Ok(rendered_error) => (rendered_error, None),
+        Err(error) if search_operation => (None, Some(error)),
+        Err(error) => return Err(error),
     };
-    ui.flush().context("flush structured terminal output")?;
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
-    let delivery_result = flush_cli_output_then(&mut stdout, &mut stderr, || {
-        let duration = started.elapsed();
+    let delivery_result = if search_operation {
+        ui.flush()
+            .context("flush structured terminal output")
+            .and_then(|()| flush_cli_output(&mut stdout, &mut stderr).map_err(Into::into))
+    } else {
+        // Preserve the released non-Search ordering: buffered UI failure
+        // returns here; final process-stream failure is returned after the
+        // analytics and the daemon post-command hook below.
+        ui.flush().context("flush structured terminal output")?;
+        flush_cli_output(&mut stdout, &mut stderr).map_err(Into::into)
+    };
+    let output_duration = output_started.elapsed();
+    let duration = started.elapsed();
+    let output_result = delivery_result.and_then(|()| match search_error_render_failure {
+        Some(error) => Err(error),
+        None => Ok(()),
+    });
+    if output_result.is_ok() {
         local_usage::record_best_effort(&local_usage_authority, &usage_control, || {
             complete_local_usage(
                 local_usage_draft,
@@ -477,30 +473,107 @@ pub(crate) fn run_cli() -> Result<()> {
                 output_measurement.total_bytes(),
             )
         });
-        duration
-    });
+    }
     drop(output_measurement);
-    let duration = delivery_result
-        .as_ref()
-        .copied()
-        .unwrap_or_else(|_| started.elapsed());
+    let search_output_served = search_operation.then(|| {
+        record_search_final_delivery(
+            analytics_draft
+                .as_mut()
+                .expect("search has a telemetry draft")
+                .search_mut(),
+            output_result.is_ok(),
+            output_duration,
+        )
+    });
     let mut events = provider_refreshes.finish();
     if let Some(draft) = analytics_draft {
         if draft.should_emit() {
-            events.push(draft.finish(result.is_ok(), duration));
+            events.push(draft.finish(
+                result.is_ok() && search_output_served.unwrap_or(true),
+                duration,
+            ));
         }
     }
-    analytics::send_batch(&data_root, &config, &events);
+    let output_result = send_online_after_output(output_result, || {
+        analytics::send_batch(&data_root, &config, &events);
+    });
     if result.is_ok() {
         if let Some(trigger) = daemon_autostart_trigger {
             semantic::maybe_autostart_daemon(&data_root, &config, trigger);
         }
     }
-    delivery_result?;
+    output_result?;
     if let Some(error) = rendered_error {
         return Err(error);
     }
     result
+}
+
+fn render_command_result_error(
+    result: &Result<()>,
+    json_output: bool,
+    query_authority_error_json: bool,
+    machine_output: bool,
+    search_operation: bool,
+    ui: &mut Ui,
+) -> Result<Option<anyhow::Error>> {
+    let rendered_error = if let Err(error) = result {
+        if error.is::<RenderedJsonError>() || error.is::<RenderedCliError>() {
+            Some(RenderedCliError.into())
+        } else if json_output {
+            if let Some(authority_error) = error
+                .downcast_ref::<ctx_history_refresh::GenerationQueryAuthorityError>()
+                .filter(|_| query_authority_error_json)
+            {
+                write_machine_error(
+                    search_operation,
+                    ui,
+                    &serde_json::to_string(
+                        &crate::commands::source_index::generation_query_authority_error_json(
+                            authority_error,
+                        ),
+                    )?,
+                )?;
+                Some(RenderedJsonError.into())
+            } else if let Some(error) =
+                error.downcast_ref::<presentation_limit::PresentationOutputLimitError>()
+            {
+                write_machine_error(
+                    search_operation,
+                    ui,
+                    &serde_json::to_string(
+                        &presentation_limit::presentation_output_limit_error_json(error),
+                    )?,
+                )?;
+                Some(RenderedJsonError.into())
+            } else if let Some(error) = error.downcast_ref::<semantic::SemanticNotReady>() {
+                write_machine_error(
+                    search_operation,
+                    ui,
+                    &serde_json::to_string(&error.structured())?,
+                )?;
+                Some(RenderedJsonError.into())
+            } else {
+                write_machine_error(search_operation, ui, &format!("Error: {error:?}"))?;
+                Some(RenderedCliError.into())
+            }
+        } else {
+            render_generic_command_error(error, machine_output, ui)?;
+            Some(RenderedCliError.into())
+        }
+    } else {
+        None
+    };
+    Ok(rendered_error)
+}
+
+fn write_machine_error(search_operation: bool, ui: &mut Ui, message: &str) -> Result<()> {
+    if search_operation {
+        writeln!(ui.stderr_writer(), "{message}")?;
+    } else {
+        eprintln!("{message}");
+    }
+    Ok(())
 }
 
 fn render_generic_command_error(
@@ -577,6 +650,7 @@ fn command_json_output(command: &CommandRoot) -> bool {
     match command {
         CommandRoot::Pro | CommandRoot::Blame | CommandRoot::Referral => false,
         CommandRoot::Setup(args) => args.format.is_json(),
+        CommandRoot::Semantic(args) => args.json_output(),
         CommandRoot::Status(args) => args.format.is_json(),
         CommandRoot::Stats(args) => args.format.is_json(),
         CommandRoot::Index(args) => args.json_output(),
@@ -693,6 +767,17 @@ pub(crate) fn command_operation_descriptor(command: &CommandRoot) -> OperationDe
                 args.no_daemon,
             ),
         }),
+        CommandRoot::Semantic(args) => match &args.command {
+            ctx_cli_presentation::commands::SemanticCommand::Enable(_) => {
+                CliOperation::SemanticEnable
+            }
+            ctx_cli_presentation::commands::SemanticCommand::Status(_) => {
+                CliOperation::SemanticStatus
+            }
+            ctx_cli_presentation::commands::SemanticCommand::Disable(_) => {
+                CliOperation::SemanticDisable
+            }
+        },
         CommandRoot::Status(_) => CliOperation::Status(StatusTelemetry::default()),
         CommandRoot::Stats(_) => CliOperation::Stats,
         CommandRoot::Index(_) => CliOperation::Index(IndexTelemetry::default()),
@@ -784,6 +869,9 @@ pub(crate) fn command_operation_descriptor(command: &CommandRoot) -> OperationDe
             citation_count: None,
             zero_result: None,
             render_duration: None,
+            output_duration: None,
+            output_served: None,
+            health: None,
         }),
         CommandRoot::Docs(_) => CliOperation::Docs(DocsTelemetry::default()),
         CommandRoot::Integrations(_) => CliOperation::Integrations(IntegrationTelemetry::default()),

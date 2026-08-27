@@ -1,3 +1,4 @@
+use super::super::JsonlFamilyProjectorPreflightError;
 use super::*;
 
 #[cfg(test)]
@@ -76,6 +77,9 @@ pub(in super::super) fn prepare_leaf_with_resources<R: JsonlFamilyRuntime>(
         ));
     }
     let previous = base.and_then(|base| decode_checkpoint(adapter, &leaf, base).ok());
+    let exact_terminal_binding_matches = previous
+        .as_ref()
+        .is_some_and(|checkpoint| checkpoint.exact_terminal_binding_matches(&leaf));
     // A nonterminal checkpoint still certifies every complete record before
     // its unfinished tail. Reuse it for an exact no-op, or let append-capable
     // adapters resume at that complete frontier so the unfinished bytes are
@@ -101,6 +105,15 @@ pub(in super::super) fn prepare_leaf_with_resources<R: JsonlFamilyRuntime>(
         )
     };
     let mut reader = open_reader(previous_physical)?;
+
+    // Continuation compatibility deliberately permits a commit sidecar to
+    // advance while the event file grows (or while an already-written tail
+    // becomes committed). It must not authorize the physical unchanged
+    // fast path: a same-EOF control-file rewrite still needs provider replay
+    // so semantic fields such as terminal sequence and event id are checked.
+    if reader.source_change() == JsonlSourceChange::Unchanged && !exact_terminal_binding_matches {
+        reader = open_reader(None)?;
+    }
 
     if reader.source_change() == JsonlSourceChange::Unchanged {
         let base = base.ok_or_else(|| {
@@ -276,22 +289,47 @@ pub(in super::super) fn prepare_leaf_with_resources<R: JsonlFamilyRuntime>(
         base.is_some().then(|| base_event_lookup.clone()),
         projection_mode,
     )?;
+    let mut logical_source_quarantine = None;
     if projector_preflight {
         let initial = reader.execution_position()?;
-        let retry = projector.preflight(
+        let retry = match projector.preflight_with_failure_scope(
             &mut reader,
             resumed.map(|checkpoint| checkpoint.physical.complete_prefix_end()),
-        )?;
-        let physical_ready = reader.settle_semantic_preflight(initial, !retry, true)?;
-        if (retry || !physical_ready) && !is_append {
-            return Err(JsonlRuntimeError::<R>::system_invariant(
-                "JSONL projector replaced a non-append",
-            ));
-        }
-        if retry || !physical_ready {
-            projector.retry_replacement();
+        ) {
+            Ok(retry) => retry,
+            Err(JsonlFamilyProjectorPreflightError::RecordRejection { .. }) => {
+                return Err(JsonlRuntimeError::<R>::system_invariant(
+                    "JSONL projector leaked a record rejection from preflight",
+                ));
+            }
+            Err(JsonlFamilyProjectorPreflightError::LogicalSourceFailure { source, detail }) => {
+                if !source.exact_descriptor_eq(leaf.source()) {
+                    return Err(JsonlRuntimeError::<R>::system_invariant(
+                        "JSONL projector failed another logical source",
+                    ));
+                }
+                logical_source_quarantine = Some((*source, detail));
+                false
+            }
+            Err(JsonlFamilyProjectorPreflightError::Internal(error)) => return Err(error),
+        };
+        let source_failed = logical_source_quarantine.is_some();
+        let physical_ready =
+            reader.settle_semantic_preflight(initial, !retry && !source_failed, true)?;
+        if source_failed {
             resumed = None;
             is_append = false;
+        } else {
+            if (retry || !physical_ready) && !is_append {
+                return Err(JsonlRuntimeError::<R>::system_invariant(
+                    "JSONL projector replaced a non-append",
+                ));
+            }
+            if retry || !physical_ready {
+                projector.retry_replacement();
+                resumed = None;
+                is_append = false;
+            }
         }
     }
     let mut physical_records = resumed.map_or_else(
@@ -309,20 +347,22 @@ pub(in super::super) fn prepare_leaf_with_resources<R: JsonlFamilyRuntime>(
     loop {
         let page = reader.visit_page(&mut |record| -> JsonlResult<(), JsonlRuntimeError<R>> {
             physical_records = checked_increment::<JsonlRuntimeError<R>>(physical_records)?;
-            let before = documents;
-            projector.project(record, worker, &mut |core_record| {
-                if !core_record.source.exact_descriptor_eq(leaf.source()) {
-                    return Err(JsonlRuntimeError::<R>::invalid_payload(
-                        "JSONL projector changed the bound source".to_owned(),
-                    ));
+            if logical_source_quarantine.is_none() {
+                let before = documents;
+                projector.project(record, worker, &mut |core_record| {
+                    if !core_record.source.exact_descriptor_eq(leaf.source()) {
+                        return Err(JsonlRuntimeError::<R>::invalid_payload(
+                            "JSONL projector changed the bound source".to_owned(),
+                        ));
+                    }
+                    output.emit_record(is_append, core_record)?;
+                    documents = checked_increment::<JsonlRuntimeError<R>>(documents)?;
+                    Ok(())
+                })?;
+                if documents != before {
+                    represented_records =
+                        checked_increment::<JsonlRuntimeError<R>>(represented_records)?;
                 }
-                output.emit_record(is_append, core_record)?;
-                documents = checked_increment::<JsonlRuntimeError<R>>(documents)?;
-                Ok(())
-            })?;
-            if documents != before {
-                represented_records =
-                    checked_increment::<JsonlRuntimeError<R>>(represented_records)?;
             }
             Ok(())
         })?;
@@ -332,27 +372,39 @@ pub(in super::super) fn prepare_leaf_with_resources<R: JsonlFamilyRuntime>(
         }
     }
     let before_finish = documents;
-    projector.finish_projecting(worker, &mut |core_record| {
-        if !core_record.source.exact_descriptor_eq(leaf.source()) {
-            return Err(JsonlRuntimeError::<R>::invalid_payload(
-                "JSONL projector changed the bound source".to_owned(),
-            ));
-        }
-        output.emit_record(is_append, core_record)?;
-        documents = checked_increment::<JsonlRuntimeError<R>>(documents)?;
-        Ok(())
-    })?;
+    if logical_source_quarantine.is_none() {
+        projector.finish_projecting(worker, &mut |core_record| {
+            if !core_record.source.exact_descriptor_eq(leaf.source()) {
+                return Err(JsonlRuntimeError::<R>::invalid_payload(
+                    "JSONL projector changed the bound source".to_owned(),
+                ));
+            }
+            output.emit_record(is_append, core_record)?;
+            documents = checked_increment::<JsonlRuntimeError<R>>(documents)?;
+            Ok(())
+        })?;
+    }
     output.flush()?;
     let rejected_records = resumed
         .map_or(leaf.identity_probe_rejected_records, |checkpoint| {
             checkpoint.rejected_records
         })
-        .checked_add(projector.rejected_records())
+        .checked_add(if logical_source_quarantine.is_some() {
+            0
+        } else {
+            projector.rejected_records()
+        })
         .ok_or_else(|| {
             JsonlRuntimeError::<R>::invalid_payload("JSONL rejected count overflowed".to_owned())
         })?;
-    let record_rejections = projector.take_record_rejections();
-    let provider_checkpoint = projector.provider_checkpoint()?;
+    let (record_rejections, provider_checkpoint) = if logical_source_quarantine.is_some() {
+        (SourceBackedRecordRejectionDrafts::default(), None)
+    } else {
+        (
+            projector.take_record_rejections(),
+            projector.provider_checkpoint()?,
+        )
+    };
     if documents != before_finish {
         represented_records = physical_records;
     }
@@ -395,7 +447,8 @@ pub(in super::super) fn prepare_leaf_with_resources<R: JsonlFamilyRuntime>(
         version: FamilyCheckpoint::VERSION,
         provider_parser_revision: adapter.parser_revision().to_owned(),
         event_identity_revision: adapter.event_identity_revision().to_owned(),
-        binding_digest: binding_digest(&leaf)?,
+        binding_digest: continuation_binding_digest(&leaf)?,
+        exact_terminal_binding_digest: exact_terminal_binding_digest(&leaf)?,
         physical: outcome.checkpoint().clone(),
         admitted_eof_sha256,
         complete_prefix_ends_with_terminal_nul_padding,
@@ -442,6 +495,6 @@ pub(in super::super) fn prepare_leaf_with_resources<R: JsonlFamilyRuntime>(
         append,
         terminal_proof,
         record_rejections,
-        logical_source_quarantine: None,
+        logical_source_quarantine,
     })
 }

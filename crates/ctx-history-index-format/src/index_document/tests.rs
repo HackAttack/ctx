@@ -214,7 +214,7 @@ fn session_authority_attachment_is_canonical_and_one_shot() {
     let fields = fields_from_schema(&schema).unwrap();
     let core_source = source("codex_session_jsonl");
     let record = core_record(&core_source);
-    let expected = SessionAuthorityKey::new(record.session_id, core_source.identity())
+    let expected = SessionAuthorityKey::for_core_record(&record)
         .unwrap()
         .into_bytes();
     let encoded = record.encode_stored().unwrap();
@@ -230,6 +230,93 @@ fn session_authority_attachment_is_canonical_and_one_shot() {
         .filter_map(|value| value.as_bytes())
         .collect::<Vec<_>>();
     assert_eq!(authorities, vec![expected.as_slice()]);
+}
+
+#[test]
+fn session_authority_exact_key_binds_full_session_and_source_identities() {
+    let core_source = source("codex_session_jsonl");
+    let record = core_record(&core_source);
+    let exact = SessionAuthorityKey::exact(record.session_id, core_source.identity()).unwrap();
+    assert_eq!(exact.as_bytes().len(), crate::SESSION_AUTHORITY_KEY_LEN);
+    assert_eq!(
+        SessionAuthorityKey::decode(exact.as_bytes())
+            .unwrap()
+            .identities()
+            .unwrap(),
+        (record.session_id, core_source.identity())
+    );
+
+    let mut colliding = record.session_id.encode_canonical().unwrap();
+    colliding[20] ^= 1;
+    let colliding = StableEntityId::decode_canonical(&colliding).unwrap();
+    assert_eq!(colliding.as_uuid(), record.session_id.as_uuid());
+    assert_ne!(colliding.digest(), record.session_id.digest());
+    let colliding_key = SessionAuthorityKey::exact(colliding, core_source.identity()).unwrap();
+    assert_ne!(exact, colliding_key);
+
+    let foreign_source = SourceKey::derive(
+        "codex",
+        "codex_session_jsonl",
+        "session",
+        1,
+        SourceAnchor::provider_native(
+            "session-file",
+            TypedKey::utf8("foreign-session-source").unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        SessionAuthorityKey::exact(record.session_id, foreign_source.identity()),
+        Err(IndexError::InvalidStoredDocumentField("session_authority"))
+    ));
+}
+
+#[test]
+fn session_authority_key_round_trips_only_direct_literal_claims() {
+    let core_source = source("codex_session_jsonl");
+    let mut record = core_record(&core_source);
+    let parent = record.session_id;
+    let root = record.session_id;
+    record.parent_session_id = Some(parent);
+    record.root_session_id = Some(root);
+    record.session_relationship = Some(ProviderNativeSessionRelationship::Forked);
+
+    let key = SessionAuthorityKey::for_core_record(&record).unwrap();
+    let decoded = SessionAuthorityKey::decode(key.as_bytes()).unwrap();
+    assert_eq!(
+        decoded.identities().unwrap(),
+        (record.session_id, core_source.identity())
+    );
+    assert_eq!(
+        decoded.direct_claims().unwrap(),
+        SessionAuthorityClaims {
+            parent_session_id: Some(parent),
+            root_session_id: Some(root),
+            relationship: Some(ProviderNativeSessionRelationship::Forked),
+        }
+    );
+}
+
+#[test]
+fn session_authority_key_rejects_noncanonical_direct_claim_encodings() {
+    let core_source = source("codex_session_jsonl");
+    let record = core_record(&core_source);
+    let exact = SessionAuthorityKey::exact(record.session_id, core_source.identity()).unwrap();
+
+    let mut absent_claim_with_payload = exact.into_bytes();
+    absent_claim_with_payload[SESSION_AUTHORITY_PARENT_OFFSET] = 1;
+    assert!(matches!(
+        SessionAuthorityKey::decode(&absent_claim_with_payload),
+        Err(IndexError::InvalidStoredDocumentField("session_authority"))
+    ));
+
+    let mut invalid_relationship = exact.into_bytes();
+    invalid_relationship[SESSION_AUTHORITY_RELATIONSHIP_OFFSET] = u8::MAX;
+    assert!(matches!(
+        SessionAuthorityKey::decode(&invalid_relationship),
+        Err(IndexError::InvalidStoredDocumentField("session_authority"))
+    ));
 }
 
 #[test]

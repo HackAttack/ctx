@@ -5,6 +5,11 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt as _;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt as _;
+
 use anyhow::{anyhow, Context, Result};
 use ctx_history_core::utc_now;
 use ctx_history_platform::platform_security::restrict_private_file_handle;
@@ -13,7 +18,10 @@ use serde_json::{json, Map, Value};
 use uuid::Uuid;
 
 use super::{
-    install::{validate_recovery_observation, InstallationLock, PendingRecovery},
+    install::{
+        interrupted_recovery_admission_matches, validate_recovery_observation, InstallationLock,
+        PendingRecovery,
+    },
     SemanticLayoutPort, UpgradePlan,
 };
 
@@ -21,8 +29,11 @@ pub const STATE_FILE: &str = "upgrade-state.json";
 pub const STATE_SCHEMA_VERSION: u64 = 1;
 const DAEMON_QUIESCENCE_LOCK_FILE: &str = "daemon-quiescence.lock";
 const DAEMON_QUIESCENCE_ACK_DIR: &str = "daemon-quiescence-acks";
+const DAEMON_INSTALLATION_STATE_DIR: &str = "daemon-installations";
 const INITIAL_FAILURE_BACKOFF: Duration = Duration::from_secs(60);
 const MAX_FAILURE_BACKOFF: Duration = Duration::from_secs(6 * 60 * 60);
+const DUE_HINT_STATE_MAX_BYTES: u64 = 64 * 1024;
+const DUE_HINT_RECENT_ATTEMPT_GRACE: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct UpgradeAttempt {
@@ -43,11 +54,8 @@ pub fn is_valid_upgrade_attempt_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
-pub(super) enum AutoUpgradeClaim {
-    Claimed {
-        attempt: UpgradeAttempt,
-        lock: UpgradeLock,
-    },
+pub(super) enum AutomaticUpgradeLease {
+    Acquired(UpgradeLock),
     NotDue,
     Contended,
 }
@@ -145,7 +153,11 @@ impl UpgradeState {
         self.attempt_id = Some(attempt.id.clone());
         self.last_attempt_finished_at = Some(utc_now());
         self.error = None;
-        if self.attempt_source.as_deref() == Some("daemon") {
+        if self
+            .attempt_source
+            .as_deref()
+            .is_some_and(is_automatic_attempt_source)
+        {
             self.last_successful_check_unix_s = Some(now);
             self.next_check_unix_s = Some(now.saturating_add(interval.as_secs()));
             self.next_retry_unix_s = None;
@@ -160,7 +172,11 @@ impl UpgradeState {
         self.checked_at = Some(utc_now());
         self.last_checked_unix_s = Some(now);
         self.error = Some(error.to_owned());
-        if self.attempt_source.as_deref() == Some("daemon") {
+        if self
+            .attempt_source
+            .as_deref()
+            .is_some_and(is_automatic_attempt_source)
+        {
             self.consecutive_failures = self.consecutive_failures.saturating_add(1);
             self.next_retry_unix_s =
                 Some(now.saturating_add(failure_backoff(self.consecutive_failures).as_secs()));
@@ -168,18 +184,58 @@ impl UpgradeState {
     }
 }
 
-pub(super) fn claim_daemon_auto_upgrade(interval: Duration) -> Result<AutoUpgradeClaim> {
+pub(super) fn try_acquire_automatic_upgrade(interval: Duration) -> Result<AutomaticUpgradeLease> {
+    // Unmanaged installations never self-upgrade; the automatic scheduler
+    // stays dormant without touching their executable directory.
+    if super::install::current_exe_is_unmanaged() {
+        return Ok(AutomaticUpgradeLease::NotDue);
+    }
     let Some(lock) = UpgradeLock::try_acquire()? else {
-        return Ok(AutoUpgradeClaim::Contended);
+        return Ok(AutomaticUpgradeLease::Contended);
     };
-    let mut state = read_state_object(&lock.install_path);
+    let state = read_state_object(&lock.install_path);
     let now = now_unix_s();
     if !auto_check_due(&state, interval, now) {
-        return Ok(AutoUpgradeClaim::NotDue);
+        return Ok(AutomaticUpgradeLease::NotDue);
     }
-    let attempt = state.begin("daemon");
-    write_state_object_locked(&lock, state)?;
-    Ok(AutoUpgradeClaim::Claimed { attempt, lock })
+    Ok(AutomaticUpgradeLease::Acquired(lock))
+}
+
+pub(super) fn begin_automatic_attempt_locked(
+    lock: &UpgradeLock,
+    interval: Duration,
+) -> Result<Option<UpgradeAttempt>> {
+    let mut state = read_state_object(&lock.install_path);
+    if !auto_check_due(&state, interval, now_unix_s()) {
+        return Ok(None);
+    }
+    let attempt = state.begin("automatic");
+    write_state_object_locked(lock, state)?;
+    Ok(Some(attempt))
+}
+
+/// Cheap, non-authoritative daemon cadence hint. This deliberately avoids the
+/// installation lock, marker parsing, and executable hashing; the daemon
+/// repeats the cadence decision while holding the installation lock.
+pub(super) fn automatic_upgrade_check_due(interval: Duration) -> Result<bool> {
+    let install_path = super::install::current_install_path()?;
+    automatic_upgrade_check_due_for(&install_path, interval)
+}
+
+fn automatic_upgrade_check_due_for(install_path: &Path, interval: Duration) -> Result<bool> {
+    let marker = super::install::install_marker_path(install_path);
+    match fs::symlink_metadata(marker) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    }
+    let state = read_state_object_bounded(install_path).unwrap_or_default();
+    let now = now_unix_s();
+    if recent_in_progress_attempt(&state, now) {
+        return Ok(false);
+    }
+    Ok(auto_check_due(&state, interval, now))
 }
 
 pub fn installation_upgrade_is_active() -> Result<bool> {
@@ -187,9 +243,50 @@ pub fn installation_upgrade_is_active() -> Result<bool> {
     installation_upgrade_is_active_for(&install_path)
 }
 
+/// Whether an interrupted daemon-owned automatic attempt has enough matching,
+/// owner-safe evidence to admit its sole recovery owner. This is only an
+/// admission hint: recovery fully revalidates the journal after reclaiming the
+/// installation lock before any mutation.
+pub fn installation_interrupted_automatic_upgrade_is_recoverable() -> Result<bool> {
+    let install_path = super::install::current_install_path()?;
+    installation_interrupted_automatic_upgrade_is_recoverable_for(&install_path)
+}
+
+fn installation_interrupted_automatic_upgrade_is_recoverable_for(
+    install_path: &Path,
+) -> Result<bool> {
+    let Some(state) = read_state_object_bounded(install_path) else {
+        return Ok(false);
+    };
+    let Some(attempt_id) = state.attempt_id.as_deref().filter(|attempt_id| {
+        is_active_upgrade_status(&state.status)
+            && is_valid_upgrade_attempt_id(attempt_id)
+            && state
+                .attempt_source
+                .as_deref()
+                .is_some_and(is_automatic_attempt_source)
+    }) else {
+        return Ok(false);
+    };
+    let Some(_lock) = InstallationLock::try_acquire_for_recovery(install_path)? else {
+        return Ok(false);
+    };
+    Ok(interrupted_recovery_admission_matches(install_path, attempt_id).unwrap_or(false))
+}
+
 fn installation_upgrade_is_active_for(install_path: &Path) -> Result<bool> {
-    if observe_installation_upgrade(install_path) == InstallationUpgradeObservation::Active {
+    let observation = observe_installation_upgrade(install_path);
+    if observation == InstallationUpgradeObservation::Active {
         return Ok(true);
+    }
+    // An unmanaged installation never mutates through the hosted installer,
+    // so it has no installation-lock protocol to observe and its executable
+    // directory may not even be writable. Corrupt or unknown state records
+    // still fail closed through the lock protocol below.
+    if observation != InstallationUpgradeObservation::Untrusted
+        && super::install::installation_is_unmanaged_at(install_path)
+    {
+        return Ok(false);
     }
     if InstallationLock::try_acquire(install_path)?.is_some() {
         return Ok(false);
@@ -240,6 +337,11 @@ pub fn active_installation_upgrade_attempt_id() -> Result<Option<String>> {
     if active_attempt.is_some() {
         return Ok(active_attempt);
     }
+    // An unmanaged installation never owns an upgrade attempt and has no
+    // installation lock to consult.
+    if super::install::installation_is_unmanaged_at(&install_path) {
+        return Ok(None);
+    }
     if InstallationLock::try_acquire(&install_path)?.is_none() {
         return Err(anyhow!(
             "ctx installation is locked without readable active upgrade state"
@@ -269,22 +371,55 @@ pub fn terminal_installation_upgrade_attempt_id() -> Result<Option<String>> {
 
 pub fn installation_daemon_coordination_paths() -> Result<(PathBuf, PathBuf)> {
     let install_path = super::install::current_install_path()?;
-    Ok(installation_daemon_coordination_paths_for(&install_path))
+    installation_daemon_coordination_paths_for(&install_path)
 }
 
 pub fn installation_executable_path() -> Result<PathBuf> {
     super::install::current_install_path()
 }
 
-pub fn installation_daemon_coordination_paths_for(install_path: &Path) -> (PathBuf, PathBuf) {
-    let name = install_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("ctx");
-    (
-        install_path.with_file_name(format!(".{name}.{DAEMON_QUIESCENCE_LOCK_FILE}")),
-        install_path.with_file_name(format!(".{name}.{DAEMON_QUIESCENCE_ACK_DIR}")),
-    )
+pub fn installation_daemon_coordination_paths_for(
+    install_path: &Path,
+) -> Result<(PathBuf, PathBuf)> {
+    let user_state_root = ctx_history_platform::managed_data_root()
+        .context("resolve environment-independent ctx user state")?;
+    installation_daemon_coordination_paths_in(&user_state_root, install_path)
+}
+
+fn installation_daemon_coordination_paths_in(
+    user_state_root: &Path,
+    install_path: &Path,
+) -> Result<(PathBuf, PathBuf)> {
+    let canonical = fs::canonicalize(install_path)
+        .with_context(|| format!("canonicalize ctx executable {}", install_path.display()))?;
+    let namespace = executable_path_namespace(&canonical);
+    let installation_root = user_state_root
+        .join(DAEMON_INSTALLATION_STATE_DIR)
+        .join(namespace);
+    Ok((
+        installation_root.join(DAEMON_QUIESCENCE_LOCK_FILE),
+        installation_root.join(DAEMON_QUIESCENCE_ACK_DIR),
+    ))
+}
+
+#[cfg(unix)]
+fn executable_path_namespace(path: &Path) -> String {
+    super::sha256_hex(path.as_os_str().as_bytes())
+}
+
+#[cfg(windows)]
+fn executable_path_namespace(path: &Path) -> String {
+    let bytes = path
+        .as_os_str()
+        .encode_wide()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    super::sha256_hex(&bytes)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn executable_path_namespace(path: &Path) -> String {
+    super::sha256_hex(path.to_string_lossy().as_bytes())
 }
 
 pub(super) fn begin_manual_attempt_locked(
@@ -310,6 +445,30 @@ pub(super) fn begin_recovery_attempt_locked(
     let attempt = state.begin_recovery(attempt_id, source);
     write_state_object_locked(lock, state)?;
     Ok(attempt)
+}
+
+pub(super) fn automatic_recovery_channel_locked(
+    lock: &UpgradeLock,
+    attempt_id: &str,
+) -> Result<String> {
+    let state = read_state_object(&lock.install_path);
+    if state.attempt_id.as_deref() != Some(attempt_id)
+        || !state
+            .attempt_source
+            .as_deref()
+            .is_some_and(is_automatic_attempt_source)
+    {
+        return Err(anyhow!(
+            "interrupted automatic upgrade does not match its scheduler state"
+        ));
+    }
+    state
+        .plan
+        .get("channel")
+        .and_then(Value::as_str)
+        .filter(|channel| !channel.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("interrupted automatic upgrade has no selected channel"))
 }
 
 pub(super) fn write_state_phase_locked(
@@ -344,6 +503,12 @@ pub(super) fn write_state_checked_locked(
         && super::env_flag("CTX_UPGRADE_FAIL_STATE_WRITE_FOR_TESTS")
     {
         return Err(anyhow!("injected upgrade state write failure"));
+    }
+    if crate::upgrade::test_harness_enabled()
+        && status == "applied"
+        && super::env_flag("CTX_UPGRADE_FAIL_APPLIED_STATE_WRITE_FOR_TESTS")
+    {
+        return Err(anyhow!("injected applied-state write failure"));
     }
     let mut state = read_state_object(&lock.install_path);
     if !state.is_current(attempt) {
@@ -387,7 +552,10 @@ pub(super) fn reconcile_replacement_terminal_locked(
 ) -> Result<bool> {
     let mut state = read_state_object(&lock.install_path);
     let automatic = state.attempt_id.as_deref() == Some(attempt_id)
-        && state.attempt_source.as_deref() == Some("daemon");
+        && state
+            .attempt_source
+            .as_deref()
+            .is_some_and(is_automatic_attempt_source);
     if state.attempt_id.as_deref() != Some(attempt_id) {
         state.schema_version = STATE_SCHEMA_VERSION;
         state.attempt_id = Some(attempt_id.to_owned());
@@ -475,6 +643,21 @@ fn auto_check_due(state: &UpgradeState, interval: Duration, now: u64) -> bool {
         .is_none_or(|deadline| now >= deadline)
 }
 
+fn is_automatic_attempt_source(source: &str) -> bool {
+    matches!(source, "automatic" | "daemon")
+}
+
+fn recent_in_progress_attempt(state: &UpgradeState, now: u64) -> bool {
+    let in_progress = state.status == "checking" || is_active_upgrade_status(&state.status);
+    in_progress
+        && state
+            .last_attempt_at
+            .and_then(|started| u64::try_from(started.timestamp()).ok())
+            .is_some_and(|started| {
+                started <= now && now - started < DUE_HINT_RECENT_ATTEMPT_GRACE.as_secs()
+            })
+}
+
 fn failure_backoff(consecutive_failures: u64) -> Duration {
     let exponent = consecutive_failures.saturating_sub(1).min(16) as u32;
     let seconds = INITIAL_FAILURE_BACKOFF
@@ -498,6 +681,19 @@ fn read_state_object(install_path: &Path) -> UpgradeState {
         .and_then(|bytes| serde_json::from_slice::<UpgradeState>(&bytes).ok())
         .map(UpgradeState::valid_or_default)
         .unwrap_or_default()
+}
+
+fn read_state_object_bounded(install_path: &Path) -> Option<UpgradeState> {
+    let bytes = super::install::read_stable_file(
+        &state_path(install_path),
+        "ctx automatic-upgrade scheduler state",
+        DUE_HINT_STATE_MAX_BYTES,
+        super::install::StableFileKind::Data,
+    )
+    .ok()??;
+    serde_json::from_slice::<UpgradeState>(&bytes)
+        .ok()
+        .map(UpgradeState::valid_or_default)
 }
 
 pub fn read_state_json() -> Option<Value> {

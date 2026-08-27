@@ -63,9 +63,25 @@ fn public_surfaces_are_exhaustive_and_stable() {
 }
 
 #[test]
+fn semantic_lifecycle_operations_emit_closed_client_analytics_names() {
+    for (operation, expected) in [
+        (CliOperation::SemanticEnable, "semantic_enable"),
+        (CliOperation::SemanticStatus, "semantic_status"),
+        (CliOperation::SemanticDisable, "semantic_disable"),
+    ] {
+        assert!(operation.emits_client_analytics());
+        assert_eq!(operation.analytics_name(), expected);
+    }
+}
+
+#[test]
 fn runtime_observation_has_typed_constructor_seams() {
     let daemon = PublicEventV1::RuntimeObservation(RuntimeObservationV1::daemon(
-        DaemonRuntimeObservationV1::Cycle,
+        DaemonRuntimeObservationV1::ready(DaemonRunFactsV1::new(
+            DaemonStartModeV1::Manual,
+            DaemonSupervisorV1::User,
+            None,
+        )),
         Outcome::Success,
         Duration::from_secs(1),
     ));
@@ -81,7 +97,7 @@ fn runtime_observation_has_typed_constructor_seams() {
     let mcp = serialize_event(&mcp, occurred_at, None, None);
     assert_eq!(daemon["event_name"], "runtime_observation");
     assert_eq!(daemon["surface"], "daemon");
-    assert_eq!(daemon["operation"], "cycle");
+    assert_eq!(daemon["operation"], "ready");
     assert_eq!(mcp["surface"], "mcp");
     assert_eq!(mcp["operation"], "stopped");
 }
@@ -191,21 +207,13 @@ fn durable_family_serialization_matches_public_goldens() {
                 ForegroundProviderRefreshV1 {
                     provider: Some(CaptureProvider::Codex),
                     trigger: ProviderRefreshTrigger::Search,
-                    source_mode: Some(ProviderRefreshSourceMode::Discovered),
                     change: ProviderRefreshChange::Changed,
-                    content_evidence: ProviderRefreshContentEvidence::Accepted,
-                    work_kind: Some(ProviderRefreshWorkKind::Append),
                     refresh_result: ProviderRefreshResult::Complete,
                     core_result: ProviderCoreResult::Complete,
                     failure_scope: ProviderRefreshFailureScope::None,
                     failure_type: ProviderRefreshFailureType::None,
                     work_remaining: false,
-                    retired_records: Some(count_bucket(0)),
-                    counts: Some(ProviderRefreshCountsV1::new(1, 12, 3, 8, 0, 0, 0, 0, 2048)),
-                    performance: Some(ProviderRefreshPerformanceV1::new(
-                        Duration::from_millis(800),
-                        Some(512 * 1024 * 1024),
-                    )),
+                    counts: Some(ProviderRefreshCountsV1::new(8, 2048)),
                 },
             )),
             include_str!(
@@ -222,8 +230,8 @@ fn durable_family_serialization_matches_public_goldens() {
                     ),
                     DaemonCycleStateV1::new(
                         DaemonHistoryFreshnessV1::Current,
-                        DaemonBacklogV1::Bucket(CountBucket::Zero),
-                        DaemonCoverageV1::Complete,
+                        DaemonBacklogV1::Unknown,
+                        DaemonCoverageV1::Unknown,
                         DaemonBackoffV1::None,
                     ),
                 )),

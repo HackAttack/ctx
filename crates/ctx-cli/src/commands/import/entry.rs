@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use ctx_history_ingest_application::{IngestReport, ProviderRefreshModeFact};
+use ctx_history_ingest_application::{ImportPathNotFound, IngestReport};
 
 use crate::analytics::{
     bytes_bucket, count_bucket, ImportFailureScope as AnalyticsImportFailureScope,
     ImportFailureType as AnalyticsImportFailureType, ImportOutcome as AnalyticsImportOutcome,
-    ImportTelemetry, ProviderRefreshSourceMode, ProviderRefreshTrigger,
+    ImportTelemetry, ProviderRefreshTrigger,
 };
 use crate::ui::Ui;
 use crate::ImportArgs;
@@ -25,7 +25,8 @@ pub(crate) fn run_import(
     ui: &mut Ui,
 ) -> Result<()> {
     let json = args.format.is_json();
-    if args.partial && !json {
+    let machine_output = json || args.progress == crate::progress::ProgressArg::Json;
+    if args.partial && !machine_output {
         let document =
             ctx_cli_presentation::commands::render_partial_deprecation(ui.stderr_context());
         ui.write_stderr(&document)?;
@@ -48,6 +49,38 @@ pub(crate) fn run_import(
         Err(err) => {
             insert_import_error_analytics(telemetry, &err);
             record_terminal_import_failure(provider_refreshes, &err);
+            if let Some(diagnostic) = err.downcast_ref::<ImportPathNotFound>() {
+                if args.progress == crate::progress::ProgressArg::Json {
+                    let rendered =
+                        ctx_cli_presentation::commands::render_import_path_not_found_plain(
+                            diagnostic.path(),
+                        );
+                    let message = rendered
+                        .strip_suffix('\n')
+                        .expect("import path diagnostic ends with one newline");
+                    ctx_history_cli::ProgressReporter::new(
+                        ui,
+                        ctx_history_cli::ProgressMode::Json,
+                        json,
+                        "import",
+                        0,
+                    )
+                    .failure("failed", message)?;
+                } else if json {
+                    let rendered =
+                        ctx_cli_presentation::commands::render_import_path_not_found_plain(
+                            diagnostic.path(),
+                        );
+                    ui.write_stderr_bytes(rendered.as_bytes())?;
+                } else {
+                    let document = ctx_cli_presentation::commands::render_import_path_not_found(
+                        ui.stderr_context(),
+                        diagnostic.path(),
+                    );
+                    ui.write_stderr(&document)?;
+                }
+                return Err(ctx_cli_presentation::rendered_cli_error());
+            }
             return Err(err);
         }
     };
@@ -185,15 +218,6 @@ fn record_application_facts(
         provider_refreshes.record_success_with_facts(
             facts.provider,
             refresh_trigger,
-            match facts.mode {
-                ProviderRefreshModeFact::ExplicitPath => ProviderRefreshSourceMode::ExplicitPath,
-                ProviderRefreshModeFact::ExplicitFormat => {
-                    ProviderRefreshSourceMode::ExplicitFormat
-                }
-                ProviderRefreshModeFact::HistorySourcePlugin => {
-                    ProviderRefreshSourceMode::HistorySourcePlugin
-                }
-            },
             &facts.summary,
             &facts.stats,
             ProviderRefreshRuntimeFacts::observed_success(facts.duration, &facts.summary),
@@ -216,8 +240,8 @@ mod tests {
     use ctx_history_refresh::{RefreshOutcomeClass, RefreshOutcomeCode, RefreshTerminalOutcome};
 
     use crate::analytics::{
-        Outcome, ProviderCoreResult, ProviderRefreshContentEvidence, ProviderRefreshFailureScope,
-        ProviderRefreshFailureType, ProviderRefreshResult, PublicEventV1, Surface,
+        Outcome, ProviderCoreResult, ProviderRefreshFailureScope, ProviderRefreshFailureType,
+        ProviderRefreshResult, PublicEventV1, Surface,
     };
 
     use super::*;
@@ -269,7 +293,6 @@ mod tests {
 
         assert_eq!(refresh.trigger, ProviderRefreshTrigger::Import);
         assert_eq!(refresh.provider, None);
-        assert_eq!(refresh.source_mode, None);
         assert_eq!(refresh.refresh_result, ProviderRefreshResult::Failure);
         assert_eq!(refresh.core_result, ProviderCoreResult::Failure);
         assert_eq!(refresh.failure_scope, ProviderRefreshFailureScope::Source);
@@ -279,10 +302,6 @@ mod tests {
         );
         assert!(!refresh.work_remaining);
         assert_eq!(refresh.counts, None);
-        assert_eq!(
-            refresh.content_evidence,
-            ProviderRefreshContentEvidence::Unknown
-        );
         assert!(!format!("{events:?}").contains("content-bearing raw terminal detail"));
     }
 
@@ -301,7 +320,6 @@ mod tests {
 
         assert_eq!(refresh.trigger, ProviderRefreshTrigger::Import);
         assert_eq!(refresh.provider, None);
-        assert_eq!(refresh.source_mode, None);
         assert_eq!(refresh.refresh_result, ProviderRefreshResult::Failure);
         assert_eq!(refresh.core_result, ProviderCoreResult::Failure);
         assert_eq!(refresh.failure_scope, ProviderRefreshFailureScope::Source);

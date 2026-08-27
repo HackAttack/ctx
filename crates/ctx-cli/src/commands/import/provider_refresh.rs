@@ -8,11 +8,10 @@ use ctx_history_refresh::{
 };
 
 use crate::analytics::{
-    count_bucket, duration_bucket, DurationBucket, ForegroundProviderRefreshV1, Outcome,
-    ProviderCoreResult, ProviderRefreshChange, ProviderRefreshCompletedV1,
-    ProviderRefreshContentEvidence, ProviderRefreshCountsV1, ProviderRefreshFailureScope,
-    ProviderRefreshFailureType, ProviderRefreshResult, ProviderRefreshSourceMode,
-    ProviderRefreshTrigger, ProviderRefreshWorkKind, PublicEventV1,
+    duration_bucket, DurationBucket, ForegroundProviderRefreshV1, Outcome, ProviderCoreResult,
+    ProviderRefreshChange, ProviderRefreshCompletedV1, ProviderRefreshCountsV1,
+    ProviderRefreshFailureScope, ProviderRefreshFailureType, ProviderRefreshResult,
+    ProviderRefreshTrigger, PublicEventV1,
 };
 
 use super::SourceStats;
@@ -44,9 +43,7 @@ enum CoreRefreshAnalyticsFacts {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ProviderRefreshRuntimeFacts {
     duration: Duration,
-    work_kind: Option<ProviderRefreshWorkKind>,
     core_result: ProviderCoreResult,
-    retired_records: Option<u64>,
 }
 
 impl ProviderRefreshRuntimeFacts {
@@ -54,27 +51,18 @@ impl ProviderRefreshRuntimeFacts {
         let no_op = summary.work_result() == ProviderImportWorkResult::NoOp;
         Self::success(
             duration,
-            no_op.then_some(ProviderRefreshWorkKind::NoOp),
             if no_op {
                 ProviderCoreResult::NoOp
             } else {
                 ProviderCoreResult::Complete
             },
-            no_op.then_some(0),
         )
     }
 
-    pub(crate) fn success(
-        duration: Duration,
-        work_kind: Option<ProviderRefreshWorkKind>,
-        core_result: ProviderCoreResult,
-        retired_records: Option<u64>,
-    ) -> Self {
+    pub(crate) fn success(duration: Duration, core_result: ProviderCoreResult) -> Self {
         Self {
             duration,
-            work_kind,
             core_result,
-            retired_records,
         }
     }
 }
@@ -83,17 +71,11 @@ impl ProviderRefreshRuntimeFacts {
 struct ProviderRefreshAggregate {
     provider: CaptureProvider,
     trigger: ProviderRefreshTrigger,
-    source_mode: ProviderRefreshSourceMode,
     totals: ImportTotals,
     work_result: ProviderImportWorkResult,
     duration: Duration,
     duration_complete: bool,
-    work_kind: Option<ProviderRefreshWorkKind>,
-    work_kind_complete: bool,
-    content_evidence: Option<ProviderRefreshContentEvidence>,
     core_result: Option<ProviderCoreResult>,
-    retired_records: u64,
-    retired_records_complete: bool,
     failure_scope: Option<ProviderRefreshFailureScope>,
     failure_type: Option<ProviderRefreshFailureType>,
 }
@@ -115,17 +97,14 @@ impl ProviderRefreshCollector {
         &mut self,
         provider: CaptureProvider,
         trigger: ProviderRefreshTrigger,
-        source_mode: ProviderRefreshSourceMode,
         summary: &ProviderImportSummary,
         stats: &SourceStats,
         facts: ProviderRefreshRuntimeFacts,
     ) {
-        let aggregate = self.aggregate_mut(provider, trigger, source_mode);
+        let aggregate = self.aggregate_mut(provider, trigger);
         aggregate.totals.add(summary, stats);
         aggregate.work_result = aggregate.work_result.merge(summary.work_result());
         aggregate.record_facts(facts);
-        aggregate.content_evidence =
-            merge_content_evidence(aggregate.content_evidence, content_evidence(summary));
         if summary.failed > 0 {
             aggregate.failure_scope =
                 merge_failure_scope(aggregate.failure_scope, ProviderRefreshFailureScope::Record);
@@ -210,7 +189,6 @@ impl ProviderRefreshCollector {
             left.provider
                 .as_str()
                 .cmp(right.provider.as_str())
-                .then_with(|| left.source_mode.as_str().cmp(right.source_mode.as_str()))
                 .then_with(|| left.trigger.as_str().cmp(right.trigger.as_str()))
         });
         let fallback_duration =
@@ -220,9 +198,6 @@ impl ProviderRefreshCollector {
             .into_iter()
             .map(|aggregate| {
                 let totals = aggregate.totals;
-                let source_count = totals
-                    .imported_sources
-                    .saturating_add(totals.failed_sources);
                 let core_result = aggregate.core_result.unwrap_or(ProviderCoreResult::Unknown);
                 let refresh_result = refresh_result(&totals, core_result);
                 let outcome = if refresh_result == ProviderRefreshResult::Failure {
@@ -244,19 +219,11 @@ impl ProviderRefreshCollector {
                     ForegroundProviderRefreshV1 {
                         provider: Some(aggregate.provider),
                         trigger: aggregate.trigger,
-                        source_mode: Some(aggregate.source_mode),
                         change: if aggregate.work_result == ProviderImportWorkResult::Changed {
                             ProviderRefreshChange::Changed
                         } else {
                             ProviderRefreshChange::NoOp
                         },
-                        content_evidence: aggregate
-                            .content_evidence
-                            .unwrap_or(ProviderRefreshContentEvidence::Unknown),
-                        work_kind: aggregate
-                            .work_kind_complete
-                            .then_some(aggregate.work_kind)
-                            .flatten(),
                         refresh_result,
                         core_result,
                         failure_scope: if has_failures {
@@ -274,21 +241,10 @@ impl ProviderRefreshCollector {
                             ProviderRefreshFailureType::None
                         },
                         work_remaining: totals.capture_work_remaining,
-                        retired_records: aggregate
-                            .retired_records_complete
-                            .then(|| count_bucket(aggregate.retired_records)),
                         counts: Some(ProviderRefreshCountsV1::new(
-                            count_u64(source_count),
-                            count_u64(totals.source_files),
-                            count_u64(totals.imported_sessions),
                             count_u64(totals.imported_events),
-                            count_u64(totals.imported_edges),
-                            count_u64(totals.skipped),
-                            count_u64(totals.failed),
-                            count_u64(totals.failed_sources),
                             totals.source_bytes,
                         )),
-                        performance: None,
                     },
                 );
                 event.surface = surface;
@@ -309,18 +265,13 @@ impl ProviderRefreshCollector {
                         ForegroundProviderRefreshV1 {
                             provider: None,
                             trigger,
-                            source_mode: None,
                             change: ProviderRefreshChange::NoOp,
-                            content_evidence: ProviderRefreshContentEvidence::Unknown,
-                            work_kind: None,
                             refresh_result: ProviderRefreshResult::Failure,
                             core_result: ProviderCoreResult::Failure,
                             failure_scope,
                             failure_type,
                             work_remaining,
-                            retired_records: None,
                             counts: None,
-                            performance: None,
                         },
                     );
                     event.surface = surface;
@@ -340,15 +291,11 @@ impl ProviderRefreshCollector {
                         ForegroundProviderRefreshV1 {
                             provider: None,
                             trigger,
-                            source_mode: None,
                             change: if generation_changed {
                                 ProviderRefreshChange::Changed
                             } else {
                                 ProviderRefreshChange::NoOp
                             },
-                            content_evidence: ProviderRefreshContentEvidence::Unknown,
-                            work_kind: (!generation_changed)
-                                .then_some(ProviderRefreshWorkKind::NoOp),
                             refresh_result: if has_source_failures {
                                 ProviderRefreshResult::Partial
                             } else {
@@ -372,9 +319,7 @@ impl ProviderRefreshCollector {
                                 (true, true) => ProviderRefreshFailureType::Mixed,
                             },
                             work_remaining: false,
-                            retired_records: None,
                             counts: None,
-                            performance: None,
                         },
                     );
                     event.surface = surface;
@@ -389,29 +334,22 @@ impl ProviderRefreshCollector {
         &mut self,
         provider: CaptureProvider,
         trigger: ProviderRefreshTrigger,
-        source_mode: ProviderRefreshSourceMode,
     ) -> &mut ProviderRefreshAggregate {
-        if let Some(index) = self.aggregates.iter().position(|aggregate| {
-            aggregate.provider == provider
-                && aggregate.trigger == trigger
-                && aggregate.source_mode == source_mode
-        }) {
+        if let Some(index) = self
+            .aggregates
+            .iter()
+            .position(|aggregate| aggregate.provider == provider && aggregate.trigger == trigger)
+        {
             return &mut self.aggregates[index];
         }
         self.aggregates.push(ProviderRefreshAggregate {
             provider,
             trigger,
-            source_mode,
             totals: ImportTotals::default(),
             work_result: ProviderImportWorkResult::NoOp,
             duration: Duration::ZERO,
             duration_complete: true,
-            work_kind: None,
-            work_kind_complete: true,
-            content_evidence: None,
             core_result: None,
-            retired_records: 0,
-            retired_records_complete: true,
             failure_scope: None,
             failure_type: None,
         });
@@ -424,53 +362,8 @@ impl ProviderRefreshCollector {
 impl ProviderRefreshAggregate {
     fn record_facts(&mut self, facts: ProviderRefreshRuntimeFacts) {
         self.duration = self.duration.saturating_add(facts.duration);
-        if let Some(work_kind) = facts.work_kind {
-            self.work_kind = merge_work_kind(self.work_kind, work_kind);
-        } else {
-            self.work_kind_complete = false;
-        }
         self.core_result = merge_core_result(self.core_result, facts.core_result);
-        if let Some(retired_records) = facts.retired_records {
-            self.retired_records = self.retired_records.saturating_add(retired_records);
-        } else {
-            self.retired_records_complete = false;
-        }
     }
-}
-
-fn content_evidence(summary: &ProviderImportSummary) -> ProviderRefreshContentEvidence {
-    if summary.has_accepted_content() {
-        ProviderRefreshContentEvidence::Accepted
-    } else {
-        ProviderRefreshContentEvidence::None
-    }
-}
-
-fn merge_content_evidence(
-    current: Option<ProviderRefreshContentEvidence>,
-    next: ProviderRefreshContentEvidence,
-) -> Option<ProviderRefreshContentEvidence> {
-    if current == Some(ProviderRefreshContentEvidence::Unknown)
-        || next == ProviderRefreshContentEvidence::Unknown
-    {
-        return Some(ProviderRefreshContentEvidence::Unknown);
-    }
-    Some(match current {
-        None => next,
-        Some(current) if current == next => current,
-        Some(_) => ProviderRefreshContentEvidence::Mixed,
-    })
-}
-
-fn merge_work_kind(
-    current: Option<ProviderRefreshWorkKind>,
-    next: ProviderRefreshWorkKind,
-) -> Option<ProviderRefreshWorkKind> {
-    Some(match current {
-        None => next,
-        Some(current) if current == next => current,
-        Some(_) => ProviderRefreshWorkKind::Mixed,
-    })
 }
 
 fn merge_core_result(
