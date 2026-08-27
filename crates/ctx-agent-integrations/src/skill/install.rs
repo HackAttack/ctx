@@ -878,13 +878,10 @@ mod tests {
                 .unwrap();
         install_target(&target, false, true, "1.0.0").unwrap();
         let legacy_dir = write_managed_legacy_skill(&target, b"managed legacy\n");
-
         let before = status_target(&target).unwrap();
         assert_eq!(before.status, SkillInstallStatus::Stale);
         assert_eq!(before.legacy_status, Some(SkillInstallStatus::Stale));
-
         let result = install_target(&target, false, true, "1.0.0").unwrap();
-
         assert!(result.success);
         assert!(result.migrated);
         assert!(result.updated);
