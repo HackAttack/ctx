@@ -403,6 +403,23 @@ fn default_skill_status_ignores_an_unselected_path_the_installer_cannot_own() {
         let cursor_dir = temp.path().join(".cursor").join("skills");
         fs::create_dir_all(&cursor_dir).unwrap();
         std::os::unix::fs::symlink(&linked, cursor_dir.join("ctx")).unwrap();
+
+        let linked_file = temp.path().join("linked-skill.md");
+        fs::write(&linked_file, CURRENT_BUNDLED_SKILL_BODY).unwrap();
+        let gemini_skill_dir = temp.path().join(".gemini").join("skills").join("ctx");
+        fs::create_dir_all(&gemini_skill_dir).unwrap();
+        std::os::unix::fs::symlink(&linked_file, gemini_skill_dir.join("SKILL.md")).unwrap();
+
+        let outside_grok_skills = temp.path().join("outside-grok-skills");
+        fs::create_dir_all(outside_grok_skills.join("ctx")).unwrap();
+        fs::write(
+            outside_grok_skills.join("ctx").join("SKILL.md"),
+            CURRENT_BUNDLED_SKILL_BODY,
+        )
+        .unwrap();
+        let grok_dir = temp.path().join(".grok");
+        fs::create_dir_all(&grok_dir).unwrap();
+        std::os::unix::fs::symlink(&outside_grok_skills, grok_dir.join("skills")).unwrap();
     }
 
     let status = json_output(
@@ -421,11 +438,24 @@ fn default_skill_status_ignores_an_unselected_path_the_installer_cannot_own() {
 }
 
 #[test]
-fn explicit_skill_install_succeeds_alongside_an_unselected_modified_copy() {
+fn explicit_skill_install_does_not_touch_an_unselected_stale_copy() {
     let temp = tempdir();
     let cursor_dir = temp.path().join(".cursor").join("skills").join("ctx");
     fs::create_dir_all(&cursor_dir).unwrap();
-    fs::write(cursor_dir.join("SKILL.md"), "local custom instructions\n").unwrap();
+    fs::write(cursor_dir.join("SKILL.md"), "old instructions\n").unwrap();
+    fs::write(
+        cursor_dir.join(".ctx-skill.json"),
+        json!({
+            "schema_version": 1,
+            "installer": "ctx-cli",
+            "skill_name": "ctx",
+            "skill_hash": bundled_skill_hash("old instructions\n"),
+            "ctx_cli_version": "0.0.0",
+            "installed_at": "2026-01-01T00:00:00Z"
+        })
+        .to_string(),
+    )
+    .unwrap();
 
     let install = json_output(
         ctx(&temp)
@@ -440,11 +470,14 @@ fn explicit_skill_install_succeeds_alongside_an_unselected_modified_copy() {
             ]),
     );
     assert_eq!(skill_result(&install, "universal")["status"], "current");
-    assert_eq!(skill_result(&install, "cursor")["success"], false);
-    assert_eq!(skill_result(&install, "cursor")["status"], "modified");
+    assert_eq!(
+        install["results"].as_array().unwrap().len(),
+        1,
+        "{install:#}"
+    );
     assert_eq!(
         fs::read_to_string(cursor_dir.join("SKILL.md")).unwrap(),
-        "local custom instructions\n"
+        "old instructions\n"
     );
 }
 
